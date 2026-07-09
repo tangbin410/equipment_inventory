@@ -158,6 +158,15 @@
   padding: 3px 10px;
 }
 
+.release-action {
+  margin-left: 6px;
+  font-size: 12px;
+  color: #d64545;
+  background: #fff1f0;
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
 .progress-row {
   display: flex;
   align-items: center;

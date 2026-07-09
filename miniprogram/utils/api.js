@@ -45,8 +45,12 @@ function login(code) { return request("POST", "/login", { code }); }
 function getWorkers() { return request("GET", "/workers"); }
 
 // 任务相关
-function getTasks(userId) { return request("GET", "/tasks?user_id=" + userId); }
+function getAreaTasks(userId) { return request("GET", "/tasks/area?user_id=" + userId); }
+function getMyTasks(userId) { return request("GET", "/tasks/my?user_id=" + userId); }
+function getTasks(userId) { return getMyTasks(userId); }
 function getTaskItems(taskId) { return request("GET", "/tasks/" + taskId + "/items"); }
+function claimTask(taskId, userId) { return request("POST", "/tasks/" + taskId + "/claim", { user_id: userId }); }
+function releaseTask(taskId, userId, reason = "") { return request("POST", "/tasks/" + taskId + "/release", { user_id: userId, reason }); }
 
 // 盘点操作
 function submitScan(data) { return request("POST", "/scan", data); }
@@ -85,7 +89,11 @@ module.exports = {
   login,
   getWorkers,
   getTasks,
+  getAreaTasks,
+  getMyTasks,
   getTaskItems,
+  claimTask,
+  releaseTask,
   submitScan,
   submitMissing,
   submitSurplus,

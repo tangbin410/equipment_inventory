@@ -17,6 +17,28 @@ class LoginRequest(BaseModel):
     code: str
 
 
+class UserCreateRequest(BaseModel):
+    """PC 后台新增小程序账号"""
+    wx_openid: str = Field(..., description="登录编码/微信openid")
+    name: str = Field(..., description="姓名")
+    role: str = Field("worker", description="角色：admin/worker")
+    area_name: str = Field("默认片区", description="可负责片区，多个片区用逗号分隔")
+    phone: str = Field("", description="手机号")
+    employee_no: str = Field("", description="工号")
+    is_active: bool = Field(True, description="是否启用")
+
+
+class UserUpdateRequest(BaseModel):
+    """PC 后台修改小程序账号"""
+    wx_openid: str | None = None
+    name: str | None = None
+    role: str | None = None
+    area_name: str | None = None
+    phone: str | None = None
+    employee_no: str | None = None
+    is_active: bool | None = None
+
+
 class ScanSubmitRequest(BaseModel):
     """现场人员提交盘点结果"""
     record_id: int = Field(..., description="设备记录ID")
@@ -55,15 +77,23 @@ class SurplusSubmitRequest(BaseModel):
 
 class UserOut(BaseModel):
     id: int
+    wx_openid: str = ""
     name: str
     role: str
+    area_name: str = "默认片区"
+    phone: str = ""
+    employee_no: str = ""
+    is_active: int = 1
 
 
 class TaskOut(BaseModel):
     id: int
     task_name: str
     room_name: str
+    area_name: str = "默认片区"
     status: str
+    claimed_by: int | None = None
+    claimed_name: str | None = None
     total: int
     scanned: int
     created_at: str

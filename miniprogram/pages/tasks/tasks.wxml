@@ -5,7 +5,7 @@
   <view class="user-bar">
     <view class="user-info">
       <text class="user-name">{{userName}}</text>
-      <text class="user-role">现场人员</text>
+      <text class="user-role">现场人员 · {{areaName}}</text>
     </view>
     <button class="logout-btn" bindtap="handleLogout">退出登录</button>
   </view>
@@ -17,12 +17,8 @@
       <text class="stat-label">全部</text>
     </view>
     <view class="stat-item">
-      <text class="stat-num">{{pendingTasks}}</text>
-      <text class="stat-label">待处理</text>
-    </view>
-    <view class="stat-item">
       <text class="stat-num">{{doingTasks}}</text>
-      <text class="stat-label">进行中</text>
+      <text class="stat-label">盘点中</text>
     </view>
     <view class="stat-item">
       <text class="stat-num">{{doneTasks}}</text>
@@ -48,7 +44,7 @@
   </view>
 
   <view wx:elif="{{_tasksEmpty}}" class="empty">
-    <text>暂无盘点任务</text>
+    <text>暂无我的任务，请先到【领任务】领取机房</text>
   </view>
 
   <view wx:else class="task-list">
@@ -77,7 +73,8 @@
       <view class="task-meta-row">
         <text class="task-meta">未扫 {{item._unscanned}}</text>
         <text class="task-meta warn">异常 {{item._mismatch}}</text>
-        <text class="task-action">{{item._actionText}}</text>
+        <text class="task-action" data-id="{{item.id}}" catchtap="openTask">{{item._actionText}}</text>
+        <text wx:if="{{item._canRelease}}" class="release-action" data-id="{{item.id}}" catchtap="releaseTask">释放任务</text>
       </view>
 
       <!-- 进度条 -->

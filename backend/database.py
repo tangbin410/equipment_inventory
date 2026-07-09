@@ -53,6 +53,21 @@ def split_codes(value: str) -> set[str]:
     return {normalize_barcode(code) for code in (value or "").split(",") if normalize_barcode(code)}
 
 
+def split_area_names(value: str) -> list[str]:
+    """把账号可负责片区拆成列表，支持：北区,南区,西区 / 北区、南区、西区。"""
+    raw_value = (value or "默认片区").strip()
+    if raw_value in {"全部片区", "全片区", "*"}:
+        return ["全部片区"]
+    parts = re.split(r"[,，、/;；\s]+", raw_value)
+    return [part.strip() for part in parts if part.strip()]
+
+
+def user_can_access_area(user_area_name: str, task_area_name: str) -> bool:
+    """判断现场账号是否可以查看/领取某个片区的任务。"""
+    areas = split_area_names(user_area_name)
+    return "全部片区" in areas or (task_area_name or "默认片区") in areas
+
+
 def evidence_photo_path(photo_path: str) -> Path | None:
     """把现场照片相对路径转成安全的绝对路径，防止路径穿越。"""
     if not photo_path:
@@ -182,17 +197,24 @@ def init_db() -> None:
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             wx_openid   TEXT UNIQUE,
             name        TEXT NOT NULL,
-            role        TEXT NOT NULL CHECK(role IN ('admin', 'worker'))
+            role        TEXT NOT NULL CHECK(role IN ('admin', 'worker')),
+            area_name   TEXT DEFAULT '默认片区',
+            phone       TEXT DEFAULT '',
+            employee_no TEXT DEFAULT '',
+            is_active   INTEGER NOT NULL DEFAULT 1
         );
 
         CREATE TABLE IF NOT EXISTS tasks (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             task_name   TEXT NOT NULL,
             room_name   TEXT NOT NULL,
+            area_name   TEXT DEFAULT '默认片区',
             assigned_to INTEGER REFERENCES users(id),
+            claimed_by  INTEGER REFERENCES users(id),
             status      TEXT NOT NULL DEFAULT 'pending'
                         CHECK(status IN ('pending', 'doing', 'done')),
-            created_at  TEXT NOT NULL
+            created_at  TEXT NOT NULL,
+            claimed_at  TEXT
         );
 
         CREATE TABLE IF NOT EXISTS scan_records (
@@ -221,14 +243,31 @@ def init_db() -> None:
     # 兼容已经投入使用的数据库，按列增量升级，不清空历史数据。
     task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
     migrations = {
+        "area_name": "ALTER TABLE tasks ADD COLUMN area_name TEXT DEFAULT '默认片区'",
         "assigned_at": "ALTER TABLE tasks ADD COLUMN assigned_at TEXT",
         "completed_at": "ALTER TABLE tasks ADD COLUMN completed_at TEXT",
+        "claimed_by": "ALTER TABLE tasks ADD COLUMN claimed_by INTEGER",
+        "claimed_at": "ALTER TABLE tasks ADD COLUMN claimed_at TEXT",
+        "released_at": "ALTER TABLE tasks ADD COLUMN released_at TEXT",
+        "release_reason": "ALTER TABLE tasks ADD COLUMN release_reason TEXT DEFAULT ''",
         "is_deleted": "ALTER TABLE tasks ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0",
         "deleted_at": "ALTER TABLE tasks ADD COLUMN deleted_at TEXT",
         "deleted_reason": "ALTER TABLE tasks ADD COLUMN deleted_reason TEXT DEFAULT ''",
     }
     for column, statement in migrations.items():
         if column not in task_columns:
+            conn.execute(statement)
+    user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    user_migrations = {
+        "area_name": "ALTER TABLE users ADD COLUMN area_name TEXT DEFAULT '默认片区'",
+        "phone": "ALTER TABLE users ADD COLUMN phone TEXT DEFAULT ''",
+        "employee_no": "ALTER TABLE users ADD COLUMN employee_no TEXT DEFAULT ''",
+        "is_active": "ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1",
+        "is_deleted": "ALTER TABLE users ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0",
+        "deleted_at": "ALTER TABLE users ADD COLUMN deleted_at TEXT",
+    }
+    for column, statement in user_migrations.items():
+        if column not in user_columns:
             conn.execute(statement)
     record_columns = {row["name"] for row in conn.execute("PRAGMA table_info(scan_records)")}
     record_migrations = {
@@ -255,6 +294,22 @@ def init_db() -> None:
     """)
     conn.execute("""
         UPDATE tasks
+        SET area_name = '默认片区'
+        WHERE area_name IS NULL OR area_name = ''
+    """)
+    conn.execute("""
+        UPDATE users
+        SET area_name = '默认片区'
+        WHERE role = 'worker' AND (area_name IS NULL OR area_name = '')
+    """)
+    conn.execute("""
+        UPDATE tasks
+        SET claimed_by = assigned_to,
+            claimed_at = assigned_at
+        WHERE claimed_by IS NULL AND assigned_to IS NOT NULL
+    """)
+    conn.execute("""
+        UPDATE tasks
         SET completed_at = (
             SELECT MAX(scanned_at) FROM scan_records WHERE scan_records.task_id = tasks.id
         )
@@ -268,21 +323,70 @@ def init_db() -> None:
 # 用户相关
 # ──────────────────────────────────────────────
 
-def create_user(wx_openid: str, name: str, role: str) -> dict[str, Any]:
-    """创建用户"""
+def create_user(
+    wx_openid: str,
+    name: str,
+    role: str,
+    area_name: str = "默认片区",
+    phone: str = "",
+    employee_no: str = "",
+    is_active: int = 1,
+) -> dict[str, Any]:
+    """创建或更新用户，供默认账号初始化和 PC 账号管理共用。"""
     conn = get_conn()
     try:
         cur = conn.execute(
-            "INSERT INTO users (wx_openid, name, role) VALUES (?, ?, ?)",
-            (wx_openid, name, role),
+            """INSERT INTO users
+               (wx_openid, name, role, area_name, phone, employee_no, is_active, is_deleted, deleted_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)""",
+            (
+                wx_openid.strip(),
+                name.strip(),
+                role.strip(),
+                area_name.strip() or "默认片区",
+                phone.strip(),
+                employee_no.strip(),
+                1 if is_active else 0,
+            ),
         )
         conn.commit()
-        return {"id": cur.lastrowid, "wx_openid": wx_openid, "name": name, "role": role}
+        return dict_from_row(conn.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone())
     except sqlite3.IntegrityError:
+        conn.execute(
+            """UPDATE users
+               SET name = ?, role = ?, area_name = ?, phone = ?, employee_no = ?, is_active = ?,
+                   is_deleted = 0, deleted_at = NULL
+               WHERE wx_openid = ?""",
+            (
+                name.strip(),
+                role.strip(),
+                area_name.strip() or "默认片区",
+                phone.strip(),
+                employee_no.strip(),
+                1 if is_active else 0,
+                wx_openid.strip(),
+            ),
+        )
+        conn.commit()
         # 已存在则返回已有的
         return dict_from_row(conn.execute(
-            "SELECT * FROM users WHERE wx_openid = ?", (wx_openid,)
+            "SELECT * FROM users WHERE wx_openid = ? AND COALESCE(is_deleted, 0) = 0", (wx_openid.strip(),)
         ).fetchone())
+    finally:
+        conn.close()
+
+
+def get_users() -> list[dict[str, Any]]:
+    """查询全部小程序账号，供 PC 后台账号管理使用。"""
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """SELECT id, wx_openid, name, role, area_name, phone, employee_no, is_active
+               FROM users
+               WHERE COALESCE(is_deleted, 0) = 0
+               ORDER BY role, area_name, id"""
+        ).fetchall()
+        return [dict_from_row(row) for row in rows]
     finally:
         conn.close()
 
@@ -303,7 +407,7 @@ def get_workers() -> list[dict[str, Any]]:
     conn = get_conn()
     try:
         rows = conn.execute(
-            "SELECT * FROM users WHERE role = 'worker' ORDER BY id"
+            "SELECT * FROM users WHERE role = 'worker' AND COALESCE(is_deleted, 0) = 0 ORDER BY id"
         ).fetchall()
         return [add_compare_status(dict_from_row(r)) for r in rows]
     finally:
@@ -314,19 +418,82 @@ def get_workers() -> list[dict[str, Any]]:
 # 任务相关
 # ──────────────────────────────────────────────
 
-def create_task(task_name: str, room_name: str, assigned_to: int | None) -> int:
+def create_task(task_name: str, room_name: str, assigned_to: int | None, area_name: str = "默认片区") -> int:
     """创建盘点任务，返回新任务ID"""
     conn = get_conn()
     try:
         now = datetime.now().isoformat()
+        status = "doing" if assigned_to is not None else "pending"
         cur = conn.execute(
             """INSERT INTO tasks
-               (task_name, room_name, assigned_to, status, created_at, assigned_at)
-               VALUES (?, ?, ?, 'pending', ?, ?)""",
-            (task_name, room_name, assigned_to, now, now if assigned_to is not None else None),
+               (task_name, room_name, area_name, assigned_to, claimed_by, status, created_at, assigned_at, claimed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                task_name,
+                room_name,
+                area_name or "默认片区",
+                assigned_to,
+                assigned_to,
+                status,
+                now,
+                now if assigned_to is not None else None,
+                now if assigned_to is not None else None,
+            ),
         )
         conn.commit()
         return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def update_user(user_id: int, data: dict[str, Any]) -> dict[str, Any] | None:
+    """修改小程序账号信息。只更新 PC 账号管理允许维护的字段。"""
+    allowed_fields = ["wx_openid", "name", "role", "area_name", "phone", "employee_no", "is_active"]
+    update_data = {field: data[field] for field in allowed_fields if field in data}
+    if not update_data:
+        return get_user_by_id(user_id)
+
+    for text_field in ["wx_openid", "name", "role", "area_name", "phone", "employee_no"]:
+        if text_field in update_data and update_data[text_field] is not None:
+            update_data[text_field] = str(update_data[text_field]).strip()
+    if "area_name" in update_data and not update_data["area_name"]:
+        update_data["area_name"] = "默认片区"
+    if "is_active" in update_data:
+        update_data["is_active"] = 1 if update_data["is_active"] else 0
+
+    set_sql = ", ".join(f"{field} = ?" for field in update_data)
+    params = list(update_data.values()) + [user_id]
+    conn = get_conn()
+    try:
+        try:
+            cur = conn.execute(
+                f"UPDATE users SET {set_sql} WHERE id = ? AND COALESCE(is_deleted, 0) = 0",
+                params,
+            )
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("登录编码已存在，请换一个编码") from exc
+        if cur.rowcount == 0:
+            return None
+        return dict_from_row(conn.execute(
+            "SELECT * FROM users WHERE id = ? AND COALESCE(is_deleted, 0) = 0", (user_id,)
+        ).fetchone())
+    finally:
+        conn.close()
+
+
+def delete_user(user_id: int) -> bool:
+    """业务删除小程序账号：隐藏账号并禁止登录，保留历史任务引用。"""
+    conn = get_conn()
+    try:
+        cur = conn.execute(
+            """UPDATE users
+               SET is_deleted = 1, is_active = 0, deleted_at = ?
+               WHERE id = ? AND COALESCE(is_deleted, 0) = 0""",
+            (datetime.now().isoformat(), user_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 
@@ -336,8 +503,10 @@ def assign_task(task_id: int, assigned_to: int) -> bool:
     conn = get_conn()
     try:
         cur = conn.execute(
-            "UPDATE tasks SET assigned_to = ?, assigned_at = ? WHERE id = ? AND is_deleted = 0",
-            (assigned_to, datetime.now().isoformat(), task_id),
+            """UPDATE tasks
+               SET assigned_to = ?, claimed_by = ?, assigned_at = ?, claimed_at = ?, status = 'doing'
+               WHERE id = ? AND is_deleted = 0""",
+            (assigned_to, assigned_to, datetime.now().isoformat(), datetime.now().isoformat(), task_id),
         )
         conn.commit()
         return cur.rowcount > 0
@@ -352,8 +521,10 @@ def batch_assign_tasks(assignments: list[dict[str, int]]) -> int:
         count = 0
         for item in assignments:
             cur = conn.execute(
-                "UPDATE tasks SET assigned_to = ?, assigned_at = ? WHERE id = ? AND is_deleted = 0",
-                (item["assigned_to"], datetime.now().isoformat(), item["task_id"]),
+                """UPDATE tasks
+                   SET assigned_to = ?, claimed_by = ?, assigned_at = ?, claimed_at = ?, status = 'doing'
+                   WHERE id = ? AND is_deleted = 0""",
+                (item["assigned_to"], item["assigned_to"], datetime.now().isoformat(), datetime.now().isoformat(), item["task_id"]),
             )
             count += cur.rowcount
         conn.commit()
@@ -382,23 +553,155 @@ def delete_task(task_id: int, reason: str) -> bool:
 
 
 def get_tasks_by_user(user_id: int) -> list[dict[str, Any]]:
-    """查询某人的任务列表（含每个任务的设备统计）"""
-    conn = get_conn()
-    try:
-        rows = conn.execute("""
+    """查询某人已领取的任务列表（含每个任务的设备统计）。"""
+    return get_claimed_tasks(user_id)
+
+
+def _task_stat_select(where_sql: str) -> str:
+    """任务列表通用查询片段，避免多处统计口径不一致。"""
+    return f"""
             SELECT
-                t.id, t.task_name, t.room_name, t.status, t.created_at,
-                t.assigned_at, t.completed_at,
+                t.id, t.task_name, t.room_name, t.area_name, t.status, t.created_at,
+                t.assigned_to, t.assigned_at, t.claimed_by, t.claimed_at,
+                t.completed_at, t.released_at, t.release_reason,
+                assigned_user.name AS assigned_name,
+                claimed_user.name AS claimed_name,
                 SUM(CASE WHEN sr.id IS NOT NULL AND COALESCE(sr.record_type, 'normal') != 'surplus' THEN 1 ELSE 0 END) AS total,
                 SUM(CASE WHEN sr.id IS NOT NULL AND COALESCE(sr.record_type, 'normal') != 'surplus' AND sr.match_status != '未扫' THEN 1 ELSE 0 END) AS scanned,
                 SUM(CASE WHEN sr.match_status = '不一致' THEN 1 ELSE 0 END) AS mismatch
             FROM tasks t
             LEFT JOIN scan_records sr ON sr.task_id = t.id
-            WHERE t.assigned_to = ? AND t.is_deleted = 0
+            LEFT JOIN users assigned_user ON assigned_user.id = t.assigned_to
+            LEFT JOIN users claimed_user ON claimed_user.id = t.claimed_by
+            WHERE {where_sql} AND t.is_deleted = 0
             GROUP BY t.id
-            ORDER BY t.created_at DESC
-        """, (user_id,)).fetchall()
+        """
+
+
+def get_area_tasks(user_id: int) -> list[dict[str, Any]]:
+    """查询现场人员所在片区的任务池：待领取、盘点中、已完成都展示。"""
+    conn = get_conn()
+    try:
+        user = conn.execute(
+            "SELECT area_name FROM users WHERE id = ? AND COALESCE(is_deleted, 0) = 0",
+            (user_id,),
+        ).fetchone()
+        if user is None:
+            return []
+        user_areas = split_area_names(user["area_name"])
+        if "全部片区" in user_areas:
+            where_sql = "1 = 1"
+            params = ()
+        else:
+            placeholders = ",".join("?" for _ in user_areas)
+            where_sql = f"t.area_name IN ({placeholders})"
+            params = tuple(user_areas)
+        rows = conn.execute(
+            _task_stat_select(where_sql) + " ORDER BY CASE t.status WHEN 'pending' THEN 0 WHEN 'doing' THEN 1 ELSE 2 END, t.area_name, t.created_at DESC",
+            params,
+        ).fetchall()
         return [add_compare_status(dict_from_row(r)) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_claimed_tasks(user_id: int) -> list[dict[str, Any]]:
+    """查询某个现场人员已经领取的任务。"""
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            _task_stat_select("t.claimed_by = ?") + " ORDER BY t.claimed_at DESC, t.created_at DESC",
+            (user_id,),
+        ).fetchall()
+        return [add_compare_status(dict_from_row(r)) for r in rows]
+    finally:
+        conn.close()
+
+
+def claim_task(task_id: int, user_id: int) -> tuple[bool, str]:
+    """现场人员领取片区任务；用条件更新保证多人同时领取时只有一人成功。"""
+    conn = get_conn()
+    try:
+        user = conn.execute(
+            "SELECT id, role, area_name, is_active FROM users WHERE id = ? AND COALESCE(is_deleted, 0) = 0",
+            (user_id,),
+        ).fetchone()
+        if user is None:
+            return False, "用户不存在"
+        if user["role"] != "worker" or not user["is_active"]:
+            return False, "当前账号不能领取现场任务"
+
+        now = datetime.now().isoformat()
+        user_areas = split_area_names(user["area_name"])
+        if "全部片区" in user_areas:
+            area_limit_sql = "1 = 1"
+            params = (user_id, user_id, now, now, task_id)
+        else:
+            placeholders = ",".join("?" for _ in user_areas)
+            area_limit_sql = f"area_name IN ({placeholders})"
+            params = (user_id, user_id, now, now, task_id, *user_areas)
+        cur = conn.execute(
+            f"""UPDATE tasks
+               SET claimed_by = ?, assigned_to = ?, claimed_at = ?, assigned_at = ?,
+                   status = 'doing', release_reason = ''
+               WHERE id = ?
+                 AND is_deleted = 0
+                 AND status = 'pending'
+                 AND claimed_by IS NULL
+                 AND {area_limit_sql}""",
+            params,
+        )
+        conn.commit()
+        if cur.rowcount > 0:
+            return True, "领取成功"
+
+        task = conn.execute(
+            """SELECT t.status, t.area_name, t.claimed_by, u.name AS claimed_name
+               FROM tasks t
+               LEFT JOIN users u ON u.id = t.claimed_by
+               WHERE t.id = ? AND t.is_deleted = 0""",
+            (task_id,),
+        ).fetchone()
+        if task is None:
+            return False, "任务不存在"
+        if not user_can_access_area(user["area_name"], task["area_name"]):
+            return False, "该任务不属于你的片区"
+        if task["status"] != "pending" or task["claimed_by"]:
+            return False, f"任务已被{task['claimed_name'] or '其他人员'}领取"
+        return False, "任务当前不可领取"
+    finally:
+        conn.close()
+
+
+def release_task(task_id: int, user_id: int, reason: str = "") -> tuple[bool, str]:
+    """现场人员释放已领取任务，任务回到片区待领取池。"""
+    conn = get_conn()
+    try:
+        now = datetime.now().isoformat()
+        cur = conn.execute(
+            """UPDATE tasks
+               SET claimed_by = NULL, assigned_to = NULL, claimed_at = NULL, assigned_at = NULL,
+                   status = 'pending', released_at = ?, release_reason = ?
+               WHERE id = ?
+                 AND is_deleted = 0
+                 AND status = 'doing'
+                 AND claimed_by = ?""",
+            (now, reason.strip(), task_id, user_id),
+        )
+        conn.commit()
+        if cur.rowcount > 0:
+            return True, "任务已释放，其他同片区人员可重新领取"
+        task = conn.execute(
+            "SELECT status, claimed_by FROM tasks WHERE id = ? AND is_deleted = 0",
+            (task_id,),
+        ).fetchone()
+        if task is None:
+            return False, "任务不存在"
+        if task["claimed_by"] != user_id:
+            return False, "只能释放自己领取的任务"
+        if task["status"] == "done":
+            return False, "已完成任务不能释放"
+        return False, "任务当前不能释放"
     finally:
         conn.close()
 
@@ -418,21 +721,9 @@ def get_all_tasks() -> list[dict[str, Any]]:
     """查询所有任务（管理员看板用）"""
     conn = get_conn()
     try:
-        rows = conn.execute("""
-            SELECT
-                t.id, t.task_name, t.room_name, t.status, t.created_at,
-                t.assigned_at, t.completed_at,
-                u.name AS assigned_name,
-                SUM(CASE WHEN sr.id IS NOT NULL AND COALESCE(sr.record_type, 'normal') != 'surplus' THEN 1 ELSE 0 END) AS total,
-                SUM(CASE WHEN sr.id IS NOT NULL AND COALESCE(sr.record_type, 'normal') != 'surplus' AND sr.match_status != '未扫' THEN 1 ELSE 0 END) AS scanned,
-                SUM(CASE WHEN sr.match_status = '不一致' THEN 1 ELSE 0 END) AS mismatch
-            FROM tasks t
-            LEFT JOIN scan_records sr ON sr.task_id = t.id
-            LEFT JOIN users u ON u.id = t.assigned_to
-            WHERE t.is_deleted = 0
-            GROUP BY t.id
-            ORDER BY t.created_at DESC
-        """).fetchall()
+        rows = conn.execute(
+            _task_stat_select("1 = 1") + " ORDER BY t.created_at DESC"
+        ).fetchall()
         return [dict_from_row(r) for r in rows]
     finally:
         conn.close()

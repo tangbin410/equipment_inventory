@@ -16,23 +16,26 @@ REQUEST_TIMEOUT = 10
 PAGE_UPLOAD = "上传任务清单"
 PAGE_TASKS = "任务看板"
 PAGE_REPORT = "盘点报告"
+PAGE_USERS = "账号管理"
 
 SIDEBAR_PAGE_LABEL = {
     PAGE_UPLOAD: "上传任务清单",
     PAGE_TASKS: "任务看板总览",
     PAGE_REPORT: "盘点报告分析",
+    PAGE_USERS: "小程序账号管理",
 }
 
 STATUS_TEXT = {
-    "pending": "待处理",
-    "doing": "进行中",
+    "pending": "待领取",
+    "doing": "盘点中",
     "done": "已完成",
 }
 
 PAGE_META = {
-    PAGE_UPLOAD: ("📤", "上传任务清单", "导入包含多个机房的 Excel，系统自动按机房生成待下发盘点任务。"),
-    PAGE_TASKS: ("📋", "任务看板", "查看各机房盘点进度，支持删除不需要继续盘点的机房任务。"),
+    PAGE_UPLOAD: ("📤", "上传任务清单", "导入包含多个机房的 Excel，系统自动按片区生成待领取任务。"),
+    PAGE_TASKS: ("📋", "任务看板", "查看各片区机房领取与盘点进度，支持删除不需要继续盘点的机房任务。"),
     PAGE_REPORT: ("📊", "盘点报告", "按机房汇总盘点结果，快速定位未扫和型号不一致设备。"),
+    PAGE_USERS: ("👤", "账号管理", "维护小程序登录账号、负责片区和启停状态，便于现场人员按片区领取任务。"),
 }
 
 
@@ -394,6 +397,22 @@ def api_post(path: str, data=None, files=None, json=None):
         return None
 
 
+def api_patch(path: str, json=None):
+    try:
+        response = requests.patch(API_BASE + path, json=json, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as exc:
+        detail = str(exc)
+        if getattr(exc, "response", None) is not None:
+            try:
+                detail = exc.response.json().get("detail", detail)
+            except ValueError:
+                detail = exc.response.text or detail
+        st.error(f"请求失败：{detail}")
+        return None
+
+
 def api_delete(path: str, params=None):
     try:
         response = requests.delete(API_BASE + path, params=params, timeout=REQUEST_TIMEOUT)
@@ -432,20 +451,16 @@ def parse_time(value: str | None) -> datetime | None:
 
 
 def is_overdue(task: dict, days: int = 7) -> bool:
-    assigned_at = parse_time(task.get("assigned_at"))
-    return bool(assigned_at and task.get("status") != "done" and datetime.now() - assigned_at > timedelta(days=days))
+    started_at = parse_time(task.get("claimed_at") or task.get("assigned_at"))
+    return bool(started_at and task.get("status") != "done" and datetime.now() - started_at > timedelta(days=days))
 
 
 def task_stage(task: dict) -> str:
     if task.get("status") == "done":
         return "已完成"
-    if is_overdue(task):
-        return "已超时"
     if task.get("status") == "doing":
-        return "进行中"
-    if task.get("assigned_name"):
-        return "已下发未开始"
-    return "未下发"
+        return "盘点中"
+    return "待领取"
 
 
 def render_sidebar() -> str:
@@ -461,7 +476,7 @@ def render_sidebar() -> str:
         )
         page = st.radio(
             "功能导航",
-            [PAGE_UPLOAD, PAGE_TASKS, PAGE_REPORT],
+            [PAGE_UPLOAD, PAGE_TASKS, PAGE_REPORT, PAGE_USERS],
             format_func=lambda item: f"{PAGE_META[item][0]}  {SIDEBAR_PAGE_LABEL[item]}",
             label_visibility="collapsed",
         )
@@ -647,16 +662,14 @@ def build_issue_excel(issue_rows: list[dict]) -> bytes:
 
 def render_upload_page() -> None:
     render_page_head(PAGE_UPLOAD)
-    workers = api_get("/workers") or []
     tasks = api_get("/tasks") or []
-    worker_options = get_worker_options(workers)
-    pending_dispatch = [task for task in tasks if not task.get("assigned_name")]
+    pending_dispatch = [task for task in tasks if task.get("status") == "pending"]
 
     render_section("导入 Excel 清单", "📁")
     st.markdown(
         """
 <div class="soft-panel">
-    <p>Excel 至少需要包含：机房名称、网元名称、设备型号、资产标签号。系统会按机房名称自动拆分，生成待下发机房任务。</p>
+    <p>Excel 至少需要包含：机房名称、机房所在片区、网元名称、设备型号、资产标签号。系统会按机房拆分，并把任务放入对应片区的待领取池。</p>
 </div>
 """,
         unsafe_allow_html=True,
@@ -693,7 +706,7 @@ def render_upload_page() -> None:
         p4.metric("提醒项", remind_count)
         p5.metric("空资产条码", preview["missing_barcode"])
         st.dataframe(
-            [{"机房名称": row["room_name"], "设备数": row["device_count"]} for row in preview["rooms"]],
+            [{"机房名称": row["room_name"], "机房所在片区": row.get("area_name", ""), "设备数": row["device_count"]} for row in preview["rooms"]],
             hide_index=True,
             width="stretch",
         )
@@ -727,18 +740,16 @@ def render_upload_page() -> None:
             st.success(result["message"])
             st.rerun()
 
-    render_section("待下发机房", "🧭")
-    if not workers:
-        st.warning("暂无现场人员，请先确认后端默认用户已初始化。")
-        return
+    render_section("片区待领取任务池", "🧭")
     if not pending_dispatch:
-        st.info("当前没有待下发机房。")
+        st.info("当前没有待领取机房。导入成功后，现场人员可在小程序【领任务】中领取同片区任务。")
         return
 
     st.dataframe(
         [
             {
                 "机房名称": task["room_name"],
+                "机房所在片区": task.get("area_name") or "默认片区",
                 "设备数": task.get("total") or 0,
                 "状态": STATUS_TEXT.get(task["status"], task["status"]),
                 "导入时间": format_time(task.get("created_at")),
@@ -748,46 +759,7 @@ def render_upload_page() -> None:
         hide_index=True,
         width="stretch",
     )
-
-    render_section("选择现场人员并下发", "👷")
-    selected_rooms = st.multiselect(
-        "批量下发范围",
-        options=[task["id"] for task in pending_dispatch],
-        default=[task["id"] for task in pending_dispatch],
-        format_func=lambda task_id: next(task["room_name"] for task in pending_dispatch if task["id"] == task_id),
-    )
-    assignments = []
-    for task in pending_dispatch:
-        cols = st.columns([2.2, 1.2, 1.1])
-        with cols[0]:
-            st.write(f"**{task['room_name']}**")
-            st.caption(f"设备数：{task.get('total') or 0}")
-        with cols[1]:
-            selected_worker = st.selectbox(
-                "现场人员",
-                list(worker_options.keys()),
-                key=f"assign_worker_{task['id']}",
-                label_visibility="collapsed",
-            )
-        with cols[2]:
-            if st.button("下发", key=f"assign_btn_{task['id']}", width="stretch"):
-                result = api_post(
-                    f"/tasks/{task['id']}/assign",
-                    json={"assigned_to": worker_options[selected_worker]},
-                )
-                if result:
-                    clear_cache()
-                    st.success(f"{task['room_name']} 已下发给 {selected_worker}")
-                    st.rerun()
-        if task["id"] in selected_rooms:
-            assignments.append({"task_id": task["id"], "assigned_to": worker_options[selected_worker]})
-
-    if st.button("🚀 批量下发所选机房", type="primary", width="stretch", disabled=not assignments):
-        result = api_post("/tasks/batch_assign", json={"assignments": assignments})
-        if result:
-            clear_cache()
-            st.success(result["message"])
-            st.rerun()
+    st.caption("说明：待领取任务不绑定具体人员，同片区现场人员领取成功后，任务会自动变为“盘点中”。")
 
 
 def render_tasks_page() -> None:
@@ -802,19 +774,18 @@ def render_tasks_page() -> None:
     doing = sum(1 for task in tasks if task["status"] == "doing")
     done = sum(1 for task in tasks if task["status"] == "done")
     overdue = sum(1 for task in tasks if is_overdue(task))
-    unassigned = sum(1 for task in tasks if not task.get("assigned_name"))
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("任务总数", total)
-    c2.metric("未下发", unassigned or pending)
-    c3.metric("进行中", doing)
+    c2.metric("待领取", pending)
+    c3.metric("盘点中", doing)
     c4.metric("已完成", done)
-    c5.metric("超时任务", overdue, help="下发后超过 7 天仍未完成")
+    c5.metric("超时任务", overdue, help="领取后超过 7 天仍未完成")
 
     filter_col, refresh_col = st.columns([3.2, 0.8])
     with filter_col:
         status_filter = st.selectbox(
             "状态筛选",
-            ["全部", "未下发", "已下发未开始", "进行中", "已超时", "已完成"],
+            ["全部", "待领取", "盘点中", "已完成", "已超时"],
         )
     with refresh_col:
         st.markdown('<div class="button-bottom-align-spacer"></div>', unsafe_allow_html=True)
@@ -822,7 +793,12 @@ def render_tasks_page() -> None:
             clear_cache()
             st.rerun()
 
-    filtered = tasks if status_filter == "全部" else [t for t in tasks if task_stage(t) == status_filter]
+    if status_filter == "全部":
+        filtered = tasks
+    elif status_filter == "已超时":
+        filtered = [t for t in tasks if is_overdue(t)]
+    else:
+        filtered = [t for t in tasks if task_stage(t) == status_filter]
     if not filtered:
         st.info("当前筛选条件下没有任务。")
         return
@@ -834,12 +810,13 @@ def render_tasks_page() -> None:
             "_task_id": task["id"],
             "_room_name": task["room_name"],
             "机房": task["room_name"],
+            "片区": task.get("area_name") or "默认片区",
             "任务名称": task["task_name"],
-            "现场人员": task.get("assigned_name") or "未下发",
+            "领取人": task.get("claimed_name") or "-",
             "状态": task_stage(task),
             "进度": f"{task.get('scanned') or 0}/{task.get('total') or 0}",
             "完成率": f"{(task.get('scanned') or 0) / (task.get('total') or 1):.0%}",
-            "下发时间": format_time(task.get("assigned_at")),
+            "领取时间": format_time(task.get("claimed_at")),
             "是否超时": "是" if is_overdue(task) else "否",
         })
 
@@ -887,8 +864,9 @@ def render_tasks_page() -> None:
         delete_rows = [
             {
                 "机房": task["room_name"],
+                "片区": task.get("area_name") or "默认片区",
                 "任务名称": task["task_name"],
-                "现场人员": task.get("assigned_name") or "未下发",
+                "领取人": task.get("claimed_name") or "-",
                 "状态": task_stage(task),
                 "进度": f"{task.get('scanned') or 0}/{task.get('total') or 0}",
             }
@@ -933,7 +911,35 @@ def render_report_page() -> None:
         st.info("暂无盘点报告数据。")
         return
 
-    task_options = {f"{task['room_name']} / {task['task_name']}": task["id"] for task in summary}
+    search_input_col, search_button_col = st.columns([3.5, 0.7])
+    with search_input_col:
+        report_keyword_input = st.text_input(
+            "搜索报告任务",
+            placeholder="输入机房名称、任务名称或片区关键字后点击搜索；留空搜索则恢复全部任务",
+            key="report_task_search_input",
+        )
+    with search_button_col:
+        st.markdown('<div class="button-bottom-align-spacer"></div>', unsafe_allow_html=True)
+        if st.button("🔍 搜索", width="stretch", key="report_task_search_btn"):
+            st.session_state["report_task_keyword"] = report_keyword_input.strip()
+            st.rerun()
+
+    keyword = (st.session_state.get("report_task_keyword") or "").strip().lower()
+    filtered_summary = summary
+    if keyword:
+        filtered_summary = [
+            task for task in summary
+            if any(
+                keyword in str(task.get(field) or "").lower()
+                for field in ["room_name", "task_name", "area_name"]
+            )
+        ]
+        if not filtered_summary:
+            st.warning("没有找到匹配的报告任务，请清空关键字后点击搜索恢复全部任务。")
+            return
+        st.caption(f"当前搜索关键字：{st.session_state['report_task_keyword']}，匹配 {len(filtered_summary)} 个任务。")
+
+    task_options = {f"{task['room_name']} / {task['task_name']}": task["id"] for task in filtered_summary}
     selected_task_id = st.session_state.get("selected_task_id")
     option_labels = list(task_options.keys())
     default_index = 0
@@ -1248,10 +1254,150 @@ def render_report_page() -> None:
                     st.success(result["message"])
                     st.rerun()
 
+
+def render_users_page() -> None:
+    """小程序账号管理：维护现场人员可领取片区和账号启停。"""
+    render_page_head(PAGE_USERS)
+    users = api_get("/users") or []
+
+    total = len(users)
+    active = sum(1 for user in users if user.get("is_active"))
+    workers = sum(1 for user in users if user.get("role") == "worker")
+    multi_area = sum(1 for user in users if any(sep in (user.get("area_name") or "") for sep in [",", "，", "、"]))
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("账号总数", total)
+    c2.metric("启用账号", active)
+    c3.metric("现场人员", workers)
+    c4.metric("跨片区账号", multi_area)
+
+    render_section("账号列表", "👥")
+    user_rows = [
+        {
+            "_user_id": user["id"],
+            "登录编码": user.get("wx_openid") or "",
+            "姓名": user.get("name") or "",
+            "角色": "管理员" if user.get("role") == "admin" else "现场人员",
+            "负责片区": user.get("area_name") or "默认片区",
+            "手机号": user.get("phone") or "",
+            "工号": user.get("employee_no") or "",
+            "状态": "启用" if user.get("is_active") else "停用",
+        }
+        for user in users
+    ]
+    render_header_filter_grid(
+        user_rows,
+        key="user_list_grid",
+        height=260,
+        hidden_columns=["_user_id"],
+        enable_selection=False,
+    )
+
+    render_section("新增 / 修改账号", "🛠️")
+    st.caption("片区可填写单个片区，也可填写多个片区，例如：北区,南区,西区；填写“全部片区”表示可领取所有片区任务。")
+    user_keyword = st.text_input(
+        "查询要维护的账号",
+        placeholder="输入姓名、登录编码、片区、手机号或工号，支持模糊查询；留空则新增账号",
+    )
+    keyword = user_keyword.strip().lower()
+    matched_users = [
+        user for user in users
+        if keyword and any(
+            keyword in str(user.get(field) or "").lower()
+            for field in ["name", "wx_openid", "area_name", "phone", "employee_no"]
+        )
+    ]
+    if keyword and not matched_users:
+        st.warning("没有找到匹配账号，可直接在下方按新增账号填写。")
+    if len(matched_users) > 50:
+        st.caption("匹配账号较多，当前仅显示前 50 条，请输入更精确的关键字。")
+    shown_users = matched_users[:50]
+
+    user_options = {"新增账号": None}
+    user_options.update({
+        f"{user.get('name')} / {user.get('wx_openid')} / {user.get('area_name')} / {'启用' if user.get('is_active') else '停用'}": user["id"]
+        for user in shown_users
+    })
+    selected_label = st.selectbox("选择查询结果", list(user_options.keys()))
+    selected_id = user_options[selected_label]
+    selected_user = next((user for user in users if user["id"] == selected_id), None)
+
+    role_labels = {"worker": "现场人员", "admin": "管理员"}
+    role_values = {"现场人员": "worker", "管理员": "admin"}
+    default_role_label = role_labels.get((selected_user or {}).get("role", "worker"), "现场人员")
+
+    with st.form("user_manage_form"):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            wx_openid = st.text_input(
+                "登录编码",
+                value=(selected_user or {}).get("wx_openid", ""),
+                placeholder="如 worker_006；小程序测试登录使用",
+            )
+            name = st.text_input("姓名", value=(selected_user or {}).get("name", ""), placeholder="如 王师傅")
+        with col2:
+            role_label = st.selectbox(
+                "角色",
+                ["现场人员", "管理员"],
+                index=["现场人员", "管理员"].index(default_role_label),
+            )
+            area_name = st.text_input(
+                "负责片区",
+                value=(selected_user or {}).get("area_name", "默认片区"),
+                placeholder="如 北区 或 北区,南区,西区",
+            )
+        with col3:
+            phone = st.text_input("手机号", value=(selected_user or {}).get("phone", ""))
+            employee_no = st.text_input("工号", value=(selected_user or {}).get("employee_no", ""))
+            is_active = st.checkbox("账号启用", value=bool((selected_user or {"is_active": 1}).get("is_active")))
+
+        submit_label = "新增账号" if selected_id is None else "保存修改"
+        submitted = st.form_submit_button(submit_label, type="primary", width="stretch")
+
+    if submitted:
+        payload = {
+            "wx_openid": wx_openid.strip(),
+            "name": name.strip(),
+            "role": role_values[role_label],
+            "area_name": area_name.strip(),
+            "phone": phone.strip(),
+            "employee_no": employee_no.strip(),
+            "is_active": is_active,
+        }
+        if selected_id is None:
+            result = api_post("/users", json=payload)
+            success_message = "账号已新增"
+        else:
+            result = api_patch(f"/users/{selected_id}", json=payload)
+            success_message = "账号已更新"
+        if result:
+            clear_cache()
+            st.success(success_message)
+            st.rerun()
+
+    if selected_user:
+        render_section("删除账号", "🗑️")
+        st.warning(
+            f"将删除账号：{selected_user.get('name')} / {selected_user.get('wx_openid')}。"
+            "删除后账号不再显示，也不能登录小程序；历史盘点记录仍会保留。"
+        )
+        confirm_delete = st.checkbox(
+            "我确认要删除该账号",
+            key=f"confirm_delete_user_{selected_id}",
+        )
+        if st.button("删除账号", disabled=not confirm_delete, width="stretch"):
+            result = api_delete(f"/users/{selected_id}")
+            if result:
+                clear_cache()
+                st.success(result["message"])
+                st.rerun()
+
+
 current_page = render_sidebar()
 if current_page == PAGE_UPLOAD:
     render_upload_page()
 elif current_page == PAGE_TASKS:
     render_tasks_page()
+elif current_page == PAGE_USERS:
+    render_users_page()
 else:
     render_report_page()

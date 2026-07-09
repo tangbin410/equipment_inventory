@@ -12,7 +12,7 @@ Page({
   onLoad() {
     // 如果已登录，直接跳转任务页
     if (app.isLoggedIn()) {
-      wx.reLaunch({ url: "/pages/tasks/tasks" });
+      wx.reLaunch({ url: "/pages/home/home" });
     }
   },
 
@@ -33,7 +33,7 @@ Page({
       app.setUserInfo(user);
 
       // 4. 跳转到任务页
-      wx.reLaunch({ url: "/pages/tasks/tasks" });
+      wx.reLaunch({ url: "/pages/home/home" });
     } catch (err) {
       wx.showToast({
         title: err.message || "登录失败",
@@ -52,7 +52,7 @@ Page({
     try {
       const user = await login(openid);
       app.setUserInfo(user);
-      wx.reLaunch({ url: "/pages/tasks/tasks" });
+      wx.reLaunch({ url: "/pages/home/home" });
     } catch (err) {
       wx.showToast({ title: "登录失败", icon: "none" });
     } finally {

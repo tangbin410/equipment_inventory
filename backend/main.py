@@ -21,22 +21,29 @@ from .database import (
     create_surplus_record,
     create_task,
     create_user,
+    delete_user,
     delete_task,
+    claim_task,
     get_all_tasks,
+    get_area_tasks,
+    get_claimed_tasks,
     get_report,
     get_record_by_id,
     get_task_by_id,
     get_task_items,
     get_tasks_by_user,
     get_user_by_id,
+    get_users,
     get_workers,
     evidence_photo_is_valid,
     evidence_photo_path,
     init_db,
     mark_record_missing,
+    release_task,
     review_record,
     save_evidence_photo,
     submit_scan,
+    update_user,
     add_compare_status,
 )
 from .models import (
@@ -45,7 +52,9 @@ from .models import (
     ScanResponse,
     ScanSubmitRequest,
     SurplusSubmitRequest,
+    UserCreateRequest,
     UploadResponse,
+    UserUpdateRequest,
     UserOut,
 )
 
@@ -79,9 +88,12 @@ def on_startup():
     """启动时初始化数据库，并创建默认用户。"""
     init_db()
     cleanup_expired_evidence_photos()
-    create_user("admin_001", "管理员", "admin")
-    create_user("worker_001", "张三", "worker")
-    create_user("worker_002", "李四", "worker")
+    create_user("admin_001", "管理员", "admin", "默认片区")
+    create_user("worker_001", "张三", "worker", "北区")
+    create_user("worker_002", "李四", "worker", "南区")
+    create_user("worker_003", "王五", "worker", "西区")
+    create_user("worker_004", "赵六", "worker", "南区")
+    create_user("worker_005", "周班长", "worker", "北区,南区,西区")
 
 
 def _load_workbook(file_content: bytes):
@@ -114,6 +126,11 @@ def _find_room_col(col_map: dict[str, int]) -> str | None:
     return None
 
 
+def _find_area_col(col_map: dict[str, int]) -> str | None:
+    """识别机房片区列，便于后续按片区下发到任务池。"""
+    return _find_col(col_map, ("机房所在片区", "片区", "所属片区", "机房片区"))
+
+
 def _find_col(col_map: dict[str, int], candidates: tuple[str, ...]) -> str | None:
     """按候选列名查找 Excel 表头，兼容不同资源表命名。"""
     for col_name in candidates:
@@ -122,10 +139,11 @@ def _find_col(col_map: dict[str, int], candidates: tuple[str, ...]) -> str | Non
     return None
 
 
-def _parse_excel_devices(ws, fixed_room_name: str | None = None) -> dict[str, list[dict]]:
+def _parse_excel_devices(ws, fixed_room_name: str | None = None, fixed_area_name: str = "默认片区") -> dict[str, list[dict]]:
     """解析设备清单，并按机房名称分组。"""
     col_map = _build_col_map(ws)
     room_col = _find_room_col(col_map)
+    area_col = _find_area_col(col_map)
     device_col = _find_col(col_map, ("网元名称", "设备名称", "网元", "设备"))
     model_col = _find_col(col_map, ("设备型号", "型号", "设备类型"))
     barcode_col = _find_col(col_map, ("资产标签号", "资产条码", "资产编码", "固资编号", "标签编号"))
@@ -139,6 +157,8 @@ def _parse_excel_devices(ws, fixed_room_name: str | None = None) -> dict[str, li
         missing.append("资产标签号/资产条码")
     if fixed_room_name is None and room_col is None:
         missing.append("机房名称")
+    if fixed_room_name is None and area_col is None:
+        missing.append("机房所在片区")
     if missing:
         raise HTTPException(status_code=400, detail=f"Excel 缺少必要列：{', '.join(missing)}")
 
@@ -159,6 +179,10 @@ def _parse_excel_devices(ws, fixed_room_name: str | None = None) -> dict[str, li
             room_name = str(raw_room_name).strip() if raw_room_name else ""
         if not room_name:
             continue
+        area_name = fixed_area_name or "默认片区"
+        if fixed_room_name is None and area_col is not None:
+            raw_area_name = row[col_map[area_col]]
+            area_name = str(raw_area_name).strip() if raw_area_name else ""
 
         raw_model = row[col_map[model_col]]
         raw_barcode = row[col_map[barcode_col]]
@@ -172,6 +196,7 @@ def _parse_excel_devices(ws, fixed_room_name: str | None = None) -> dict[str, li
 
         rooms.setdefault(room_name, []).append({
             "_row_no": row_no,
+            "_area_name": area_name,
             "device_name": str(raw_device_name).strip(),
             "expected_model": str(raw_model).strip() if raw_model else "",
             "expected_barcode": str(raw_barcode).strip() if raw_barcode else "",
@@ -194,7 +219,27 @@ def _preview_rooms(rooms: dict[str, list[dict]]) -> dict:
     issue_rows = []
     room_rows = []
     for room_name, devices in rooms.items():
-        room_rows.append({"room_name": room_name, "device_count": len(devices)})
+        room_areas = sorted({(device.get("_area_name") or "").strip() for device in devices if (device.get("_area_name") or "").strip()})
+        area_name = room_areas[0] if room_areas else ""
+        room_rows.append({"room_name": room_name, "area_name": area_name, "device_count": len(devices)})
+        if not area_name:
+            issue_rows.append({
+                "级别": "错误",
+                "Excel行号": devices[0].get("_row_no", "") if devices else "",
+                "机房名称": room_name,
+                "设备名称": "",
+                "问题类型": "空机房所在片区",
+                "处理建议": "机房所在片区不能为空，请补齐后重新导入。",
+            })
+        if len(room_areas) > 1:
+            issue_rows.append({
+                "级别": "错误",
+                "Excel行号": "",
+                "机房名称": room_name,
+                "设备名称": "",
+                "问题类型": "同一机房片区不一致",
+                "处理建议": "同一机房只能归属一个片区，请统一该机房所有行的机房所在片区。",
+            })
         for device in devices:
             row_no = device.get("_row_no", "")
             device_key = f"{room_name}::{device['device_name']}"
@@ -251,8 +296,9 @@ def _preview_rooms(rooms: dict[str, list[dict]]) -> dict:
                 "问题类型": f"重复资产条码：{barcode}",
                 "处理建议": "请确认资产条码是否贴错或清单重复。",
             })
+    error_count = sum(1 for row in issue_rows if row.get("级别") == "错误")
     return {
-        "valid": not duplicate_devices and not duplicate_barcodes and missing_model == 0 and missing_barcode == 0,
+        "valid": error_count == 0,
         "room_count": len(rooms),
         "device_count": sum(len(devices) for devices in rooms.values()),
         "missing_model": missing_model,
@@ -264,10 +310,28 @@ def _preview_rooms(rooms: dict[str, list[dict]]) -> dict:
     }
 
 
+def _validate_user_payload(wx_openid: str | None, name: str | None, role: str | None, area_name: str | None) -> None:
+    """校验账号管理字段，避免后台误保存空账号或错误角色。"""
+    if wx_openid is not None and not wx_openid.strip():
+        raise HTTPException(status_code=400, detail="登录编码不能为空")
+    if name is not None and not name.strip():
+        raise HTTPException(status_code=400, detail="姓名不能为空")
+    if role is not None and role.strip() not in {"admin", "worker"}:
+        raise HTTPException(status_code=400, detail="角色只能是 admin 或 worker")
+    if area_name is not None and not area_name.strip():
+        raise HTTPException(status_code=400, detail="负责片区不能为空")
+
+
 @app.get("/api/workers", response_model=list[UserOut])
 def api_workers():
     """查询所有现场人员。"""
     return get_workers()
+
+
+@app.get("/api/users", response_model=list[UserOut])
+def api_users():
+    """PC 后台查询全部小程序账号。"""
+    return get_users()
 
 
 @app.get("/api/users/{user_id}", response_model=UserOut | None)
@@ -279,6 +343,48 @@ def api_user(user_id: int):
     return user
 
 
+@app.post("/api/users", response_model=UserOut)
+def api_create_user(req: UserCreateRequest):
+    """PC 后台新增或更新小程序账号。"""
+    _validate_user_payload(req.wx_openid, req.name, req.role, req.area_name)
+    return create_user(
+        wx_openid=req.wx_openid,
+        name=req.name,
+        role=req.role,
+        area_name=req.area_name,
+        phone=req.phone,
+        employee_no=req.employee_no,
+        is_active=1 if req.is_active else 0,
+    )
+
+
+@app.patch("/api/users/{user_id}", response_model=UserOut)
+def api_update_user(user_id: int, req: UserUpdateRequest):
+    """PC 后台修改小程序账号信息。"""
+    data = req.dict(exclude_unset=True)
+    _validate_user_payload(
+        data.get("wx_openid"),
+        data.get("name"),
+        data.get("role"),
+        data.get("area_name"),
+    )
+    try:
+        user = update_user(user_id, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if user is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    return user
+
+
+@app.delete("/api/users/{user_id}")
+def api_delete_user(user_id: int):
+    """PC 后台删除小程序账号。采用业务删除，保留历史任务引用。"""
+    if not delete_user(user_id):
+        raise HTTPException(status_code=404, detail="用户不存在或已删除")
+    return {"success": True, "message": "账号已删除"}
+
+
 @app.post("/api/login")
 def api_login(req: LoginRequest):
     """小程序登录。开发阶段直接用 code 模拟 openid。"""
@@ -286,10 +392,20 @@ def api_login(req: LoginRequest):
 
     conn = get_conn()
     try:
-        row = conn.execute("SELECT * FROM users WHERE wx_openid = ?", (req.code,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM users WHERE wx_openid = ? AND COALESCE(is_deleted, 0) = 0",
+            (req.code,),
+        ).fetchone()
         if row is None:
             raise HTTPException(status_code=401, detail="登录失败，用户不存在")
-        return {"user_id": row["id"], "name": row["name"], "role": row["role"]}
+        if not row["is_active"]:
+            raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
+        return {
+            "user_id": row["id"],
+            "name": row["name"],
+            "role": row["role"],
+            "area_name": row["area_name"] or "默认片区",
+        }
     finally:
         conn.close()
 
@@ -299,18 +415,19 @@ async def api_upload(
     file: UploadFile = File(...),
     room_name: str = Form(...),
     task_name: str = Form(""),
-    assigned_to: int = Form(...),
+    assigned_to: int | None = Form(None),
+    area_name: str = Form("默认片区"),
 ):
     """上传单个机房清单，保留给旧页面或外部调用。"""
     wb = _load_workbook(await file.read())
-    rooms = _parse_excel_devices(wb.active, fixed_room_name=room_name)
+    rooms = _parse_excel_devices(wb.active, fixed_room_name=room_name, fixed_area_name=area_name)
     preview = _preview_rooms(rooms)
     if not preview["valid"]:
         raise HTTPException(status_code=400, detail="清单预检未通过，请先处理空资产条码、重复网元、重复标签或空设备型号")
     devices = rooms[room_name]
 
     final_task_name = task_name if task_name else f"{room_name}-盘点"
-    task_id = create_task(final_task_name, room_name, assigned_to)
+    task_id = create_task(final_task_name, room_name, assigned_to, area_name)
     count = batch_create_records(task_id, devices)
     return UploadResponse(
         task_id=task_id,
@@ -322,7 +439,7 @@ async def api_upload(
 
 @app.post("/api/upload_rooms")
 async def api_upload_rooms(file: UploadFile = File(...)):
-    """上传包含多个机房的清单，按机房自动生成待下发任务。"""
+    """上传包含多个机房的清单，按机房自动生成片区待领取任务。"""
     wb = _load_workbook(await file.read())
     rooms = _parse_excel_devices(wb.active)
     preview = _preview_rooms(rooms)
@@ -332,14 +449,16 @@ async def api_upload_rooms(file: UploadFile = File(...)):
     created = []
     total_devices = 0
     for room_name, devices in rooms.items():
+        area_name = (devices[0].get("_area_name") or "默认片区").strip() if devices else "默认片区"
         task_name = f"{room_name}-盘点"
-        task_id = create_task(task_name, room_name, None)
+        task_id = create_task(task_name, room_name, None, area_name)
         count = batch_create_records(task_id, devices)
         total_devices += count
         created.append({
             "task_id": task_id,
             "task_name": task_name,
             "room_name": room_name,
+            "area_name": area_name,
             "device_count": count,
         })
 
@@ -347,7 +466,7 @@ async def api_upload_rooms(file: UploadFile = File(...)):
         "task_count": len(created),
         "device_count": total_devices,
         "tasks": created,
-        "message": f"成功识别 {len(created)} 个机房，导入 {total_devices} 台设备，请选择现场人员后下发。",
+        "message": f"成功识别 {len(created)} 个机房，导入 {total_devices} 台设备，任务已按片区进入待领取池。",
     }
 
 
@@ -364,8 +483,8 @@ def api_upload_template():
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "盘点任务清单"
-    ws.append(["机房名称", "网元名称", "设备型号", "资产标签号", "网元类型", "设备类别", "所属机房业务级别", "生命周期状态", "维护专业"])
-    ws.append(["示例机房", "NE-001", "OptiX PTN 980B", "ASSET-001", "传输网元", "传输设备", "重要", "在网", "传输"])
+    ws.append(["机房名称", "机房所在片区", "网元名称", "设备型号", "资产标签号", "网元类型", "设备类别", "所属机房业务级别", "生命周期状态", "维护专业"])
+    ws.append(["示例机房", "东区", "NE-001", "OptiX PTN 980B", "ASSET-001", "传输网元", "传输设备", "重要", "在网", "传输"])
     output = io.BytesIO()
     wb.save(output)
     return Response(
@@ -377,10 +496,44 @@ def api_upload_template():
 
 @app.get("/api/tasks")
 def api_tasks(user_id: int | None = None):
-    """查询任务列表。传 user_id 时只查该现场人员任务。"""
+    """查询任务列表。传 user_id 时兼容旧版小程序：只查该现场人员已领取任务。"""
     if user_id:
-        return get_tasks_by_user(user_id)
+        return get_claimed_tasks(user_id)
     return get_all_tasks()
+
+
+@app.get("/api/tasks/area")
+def api_area_tasks(user_id: int):
+    """小程序领任务页：查询当前用户所在片区的任务池。"""
+    return get_area_tasks(user_id)
+
+
+@app.get("/api/tasks/my")
+def api_my_tasks(user_id: int):
+    """小程序我的任务页：查询当前用户已经领取的任务。"""
+    return get_claimed_tasks(user_id)
+
+
+@app.post("/api/tasks/{task_id}/claim")
+def api_claim_task(task_id: int, user_id: int = Body(..., embed=True)):
+    """现场人员领取所在片区的待领取任务。"""
+    success, message = claim_task(task_id, user_id)
+    if not success:
+        raise HTTPException(status_code=400, detail=message)
+    return {"success": True, "message": message}
+
+
+@app.post("/api/tasks/{task_id}/release")
+def api_release_task(
+    task_id: int,
+    user_id: int = Body(..., embed=True),
+    reason: str = Body("", embed=True),
+):
+    """现场人员释放自己的盘点中任务，任务回到待领取池。"""
+    success, message = release_task(task_id, user_id, reason)
+    if not success:
+        raise HTTPException(status_code=400, detail=message)
+    return {"success": True, "message": message}
 
 
 @app.post("/api/tasks/{task_id}/assign")
@@ -810,7 +963,7 @@ def api_summary():
     conn = get_conn()
     try:
         rows = conn.execute("""
-            SELECT t.id, t.task_name, t.room_name, t.status, t.created_at, t.assigned_to,
+            SELECT t.id, t.task_name, t.room_name, t.area_name, t.status, t.created_at, t.assigned_to,
                    t.assigned_at, t.completed_at,
                    u.name as assigned_name,
                    sr.id as record_id, sr.device_name, sr.expected_model,
@@ -836,6 +989,7 @@ def api_summary():
                     "id": task_id,
                     "task_name": data["task_name"],
                     "room_name": data["room_name"],
+                    "area_name": data["area_name"] or "默认片区",
                     "status": data["status"],
                     "created_at": data["created_at"],
                     "assigned_at": data["assigned_at"],

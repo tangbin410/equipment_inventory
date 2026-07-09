@@ -1,16 +1,17 @@
 /* 任务列表页逻辑 */
 
 const app = getApp();
-const { getTasks } = require("../../utils/api");
+const { getMyTasks, releaseTask: releaseTaskApi } = require("../../utils/api");
 
 Page({
   data: {
     userName: "",
+    areaName: "",
     tasks: [],
     allTasks: [],
     keyword: "",
     statusFilter: "all",
-    statusOptions: ["全部状态", "待处理", "进行中", "已完成"],
+    statusOptions: ["全部状态", "盘点中", "已完成"],
     totalTasks: 0,
     pendingTasks: 0,
     doingTasks: 0,
@@ -37,6 +38,7 @@ Page({
     }
     this.setData({
       userName: app.globalData.userInfo.name,
+      areaName: app.globalData.userInfo.area_name || "默认片区",
     });
   },
 
@@ -45,9 +47,9 @@ Page({
     if (!app.isLoggedIn()) return;
     this.setData({ loading: true });
     try {
-      const tasks = await getTasks(app.globalData.userInfo.user_id);
+      const tasks = await getMyTasks(app.globalData.userInfo.user_id);
       const total = tasks.length;
-      const pending = tasks.filter((t) => t.status === "pending").length;
+      const pending = 0;
       const doing = tasks.filter((t) => t.status === "doing").length;
       const done = tasks.filter((t) => t.status === "done").length;
       const unscannedTotal = tasks.reduce((sum, t) => sum + Math.max((t.total || 0) - (t.scanned || 0), 0), 0);
@@ -55,12 +57,13 @@ Page({
       const enhancedTasks = tasks.map((t) => ({
         ...t,
         _dotClass: t.status === "done" ? "done" : t.status === "doing" ? "ing" : "wait",
-        _statusTag: t.status === "done" ? "已完成" : t.status === "doing" ? "进行中" : "待处理",
+        _statusTag: t.status === "done" ? "已完成" : t.status === "doing" ? "盘点中" : "待领取",
         _progressPct: t.total > 0 ? (t.scanned / t.total * 100) : 0,
         _unscanned: Math.max((t.total || 0) - (t.scanned || 0), 0),
         _mismatch: t.mismatch || 0,
         _tagCls: t.status === "done" ? "tag-success" : t.status === "doing" ? "" : "tag-wait",
-        _actionText: t.status === "done" ? "查看结果" : t.status === "doing" ? "继续盘点" : "开始盘点",
+        _actionText: t.status === "done" ? "查看结果" : "继续盘点",
+        _canRelease: t.status === "doing",
       }));
       this.setData({
         allTasks: enhancedTasks,
@@ -86,7 +89,7 @@ Page({
   },
 
   onStatusChange(e) {
-    const values = ["all", "pending", "doing", "done"];
+    const values = ["all", "doing", "done"];
     this.setData({ statusFilter: values[Number(e.detail.value)] });
     this.applyFilters();
   },
@@ -106,6 +109,28 @@ Page({
     const taskId = e.currentTarget.dataset.id;
     wx.navigateTo({
       url: `/pages/scan/scan?task_id=${taskId}`,
+    });
+  },
+
+  /** 释放自己已领取但未完成的任务 */
+  releaseTask(e) {
+    const taskId = e.currentTarget.dataset.id;
+    wx.showModal({
+      title: "释放任务",
+      content: "释放后，该机房会回到片区待领取池，其他同片区人员可以领取。确定释放吗？",
+      confirmText: "释放",
+      success: async (res) => {
+        if (!res.confirm) return;
+        wx.showLoading({ title: "释放中" });
+        try {
+          const result = await releaseTaskApi(taskId, app.globalData.userInfo.user_id, "现场人员主动释放");
+          wx.hideLoading();
+          wx.showToast({ title: result.message || "已释放", icon: "success" });
+          this.loadTasks();
+        } catch (err) {
+          wx.hideLoading();
+        }
+      },
     });
   },
 
