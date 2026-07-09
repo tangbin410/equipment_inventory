@@ -11,12 +11,14 @@ from uuid import uuid4
 import openpyxl
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from .database import (
     assign_task,
     batch_assign_tasks,
     batch_create_records,
+    cleanup_expired_evidence_photos,
+    create_surplus_record,
     create_task,
     create_user,
     delete_task,
@@ -28,7 +30,10 @@ from .database import (
     get_tasks_by_user,
     get_user_by_id,
     get_workers,
+    evidence_photo_is_valid,
+    evidence_photo_path,
     init_db,
+    mark_record_missing,
     review_record,
     save_evidence_photo,
     submit_scan,
@@ -36,14 +41,29 @@ from .database import (
 )
 from .models import (
     LoginRequest,
+    MissingSubmitRequest,
     ScanResponse,
     ScanSubmitRequest,
+    SurplusSubmitRequest,
     UploadResponse,
     UserOut,
 )
 
 app = FastAPI(title="机房资产盘点系统", version="1.0.0")
 EVIDENCE_DIR = Path(__file__).resolve().parent.parent / "data" / "evidence"
+
+
+def expired_evidence_response() -> HTMLResponse:
+    """照片过期时给浏览器弹出明确提示。"""
+    return HTMLResponse(
+        content="""
+        <!doctype html>
+        <meta charset="utf-8">
+        <script>alert("照片已过期，请重新盘查");</script>
+        <body style="font-family: sans-serif; padding: 24px;">照片已过期，请重新盘查</body>
+        """,
+        status_code=410,
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -58,6 +78,7 @@ app.add_middleware(
 def on_startup():
     """启动时初始化数据库，并创建默认用户。"""
     init_db()
+    cleanup_expired_evidence_photos()
     create_user("admin_001", "管理员", "admin")
     create_user("worker_001", "张三", "worker")
     create_user("worker_002", "李四", "worker")
@@ -163,7 +184,7 @@ def _parse_excel_devices(ws, fixed_room_name: str | None = None) -> dict[str, li
 
 
 def _preview_rooms(rooms: dict[str, list[dict]]) -> dict:
-    """汇总导入质量，重复网元或资产标签会阻止正式导入。"""
+    """汇总导入质量，关键字段缺失或重复会阻止正式导入。"""
     device_keys: list[str] = []
     barcode_keys: list[str] = []
     device_rows: dict[str, list[dict]] = {}
@@ -185,12 +206,12 @@ def _preview_rooms(rooms: dict[str, list[dict]]) -> dict:
             else:
                 missing_barcode += 1
                 issue_rows.append({
-                    "级别": "提醒",
+                    "级别": "错误",
                     "Excel行号": row_no,
                     "机房名称": room_name,
                     "设备名称": device["device_name"],
                     "问题类型": "空资产条码",
-                    "处理建议": "可继续导入；现场盘点时会显示无期望资产条码，建议管理员后续补齐。",
+                    "处理建议": "资产条码不能为空；请补齐资产条码后重新导入。",
                 })
             if not device["expected_model"]:
                 missing_model += 1
@@ -231,7 +252,7 @@ def _preview_rooms(rooms: dict[str, list[dict]]) -> dict:
                 "处理建议": "请确认资产条码是否贴错或清单重复。",
             })
     return {
-        "valid": not duplicate_devices and not duplicate_barcodes and missing_model == 0,
+        "valid": not duplicate_devices and not duplicate_barcodes and missing_model == 0 and missing_barcode == 0,
         "room_count": len(rooms),
         "device_count": sum(len(devices) for devices in rooms.values()),
         "missing_model": missing_model,
@@ -283,6 +304,9 @@ async def api_upload(
     """上传单个机房清单，保留给旧页面或外部调用。"""
     wb = _load_workbook(await file.read())
     rooms = _parse_excel_devices(wb.active, fixed_room_name=room_name)
+    preview = _preview_rooms(rooms)
+    if not preview["valid"]:
+        raise HTTPException(status_code=400, detail="清单预检未通过，请先处理空资产条码、重复网元、重复标签或空设备型号")
     devices = rooms[room_name]
 
     final_task_name = task_name if task_name else f"{room_name}-盘点"
@@ -303,7 +327,7 @@ async def api_upload_rooms(file: UploadFile = File(...)):
     rooms = _parse_excel_devices(wb.active)
     preview = _preview_rooms(rooms)
     if not preview["valid"]:
-        raise HTTPException(status_code=400, detail="清单预检未通过，请先处理重复网元、重复标签或空设备型号")
+        raise HTTPException(status_code=400, detail="清单预检未通过，请先处理空资产条码、重复网元、重复标签或空设备型号")
 
     created = []
     total_devices = 0
@@ -415,6 +439,7 @@ def api_scan(req: ScanSubmitRequest):
         raise HTTPException(status_code=404, detail="盘点记录不存在")
     return ScanResponse(
         success=True,
+        record_id=result["id"],
         match_status=result["match_status"],
         asset_match_status=result["asset_match_status"],
         model_match_status=result["model_match_status"],
@@ -422,9 +447,60 @@ def api_scan(req: ScanSubmitRequest):
     )
 
 
+@app.post("/api/records/{record_id}/missing", response_model=ScanResponse)
+def api_mark_missing(record_id: int, req: MissingSubmitRequest):
+    """把任务清单内的设备标记为盘亏：现场应有但未找到。"""
+    try:
+        result = mark_record_missing(record_id, req.reason, req.notes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="盘点记录不存在")
+    return ScanResponse(
+        success=True,
+        record_id=result["id"],
+        match_status=result["match_status"],
+        asset_match_status=result["asset_match_status"],
+        model_match_status=result["model_match_status"],
+        message="已标记为盘亏，待管理员复核",
+    )
+
+
+@app.post("/api/surplus")
+def api_create_surplus(req: SurplusSubmitRequest):
+    """登记盘盈设备：现场多出、任务清单中没有的设备。"""
+    try:
+        record = create_surplus_record(
+            task_id=req.task_id,
+            device_name=req.device_name,
+            actual_model=req.actual_model,
+            asset_barcodes=req.asset_barcodes,
+            asset_no_barcode=req.asset_no_barcode,
+            cabinet_barcodes=req.cabinet_barcodes,
+            cabinet_no_barcode=req.cabinet_no_barcode,
+            rack_no=req.rack_no,
+            notes=req.notes,
+            created_by=req.created_by,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return {
+        "success": True,
+        "record_id": record["id"],
+        "record": record,
+        "match_status": record["match_status"],
+        "asset_match_status": record["asset_match_status"],
+        "model_match_status": record["model_match_status"],
+        "message": "盘盈设备已登记，待管理员复核",
+    }
+
+
 @app.post("/api/records/{record_id}/evidence")
 async def api_upload_evidence(record_id: int, file: UploadFile = File(...)):
     """上传无条码设备的现场照片凭证。"""
+    cleanup_expired_evidence_photos()
     record = get_record_by_id(record_id)
     if record is None:
         raise HTTPException(status_code=404, detail="盘点记录不存在")
@@ -449,11 +525,13 @@ async def api_upload_evidence(record_id: int, file: UploadFile = File(...)):
 @app.get("/api/evidence/{filename:path}")
 def api_evidence(filename: str):
     """查看现场照片凭证。"""
-    path = (EVIDENCE_DIR / filename).resolve()
-    if EVIDENCE_DIR.resolve() not in path.parents and path != EVIDENCE_DIR.resolve():
+    cleanup_expired_evidence_photos()
+    path = evidence_photo_path(filename)
+    if path is None:
         raise HTTPException(status_code=400, detail="照片路径不合法")
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="照片不存在")
+    if not evidence_photo_is_valid(filename):
+        path.unlink(missing_ok=True)
+        return expired_evidence_response()
     return FileResponse(path)
 
 
@@ -467,7 +545,8 @@ def api_review_record(
     result: str = Body(""),
 ):
     """复核并闭环异常记录。"""
-    if status not in {"待复核", "已确认", "已闭环"}:
+    valid_statuses = {"待复核", "已确认", "已确认异常", "已退回现场", "已整改", "已闭环"}
+    if status not in valid_statuses:
         raise HTTPException(status_code=400, detail="无效的复核状态")
     if status == "已闭环" and not note.strip():
         raise HTTPException(status_code=400, detail="闭环时必须填写处理说明")
@@ -479,6 +558,7 @@ def api_review_record(
 @app.get("/api/report/{task_id}")
 def api_report(task_id: int):
     """获取单个任务盘点报告。"""
+    cleanup_expired_evidence_photos()
     task = get_task_by_id(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -491,13 +571,105 @@ def api_report(task_id: int):
             "一致": sum(1 for r in records if r["match_status"] == "一致"),
             "不一致": sum(1 for r in records if r["match_status"] == "不一致"),
             "未扫": sum(1 for r in records if r["match_status"] == "未扫"),
+            "盘盈": sum(1 for r in records if (r.get("record_type") or "normal") == "surplus"),
+            "盘亏": sum(1 for r in records if (r.get("record_type") or "normal") == "missing"),
         },
     }
+
+
+def _autosize_workbook(wb: openpyxl.Workbook) -> None:
+    """根据内容自动调整 Excel 列宽，避免导出后字段挤在一起。"""
+    for sheet in wb.worksheets:
+        for column in sheet.columns:
+            max_len = max(len(str(cell.value or "")) for cell in column)
+            sheet.column_dimensions[column[0].column_letter].width = min(max(max_len + 2, 12), 36)
+
+
+def _excel_response(wb: openpyxl.Workbook, filename: str) -> Response:
+    """把工作簿统一转成下载响应。"""
+    _autosize_workbook(wb)
+    output = io.BytesIO()
+    wb.save(output)
+    return Response(
+        content=output.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+EXPORT_MATCHED_ANOMALIES = {"资产条码不一致", "无条码", "设备型号不一致"}
+EXPORT_UNMATCHED_ANOMALIES = {"盘亏", "盘盈"}
+
+
+def _record_anomaly_types(record: dict) -> list[str]:
+    """导出用：按 2 大类 5 小类识别现场异常。"""
+    record_type = record.get("record_type") or "normal"
+    if record_type == "missing":
+        return ["盘亏"]
+    if record_type == "surplus":
+        return ["盘盈"]
+
+    types = []
+    asset_status = record.get("asset_match_status") or record.get("match_status")
+    if asset_status not in {"一致", "未扫", "无条码"}:
+        types.append("资产条码不一致")
+    if asset_status == "无条码":
+        types.append("无条码")
+    if record.get("model_match_status") == "不一致":
+        types.append("设备型号不一致")
+    return types
+
+
+def _record_anomaly_category(record: dict) -> str:
+    types = set(_record_anomaly_types(record))
+    if types & EXPORT_UNMATCHED_ANOMALIES:
+        return "设备对不上"
+    if types & EXPORT_MATCHED_ANOMALIES:
+        return "设备对得上"
+    return "正常"
+
+
+def _record_anomaly_text(record: dict) -> str:
+    types = _record_anomaly_types(record)
+    return "、".join(types) if types else ""
+
+
+def _append_device_detail_header(ws) -> None:
+    """设备明细导出表头，和 PC 设备明细表保持一致。"""
+    ws.append([
+        "机房", "异常大类", "异常类型", "现场状态", "设备", "设备型号", "资产条码",
+        "现场设备型号", "现场资产条码", "现场机柜条码", "现场机架号",
+        "资产条码对比结果", "设备型号对比结果", "盘亏原因", "备注", "总体比对结果", "盘点时间",
+    ])
+
+
+def _append_device_detail_row(ws, task: dict, record: dict) -> None:
+    """写入一行设备明细。"""
+    ws.append([
+        task["room_name"],
+        _record_anomaly_category(record),
+        _record_anomaly_text(record),
+        record.get("field_status") or "正常",
+        record["device_name"],
+        record["expected_model"],
+        record["expected_barcode"],
+        record["actual_model"],
+        record["asset_barcodes"] or ("无条码" if record["asset_no_barcode"] else ""),
+        record["cabinet_barcodes"] or ("无条码" if record["cabinet_no_barcode"] else ""),
+        record.get("rack_no") or "",
+        record.get("asset_match_status") or record["match_status"],
+        record.get("model_match_status") or "",
+        record.get("missing_reason") or "",
+        record["notes"],
+        record["match_status"],
+        record["scanned_at"] or "",
+    ])
 
 
 @app.get("/api/export/{task_id}")
 def api_export(task_id: int):
     """导出单个任务盘点结果 Excel。"""
+    cleanup_expired_evidence_photos()
     task = get_task_by_id(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -506,55 +678,46 @@ def api_export(task_id: int):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "机房汇总"
-    total = len(records)
-    scanned = sum(1 for r in records if r["match_status"] != "未扫")
-    pending = sum(1 for r in records if r["match_status"] == "未扫")
-    asset_ok = sum(1 for r in records if r.get("asset_match_status") == "一致")
-    asset_diff = sum(1 for r in records if r.get("asset_match_status") not in {"一致", "未扫", "无条码"})
-    no_barcode = sum(1 for r in records if r.get("asset_match_status") == "无条码")
-    ws.append(["机房名称", "任务名称", "设备数", "已盘", "未扫", "条码一致", "条码异常", "无条码"])
-    ws.append([task["room_name"], task["task_name"], total, scanned, pending, asset_ok, asset_diff, no_barcode])
+    inventory_records = [r for r in records if (r.get("record_type") or "normal") != "surplus"]
+    anomaly_records = [r for r in records if _record_anomaly_types(r)]
+    total = len(inventory_records)
+    scanned = sum(1 for r in inventory_records if r["match_status"] != "未扫")
+    pending = sum(1 for r in inventory_records if r["match_status"] == "未扫")
+    asset_ok = sum(1 for r in inventory_records if r.get("asset_match_status") == "一致")
+    asset_diff = sum(1 for r in inventory_records if "资产条码不一致" in _record_anomaly_types(r))
+    no_barcode = sum(1 for r in inventory_records if "无条码" in _record_anomaly_types(r))
+    surplus = sum(1 for r in records if (r.get("record_type") or "normal") == "surplus")
+    missing = sum(1 for r in records if (r.get("record_type") or "normal") == "missing")
+    matched_anomaly = sum(1 for r in anomaly_records if _record_anomaly_category(r) == "设备对得上")
+    unmatched_anomaly = sum(1 for r in anomaly_records if _record_anomaly_category(r) == "设备对不上")
+    ws.append([
+        "机房名称", "任务名称", "设备数", "已盘", "未扫", "异常设备数",
+        "设备对得上异常", "设备对不上异常", "条码一致", "资产条码不一致", "无条码", "盘盈", "盘亏",
+    ])
+    ws.append([
+        task["room_name"], task["task_name"], total, scanned, pending, len(anomaly_records),
+        matched_anomaly, unmatched_anomaly, asset_ok, asset_diff, no_barcode, surplus, missing,
+    ])
 
     ws = wb.create_sheet("设备明细")
-    ws.append([
-        "机房", "设备", "设备型号", "资产条码",
-        "现场设备型号", "现场资产条码", "现场机柜条码", "现场机架号",
-        "资产条码对比结果", "设备型号对比结果", "备注", "总体比对结果", "盘点时间",
-        "现场凭证",
-    ])
+    _append_device_detail_header(ws)
     for record in records:
-        ws.append([
-            task["room_name"],
-            record["device_name"],
-            record["expected_model"],
-            record["expected_barcode"],
-            record["actual_model"],
-            record["asset_barcodes"] or ("无条码" if record["asset_no_barcode"] else ""),
-            record["cabinet_barcodes"] or ("无条码" if record["cabinet_no_barcode"] else ""),
-            record.get("rack_no") or "",
-            record.get("asset_match_status") or record["match_status"],
-            record.get("model_match_status") or "",
-            record["notes"],
-            record["match_status"],
-            record["scanned_at"] or "",
-            record.get("evidence_photo") or "",
-        ])
+        _append_device_detail_row(ws, task, record)
 
     ws = wb.create_sheet("异常复核")
     ws.append([
-        "机房", "设备", "期望资产条码", "扫描资产条码", "资产条码对比结果",
+        "机房", "异常大类", "异常类型", "现场状态", "设备", "期望资产条码", "扫描资产条码", "资产条码对比结果",
         "期望型号", "现场型号", "型号对比结果", "复核状态", "异常原因",
-        "处理人", "处理结论", "处理说明", "复核时间", "现场凭证",
+        "盘亏原因", "处理人", "处理结论", "处理说明", "复核时间",
     ])
     for record in records:
-        is_anomaly = (
-            record.get("asset_match_status") not in {"一致", "未扫"}
-            or record.get("model_match_status") == "不一致"
-        )
-        if not is_anomaly:
+        if not _record_anomaly_types(record):
             continue
         ws.append([
             task["room_name"],
+            _record_anomaly_category(record),
+            _record_anomaly_text(record),
+            record.get("field_status") or "正常",
             record["device_name"],
             record["expected_barcode"],
             record["asset_barcodes"] or ("无条码" if record["asset_no_barcode"] else ""),
@@ -564,31 +727,84 @@ def api_export(task_id: int):
             record.get("model_match_status") or "",
             record.get("review_status") or "",
             record.get("review_reason") or "",
+            record.get("missing_reason") or "",
             record.get("review_handler") or "",
             record.get("review_result") or "",
             record.get("review_note") or "",
             record.get("reviewed_at") or "",
-            record.get("evidence_photo") or "",
         ])
 
-    for sheet in wb.worksheets:
-        for column in sheet.columns:
-            max_len = max(len(str(cell.value or "")) for cell in column)
-            sheet.column_dimensions[column[0].column_letter].width = min(max(max_len + 2, 12), 36)
+    return _excel_response(wb, f"盘点结果_{task['room_name']}_{task_id}.xlsx")
 
-    output = io.BytesIO()
-    wb.save(output)
-    filename = f"盘点结果_{task['room_name']}_{task_id}.xlsx"
-    return Response(
-        content=output.getvalue(),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
-    )
+
+@app.get("/api/export/{task_id}/details")
+def api_export_details(task_id: int):
+    """单独导出设备明细表，便于管理员二次筛选和留档。"""
+    cleanup_expired_evidence_photos()
+    task = get_task_by_id(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    records = get_report(task_id)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "设备明细"
+    _append_device_detail_header(ws)
+    for record in records:
+        _append_device_detail_row(ws, task, record)
+    return _excel_response(wb, f"设备明细_{task['room_name']}_{task_id}.xlsx")
+
+
+@app.get("/api/export/{task_id}/surplus_missing")
+def api_export_surplus_missing(task_id: int):
+    """单独导出盘盈盘亏清单，作为后续整治闭环台账。"""
+    cleanup_expired_evidence_photos()
+    task = get_task_by_id(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    records = [
+        record for record in get_report(task_id)
+        if (record.get("record_type") or "normal") in {"surplus", "missing"}
+    ]
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "盘盈盘亏清单"
+    ws.append([
+        "机房", "任务名称", "整治类型", "设备", "期望型号", "现场型号",
+        "期望资产条码", "现场资产条码", "现场机柜条码", "现场机架号",
+        "盘亏原因", "现场备注", "复核状态", "异常原因", "处理人",
+        "处理结论", "处理说明", "盘点时间", "复核时间",
+    ])
+    for record in records:
+        ws.append([
+            task["room_name"],
+            task["task_name"],
+            record.get("field_status") or ("盘盈" if record.get("record_type") == "surplus" else "盘亏"),
+            record["device_name"],
+            record.get("expected_model") or "",
+            record.get("actual_model") or "",
+            record.get("expected_barcode") or "",
+            record.get("asset_barcodes") or ("无条码" if record.get("asset_no_barcode") else ""),
+            record.get("cabinet_barcodes") or ("无条码" if record.get("cabinet_no_barcode") else ""),
+            record.get("rack_no") or "",
+            record.get("missing_reason") or "",
+            record.get("notes") or "",
+            record.get("review_status") or "待复核",
+            record.get("review_reason") or "",
+            record.get("review_handler") or "",
+            record.get("review_result") or "",
+            record.get("review_note") or "",
+            record.get("scanned_at") or "",
+            record.get("reviewed_at") or "",
+        ])
+    return _excel_response(wb, f"盘盈盘亏清单_{task['room_name']}_{task_id}.xlsx")
 
 
 @app.get("/api/summary")
 def api_summary():
     """一次性返回所有任务和盘点记录，供 PC 报告页使用。"""
+    cleanup_expired_evidence_photos()
     from .database import get_conn
 
     conn = get_conn()
@@ -601,6 +817,7 @@ def api_summary():
                    sr.expected_barcode, sr.asset_barcodes, sr.asset_no_barcode,
                    sr.cabinet_barcodes, sr.cabinet_no_barcode, sr.rack_no,
                     sr.actual_model, sr.notes, sr.match_status, sr.scanned_at,
+                    sr.record_type, sr.field_status, sr.missing_reason, sr.created_by,
                     sr.evidence_photo, sr.review_status, sr.review_note,
                     sr.review_reason, sr.review_handler, sr.review_result, sr.reviewed_at
             FROM tasks t
@@ -644,6 +861,10 @@ def api_summary():
                     "notes": data["notes"],
                     "match_status": data["match_status"],
                     "scanned_at": data["scanned_at"],
+                    "record_type": data["record_type"],
+                    "field_status": data["field_status"],
+                    "missing_reason": data["missing_reason"],
+                    "created_by": data["created_by"],
                     "evidence_photo": data["evidence_photo"],
                     "review_status": data["review_status"],
                     "review_note": data["review_note"],

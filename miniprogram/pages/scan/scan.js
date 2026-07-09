@@ -1,7 +1,7 @@
 /* 设备盘点页 - 核心逻辑 */
 
 const app = getApp();
-const { getTaskItems, submitScan, uploadEvidencePhoto } = require("../../utils/api");
+const { getTaskItems, submitScan, submitMissing, submitSurplus, uploadEvidencePhoto } = require("../../utils/api");
 
 Page({
   data: {
@@ -10,8 +10,24 @@ Page({
     allDevices: [],       // 完整设备列表
     keyword: "",
     deviceFilter: "all",
-    filterOptions: ["全部设备", "未盘点", "条码异常"],
+    filterOptions: ["全部设备", "未盘点", "条码异常", "盘盈", "盘亏"],
     activeDeviceId: null, // 当前展开的设备ID
+    showSurplusForm: false,
+    surplusForm: {
+      deviceName: "",
+      actualModel: "",
+      assetBarcodes: [],
+      assetNoBarcode: false,
+      cabinetBarcodes: [],
+      cabinetNoBarcode: false,
+      rackNo: "",
+      notes: "",
+      evidencePhoto: "",
+      _assetText: "",
+      _hasAssetBarcode: false,
+      _cabinetText: "",
+      _hasCabinetBarcode: false,
+    },
     loading: true,
     scannedCount: 0,
     totalCount: 0,
@@ -49,64 +65,14 @@ Page({
       const items = result.items;
 
       // 将后端数据转为前端状态（每个设备加上扫描表单字段）
-      const devices = items.map((item) => {
-        const modelOptions = [item.expected_model];
-        if (item.expected_model) {
-          modelOptions.push("其他...");
-        }
-        const draft = wx.getStorageSync(`scan_draft_${item.id}`) || {};
-        return {
-          id: item.id,
-          device_name: item.device_name,
-          device_extra: item.device_extra || {},
-          expected_model: item.expected_model,
-          expectedBarcode: item.expected_barcode || "",
-          // 扫描状态
-          assetBarcodes: item.asset_barcodes
-            ? item.asset_barcodes.split(",").filter(Boolean)
-            : [],
-          assetNoBarcode: !!item.asset_no_barcode,
-          cabinetBarcodes: item.cabinet_barcodes
-            ? item.cabinet_barcodes.split(",").filter(Boolean)
-            : [],
-          cabinetNoBarcode: !!item.cabinet_no_barcode,
-          // 型号
-          modelOptions,
-          showOtherModel: false,
-          selectedModelIndex: -1,
-          actualModel: item.actual_model || "",
-          rackNo: item.rack_no || "",
-          // 备注
-          notes: item.notes || "",
-          // 提交状态
-          submitted: item.match_status !== "未扫",
-          match_status: item.match_status,
-          assetMatchStatus: item.asset_match_status || item.match_status,
-          modelMatchStatus: item.model_match_status || item.match_status,
-          evidencePhoto: "",
-          ...draft,
-        };
-      });
-
-      // 预计算 WXML 不能处理的表达式
-      devices.forEach((d) => {
-        d._matchIcon = d.match_status === "一致" ? "success" : d.match_status === "不一致" ? "error" : "wait";
-        d._tagCls = d.match_status === "一致" ? "tag-success" : d.match_status === "不一致" ? "tag-error" : "tag-wait";
-        d._matchText = d.match_status === "一致" ? "✅ 一致" : d.match_status === "不一致" ? "❌ 不一致" : "⏳ " + d.match_status;
-        d._assetMatchText = "资产条码比对: " + (d.assetMatchStatus || "未扫");
-        d._modelMatchText = "型号比对: " + (d.modelMatchStatus || "未扫");
-        d._expectedBarcodeText = d.expectedBarcode || "未导入";
-        d._assetText = d.assetBarcodes.length > 0 ? d.assetBarcodes.join(", ") : "";
-        d._hasAssetBarcode = d.assetBarcodes.length > 0;
-        d._cabinetText = d.cabinetBarcodes.length > 0 ? d.cabinetBarcodes.join(", ") : "";
-        d._hasCabinetBarcode = d.cabinetBarcodes.length > 0;
-      });
-      const scanned = devices.filter((d) => d.submitted).length;
+      const devices = items.map((item) => this.makeDevice(item));
+      const normalDevices = devices.filter((d) => d.recordType !== "surplus");
+      const scanned = normalDevices.filter((d) => d.submitted).length;
       this.setData({
         taskName: task.task_name,
         allDevices: devices,
         devices,
-        totalCount: devices.length,
+        totalCount: normalDevices.length,
         scannedCount: scanned,
         loading: false,
       });
@@ -121,7 +87,7 @@ Page({
   },
 
   onDeviceFilterChange(e) {
-    this.setData({ deviceFilter: ["all", "pending", "mismatch"][Number(e.detail.value)] });
+    this.setData({ deviceFilter: ["all", "pending", "mismatch", "surplus", "missing"][Number(e.detail.value)] });
     this.applyDeviceFilters();
   },
 
@@ -142,8 +108,62 @@ Page({
       device.rackNo,
     ].join(" ").toLowerCase();
     const matchesText = !keyword || searchableText.includes(keyword);
-    const matchesStatus = filter === "all" || (filter === "pending" && !device.submitted) || (filter === "mismatch" && device.assetMatchStatus !== "一致");
+    const matchesStatus =
+      filter === "all"
+      || (filter === "pending" && !device.submitted)
+      || (filter === "mismatch" && device.submitted && device.assetMatchStatus !== "一致")
+      || (filter === "surplus" && device.recordType === "surplus")
+      || (filter === "missing" && device.recordType === "missing");
     return matchesText && matchesStatus;
+  },
+
+  makeDevice(item) {
+    const modelOptions = [item.expected_model || item.actual_model || "其他..."];
+    if (item.expected_model) {
+      modelOptions.push("其他...");
+    }
+    const draft = wx.getStorageSync(`scan_draft_${item.id}`) || {};
+    const device = {
+      id: item.id,
+      device_name: item.device_name,
+      device_extra: item.device_extra || {},
+      expected_model: item.expected_model || "",
+      expectedBarcode: item.expected_barcode || "",
+      recordType: item.record_type || "normal",
+      fieldStatus: item.field_status || "正常",
+      missingReason: item.missing_reason || "",
+      assetBarcodes: item.asset_barcodes ? item.asset_barcodes.split(",").filter(Boolean) : [],
+      assetNoBarcode: !!item.asset_no_barcode,
+      cabinetBarcodes: item.cabinet_barcodes ? item.cabinet_barcodes.split(",").filter(Boolean) : [],
+      cabinetNoBarcode: !!item.cabinet_no_barcode,
+      modelOptions,
+      showOtherModel: false,
+      selectedModelIndex: -1,
+      actualModel: item.actual_model || "",
+      rackNo: item.rack_no || "",
+      notes: item.notes || "",
+      submitted: item.match_status !== "未扫",
+      match_status: item.match_status,
+      assetMatchStatus: item.asset_match_status || item.match_status,
+      modelMatchStatus: item.model_match_status || item.match_status,
+      evidencePhoto: "",
+      ...draft,
+    };
+    this.fillDeviceDisplay(device);
+    return device;
+  },
+
+  fillDeviceDisplay(device) {
+    device._matchIcon = device.match_status === "一致" ? "success" : device.match_status === "不一致" ? "error" : "wait";
+    device._tagCls = device.recordType === "surplus" ? "tag-surplus" : device.recordType === "missing" ? "tag-missing" : device.match_status === "一致" ? "tag-success" : device.match_status === "不一致" ? "tag-error" : "tag-wait";
+    device._matchText = device.recordType === "surplus" ? "➕ 盘盈" : device.recordType === "missing" ? "➖ 盘亏" : device.match_status === "一致" ? "✅ 一致" : device.match_status === "不一致" ? "❌ 不一致" : "⏳ " + device.match_status;
+    device._assetMatchText = "资产条码比对: " + (device.assetMatchStatus || "未扫");
+    device._modelMatchText = "型号比对: " + (device.modelMatchStatus || "未扫");
+    device._expectedBarcodeText = device.expectedBarcode || "未导入";
+    device._assetText = device.assetBarcodes.length > 0 ? device.assetBarcodes.join(", ") : "";
+    device._hasAssetBarcode = device.assetBarcodes.length > 0;
+    device._cabinetText = device.cabinetBarcodes.length > 0 ? device.cabinetBarcodes.join(", ") : "";
+    device._hasCabinetBarcode = device.cabinetBarcodes.length > 0;
   },
 
   /** 展开/收起设备扫描表单 */
@@ -162,8 +182,7 @@ Page({
       const { result } = await wx.scanCode({});
       const duplicate = this.data.allDevices.some((d) => d.assetBarcodes.includes(result));
       if (duplicate) {
-        wx.showToast({ title: "该资产条码已扫描", icon: "none" });
-        return;
+        wx.showToast({ title: "该资产条码已扫描，请核实后提交", icon: "none", duration: 2500 });
       }
       const device = this.data.allDevices.find((d) => d.id === id);
       const expected = (device && device.expectedBarcode ? device.expectedBarcode : "").trim().toUpperCase();
@@ -305,6 +324,204 @@ Page({
     }
   },
 
+  markMissing(e) {
+    const id = Number(e.currentTarget.dataset.id);
+    const reasons = ["设备已拆除", "设备已搬迁", "暂不清楚"];
+    wx.showActionSheet({
+      itemList: reasons,
+      success: (res) => {
+        const reason = reasons[res.tapIndex];
+        wx.showModal({
+          title: "标记盘亏确认",
+          content: `确认该设备现场未找到，并标记为盘亏？\n原因：${reason}`,
+          confirmText: "确认盘亏",
+          cancelText: "取消",
+          success: async (modalRes) => {
+            if (!modalRes.confirm) return;
+            try {
+              const device = this.data.allDevices.find((d) => d.id === id);
+              const result = await submitMissing(id, { reason, notes: device ? device.notes : "" });
+              this.updateDevice(id, () => ({
+                submitted: true,
+                recordType: "missing",
+                fieldStatus: "盘亏",
+                missingReason: reason,
+                match_status: result.match_status,
+                assetMatchStatus: result.asset_match_status,
+                modelMatchStatus: result.model_match_status,
+                _matchIcon: "error",
+                _tagCls: "tag-missing",
+                _matchText: "➖ 盘亏",
+                _assetMatchText: "资产条码比对: " + result.asset_match_status,
+                _modelMatchText: "型号比对: " + result.model_match_status,
+              }));
+              this.setData({
+                scannedCount: this.data.allDevices.filter((d) => d.recordType !== "surplus" && d.submitted).length,
+              });
+              wx.removeStorageSync(`scan_draft_${id}`);
+              wx.showToast({ title: "已标记盘亏", icon: "success" });
+            } catch (err) {
+              // API wrapper 已显示错误
+            }
+          },
+        });
+      },
+    });
+  },
+
+  openSurplusForm() {
+    this.setData({ showSurplusForm: !this.data.showSurplusForm });
+  },
+
+  onSurplusInput(e) {
+    const field = e.currentTarget.dataset.field;
+    this.updateSurplusForm({ [field]: e.detail.value });
+  },
+
+  updateSurplusForm(patch) {
+    const form = { ...this.data.surplusForm, ...patch };
+    form._assetText = form.assetBarcodes.length > 0 ? form.assetBarcodes.join(", ") : "";
+    form._hasAssetBarcode = form.assetBarcodes.length > 0;
+    form._cabinetText = form.cabinetBarcodes.length > 0 ? form.cabinetBarcodes.join(", ") : "";
+    form._hasCabinetBarcode = form.cabinetBarcodes.length > 0;
+    this.setData({ surplusForm: form });
+  },
+
+  async scanSurplusAsset() {
+    try {
+      this.skipNextOnShowReload = true;
+      const { result } = await wx.scanCode({});
+      const duplicate = this.data.allDevices.some((d) => d.assetBarcodes.includes(result));
+      if (duplicate) {
+        wx.showToast({ title: "该资产条码已扫描，请核实后提交", icon: "none", duration: 2500 });
+      }
+      this.updateSurplusForm({ assetBarcodes: [...this.data.surplusForm.assetBarcodes, result] });
+    } catch (err) {
+      // 用户取消扫码
+    }
+  },
+
+  async scanSurplusCabinet() {
+    try {
+      this.skipNextOnShowReload = true;
+      const { result } = await wx.scanCode({});
+      this.updateSurplusForm({ cabinetBarcodes: [...this.data.surplusForm.cabinetBarcodes, result] });
+    } catch (err) {
+      // 用户取消扫码
+    }
+  },
+
+  removeSurplusAssetBarcode(e) {
+    const index = Number(e.currentTarget.dataset.index);
+    this.updateSurplusForm({
+      assetBarcodes: this.data.surplusForm.assetBarcodes.filter((_, i) => i !== index),
+    });
+  },
+
+  removeSurplusCabinetBarcode(e) {
+    const index = Number(e.currentTarget.dataset.index);
+    this.updateSurplusForm({
+      cabinetBarcodes: this.data.surplusForm.cabinetBarcodes.filter((_, i) => i !== index),
+    });
+  },
+
+  toggleSurplusAssetNoBarcode() {
+    const checked = !this.data.surplusForm.assetNoBarcode;
+    this.updateSurplusForm({ assetNoBarcode: checked, assetBarcodes: checked ? [] : this.data.surplusForm.assetBarcodes });
+  },
+
+  toggleSurplusCabinetNoBarcode() {
+    const checked = !this.data.surplusForm.cabinetNoBarcode;
+    this.updateSurplusForm({ cabinetNoBarcode: checked, cabinetBarcodes: checked ? [] : this.data.surplusForm.cabinetBarcodes });
+  },
+
+  async chooseSurplusEvidencePhoto() {
+    try {
+      this.skipNextOnShowReload = true;
+      const result = await wx.chooseMedia({ count: 1, mediaType: ["image"], sourceType: ["camera", "album"] });
+      this.updateSurplusForm({ evidencePhoto: result.tempFiles[0].tempFilePath });
+      wx.showToast({ title: "现场凭证已保存", icon: "success" });
+    } catch (err) {
+      // 用户取消选择。
+    }
+  },
+
+  resetSurplusForm() {
+    this.setData({
+      showSurplusForm: false,
+      surplusForm: {
+        deviceName: "",
+        actualModel: "",
+        assetBarcodes: [],
+        assetNoBarcode: false,
+        cabinetBarcodes: [],
+        cabinetNoBarcode: false,
+        rackNo: "",
+        notes: "",
+        evidencePhoto: "",
+        _assetText: "",
+        _hasAssetBarcode: false,
+        _cabinetText: "",
+        _hasCabinetBarcode: false,
+      },
+    });
+  },
+
+  async submitSurplusDevice() {
+    const form = this.data.surplusForm;
+    if (!form.deviceName.trim()) {
+      wx.showToast({ title: "请填写盘盈设备名称", icon: "none" });
+      return;
+    }
+    if (!form.assetNoBarcode && form.assetBarcodes.length === 0) {
+      wx.showToast({ title: "请扫码资产条码或勾选无条码", icon: "none" });
+      return;
+    }
+    if (!form.cabinetNoBarcode && form.cabinetBarcodes.length === 0) {
+      wx.showToast({ title: "请扫码机柜条码或勾选无条码", icon: "none" });
+      return;
+    }
+    if (!form.rackNo.trim()) {
+      wx.showToast({ title: "请填写设备所属机架号", icon: "none" });
+      return;
+    }
+    if ((form.assetNoBarcode || form.cabinetNoBarcode) && !form.evidencePhoto) {
+      wx.showToast({ title: "无条码设备请拍摄现场照片", icon: "none" });
+      return;
+    }
+    try {
+      const user = app.globalData.userInfo || {};
+      const result = await submitSurplus({
+        task_id: Number(this.taskId),
+        device_name: form.deviceName,
+        actual_model: form.actualModel,
+        asset_barcodes: form.assetBarcodes.join(","),
+        asset_no_barcode: form.assetNoBarcode,
+        cabinet_barcodes: form.cabinetBarcodes.join(","),
+        cabinet_no_barcode: form.cabinetNoBarcode,
+        rack_no: form.rackNo,
+        notes: form.notes,
+        created_by: user.user_id || null,
+      });
+      if (form.evidencePhoto && result.record_id) {
+        await uploadEvidencePhoto(result.record_id, form.evidencePhoto);
+      }
+      const newDevice = this.makeDevice(result.record);
+      const allDevices = [newDevice, ...this.data.allDevices];
+      const devices = [newDevice, ...this.data.devices].filter((d) => this.deviceMatchesFilter(d));
+      this.setData({
+        allDevices,
+        devices,
+        totalCount: allDevices.filter((d) => d.recordType !== "surplus").length,
+        scannedCount: allDevices.filter((d) => d.recordType !== "surplus" && d.submitted).length,
+      });
+      this.resetSurplusForm();
+      wx.showToast({ title: "盘盈已登记", icon: "success" });
+    } catch (err) {
+      // API wrapper 已显示错误
+    }
+  },
+
   /** 已提交记录允许现场复核后重新提交。 */
   reopenDevice(e) {
     const id = Number(e.currentTarget.dataset.id);
@@ -379,7 +596,7 @@ Page({
 
       // 更新统计
       this.setData({
-        scannedCount: this.data.allDevices.filter((d) => d.submitted).length,
+        scannedCount: this.data.allDevices.filter((d) => d.recordType !== "surplus" && d.submitted).length,
       });
       wx.removeStorageSync(`scan_draft_${id}`);
 
@@ -405,6 +622,8 @@ Page({
         updated._hasAssetBarcode = updated.assetBarcodes.length > 0;
         updated._cabinetText = updated.cabinetBarcodes.length > 0 ? updated.cabinetBarcodes.join(", ") : "";
         updated._hasCabinetBarcode = updated.cabinetBarcodes.length > 0;
+        updated._tagCls = updated.recordType === "surplus" ? "tag-surplus" : updated.recordType === "missing" ? "tag-missing" : updated._tagCls;
+        updated._matchText = updated.recordType === "surplus" ? "➕ 盘盈" : updated.recordType === "missing" ? "➖ 盘亏" : updated._matchText;
         if (!updated.submitted) {
           wx.setStorageSync(`scan_draft_${id}`, {
             assetBarcodes: updated.assetBarcodes,

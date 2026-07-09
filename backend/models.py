@@ -29,6 +29,26 @@ class ScanSubmitRequest(BaseModel):
     notes: str = Field("", description="现场备注")
 
 
+class MissingSubmitRequest(BaseModel):
+    """现场人员提交盘亏结果"""
+    reason: str = Field(..., description="盘亏原因")
+    notes: str = Field("", description="现场备注")
+
+
+class SurplusSubmitRequest(BaseModel):
+    """现场人员登记盘盈设备"""
+    task_id: int = Field(..., description="任务ID")
+    device_name: str = Field(..., description="现场多出设备名称")
+    actual_model: str = Field("", description="现场设备型号")
+    asset_barcodes: str = Field("", description="扫描到的资产条码，多个用逗号分隔")
+    asset_no_barcode: bool = Field(False, description="是否无资产条码")
+    cabinet_barcodes: str = Field("", description="扫描到的机柜条码，多个用逗号分隔")
+    cabinet_no_barcode: bool = Field(False, description="是否无机柜条码")
+    rack_no: str = Field("", description="现场设备所属机架号")
+    notes: str = Field("", description="现场备注")
+    created_by: int | None = Field(None, description="登记人ID")
+
+
 # ──────────────────────────────────────────────
 # 响应模型
 # ──────────────────────────────────────────────
@@ -58,6 +78,7 @@ class UploadResponse(BaseModel):
 
 class ScanResponse(BaseModel):
     success: bool
+    record_id: int | None = None
     match_status: str
     asset_match_status: str = ""
     model_match_status: str = ""

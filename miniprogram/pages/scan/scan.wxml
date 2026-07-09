@@ -19,6 +19,70 @@
     </picker>
   </view>
 
+  <view class="surplus-entry card">
+    <view>
+      <text class="surplus-title">现场多出设备</text>
+      <text class="surplus-tip">任务清单没有，但机房现场实际存在的设备，请登记为盘盈。</text>
+    </view>
+    <button class="btn-small surplus-toggle" bindtap="openSurplusForm">
+      {{showSurplusForm ? '收起' : '+ 登记盘盈'}}
+    </button>
+  </view>
+
+  <view wx:if="{{showSurplusForm}}" class="surplus-form card">
+    <view class="field-group">
+      <text class="field-label">① 盘盈设备名称（必填）</text>
+      <input class="other-input" placeholder="请输入现场设备/网元名称" value="{{surplusForm.deviceName}}" data-field="deviceName" bindinput="onSurplusInput" />
+    </view>
+    <view class="field-group">
+      <text class="field-label">② 资产条码</text>
+      <view class="field-row">
+        <button class="btn-small" bindtap="scanSurplusAsset" disabled="{{surplusForm.assetNoBarcode}}">扫码</button>
+        <checkbox checked="{{surplusForm.assetNoBarcode}}" bindtap="toggleSurplusAssetNoBarcode" />
+        <text class="checkbox-label">无条码</text>
+      </view>
+      <view wx:if="{{surplusForm._hasAssetBarcode}}" class="barcode-list">
+        <view class="barcode-tag" wx:for="{{surplusForm.assetBarcodes}}" wx:for-item="barcode" wx:for-index="idx" wx:key="idx">
+          <text>{{barcode}}</text>
+          <text class="barcode-del" bindtap="removeSurplusAssetBarcode" data-index="{{idx}}">×</text>
+        </view>
+      </view>
+    </view>
+    <view class="field-group">
+      <text class="field-label">③ 机柜条码</text>
+      <view class="field-row">
+        <button class="btn-small" bindtap="scanSurplusCabinet" disabled="{{surplusForm.cabinetNoBarcode}}">扫码</button>
+        <checkbox checked="{{surplusForm.cabinetNoBarcode}}" bindtap="toggleSurplusCabinetNoBarcode" />
+        <text class="checkbox-label">无条码</text>
+      </view>
+      <view wx:if="{{surplusForm._hasCabinetBarcode}}" class="barcode-list">
+        <view class="barcode-tag" wx:for="{{surplusForm.cabinetBarcodes}}" wx:for-item="barcode" wx:for-index="idx" wx:key="idx">
+          <text>{{barcode}}</text>
+          <text class="barcode-del" bindtap="removeSurplusCabinetBarcode" data-index="{{idx}}">×</text>
+        </view>
+      </view>
+    </view>
+    <view class="field-group">
+      <text class="field-label">④ 设备型号</text>
+      <input class="other-input" placeholder="选填：如 OptiX PTN 980B" value="{{surplusForm.actualModel}}" data-field="actualModel" bindinput="onSurplusInput" />
+    </view>
+    <view class="field-group">
+      <text class="field-label">⑤ 设备所属机架号（必填）</text>
+      <input class="other-input" placeholder="请输入现场机架号" value="{{surplusForm.rackNo}}" data-field="rackNo" bindinput="onSurplusInput" />
+    </view>
+    <view class="field-group">
+      <text class="field-label">⑥ 备注</text>
+      <textarea class="notes-textarea" placeholder="选填：现场位置、异常说明等" value="{{surplusForm.notes}}" data-field="notes" bindinput="onSurplusInput" maxlength="200"></textarea>
+    </view>
+    <view wx:if="{{surplusForm.assetNoBarcode || surplusForm.cabinetNoBarcode}}" class="field-group">
+      <text class="field-label">⑦ 无条码现场凭证</text>
+      <text class="evidence-tip">{{surplusForm.evidencePhoto ? '已拍现场凭证，提交后自动上传' : '无条码盘盈设备必须拍摄现场凭证'}}</text>
+      <button class="btn-small" bindtap="chooseSurplusEvidencePhoto">{{surplusForm.evidencePhoto ? '重新拍摄' : '拍摄照片'}}</button>
+      <image wx:if="{{surplusForm.evidencePhoto}}" class="evidence-preview" src="{{surplusForm.evidencePhoto}}" mode="aspectFill" />
+    </view>
+    <button class="btn-primary submit-btn" bindtap="submitSurplusDevice">确认登记盘盈</button>
+  </view>
+
   <!-- 加载/空状态 -->
   <view wx:if="{{loading}}" class="loading">
     <text>加载中...</text>
@@ -52,6 +116,7 @@
         <text class="result-detail">{{item._assetMatchText}}</text>
         <text class="result-detail">{{item._modelMatchText}}</text>
         <text class="result-detail">现场机架号: {{item.rackNo}}</text>
+        <text class="result-detail" wx:if="{{item.recordType == 'missing'}}">盘亏原因: {{item.missingReason}}</text>
       </view>
 
       <!-- 扫描表单，展开时显示 -->
@@ -142,12 +207,13 @@
 
         <!-- 提交按钮 -->
         <button class="btn-primary submit-btn" bindtap="submitScan" data-id="{{item.id}}">确认提交</button>
+        <button class="btn-warning missing-btn" bindtap="markMissing" data-id="{{item.id}}">现场未找到该设备（盘亏）</button>
       </view>
 
       <!-- 提交后再次展开可查看记录 -->
       <view wx:if="{{activeDeviceId == item.id && item.submitted}}" class="submitted-info">
         <text class="submitted-note">已提交，比对结果: {{item.match_status}}</text>
-        <button class="btn-small" bindtap="reopenDevice" data-id="{{item.id}}">重新盘点</button>
+        <button wx:if="{{item.recordType != 'surplus'}}" class="btn-small" bindtap="reopenDevice" data-id="{{item.id}}">重新盘点</button>
       </view>
     </view>
   </view>

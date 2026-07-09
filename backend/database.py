@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 # 数据库文件放在 data 目录下
 DB_DIR = Path(__file__).resolve().parent.parent / "data"
 DB_PATH = DB_DIR / "inventory.db"
+EVIDENCE_DIR = DB_DIR / "evidence"
+EVIDENCE_RETENTION_DAYS = 30
 
 
 # ──────────────────────────────────────────────
@@ -50,6 +53,72 @@ def split_codes(value: str) -> set[str]:
     return {normalize_barcode(code) for code in (value or "").split(",") if normalize_barcode(code)}
 
 
+def evidence_photo_path(photo_path: str) -> Path | None:
+    """把现场照片相对路径转成安全的绝对路径，防止路径穿越。"""
+    if not photo_path:
+        return None
+    path = (EVIDENCE_DIR / photo_path).resolve()
+    evidence_root = EVIDENCE_DIR.resolve()
+    if evidence_root not in path.parents and path != evidence_root:
+        return None
+    return path
+
+
+def evidence_photo_is_valid(photo_path: str) -> bool:
+    """判断现场照片是否仍在 30 天有效期内。"""
+    path = evidence_photo_path(photo_path)
+    if path is None or not path.exists():
+        return False
+    uploaded_at = datetime.fromtimestamp(path.stat().st_mtime)
+    return datetime.now() - uploaded_at <= timedelta(days=EVIDENCE_RETENTION_DAYS)
+
+
+def add_evidence_countdown(record: dict[str, Any]) -> dict[str, Any]:
+    """给现场凭证照片补充 30 天倒计时信息，供 PC 异常复核提醒使用。"""
+    photo_path = record.get("evidence_photo") or ""
+    record["evidence_photo_valid"] = False
+    record["evidence_photo_uploaded_at"] = ""
+    record["evidence_photo_expires_at"] = ""
+    record["evidence_photo_days_left"] = None
+    if not photo_path:
+        return record
+
+    path = evidence_photo_path(photo_path)
+    if path is None or not path.exists():
+        return record
+
+    uploaded_at = datetime.fromtimestamp(path.stat().st_mtime)
+    expires_at = uploaded_at + timedelta(days=EVIDENCE_RETENTION_DAYS)
+    seconds_left = (expires_at - datetime.now()).total_seconds()
+    record["evidence_photo_uploaded_at"] = uploaded_at.isoformat(timespec="seconds")
+    record["evidence_photo_expires_at"] = expires_at.isoformat(timespec="seconds")
+    record["evidence_photo_days_left"] = max(0, math.ceil(seconds_left / 86400))
+    record["evidence_photo_valid"] = seconds_left > 0
+    return record
+
+
+def cleanup_expired_evidence_photos() -> int:
+    """删除超过 30 天的现场凭证照片，返回删除数量。"""
+    if not EVIDENCE_DIR.exists():
+        return 0
+    deleted = 0
+    cutoff = datetime.now() - timedelta(days=EVIDENCE_RETENTION_DAYS)
+    for path in EVIDENCE_DIR.rglob("*"):
+        if not path.is_file():
+            continue
+        if datetime.fromtimestamp(path.stat().st_mtime) <= cutoff:
+            path.unlink(missing_ok=True)
+            deleted += 1
+    # 清理空目录，让 evidence 目录保持干净。
+    for path in sorted(EVIDENCE_DIR.rglob("*"), reverse=True):
+        if path.is_dir():
+            try:
+                path.rmdir()
+            except OSError:
+                pass
+    return deleted
+
+
 def calc_model_match_status(actual_model: str, expected_model: str) -> str:
     """计算型号比对结果。"""
     return "一致" if normalize_model(actual_model) == normalize_model(expected_model) else "不一致"
@@ -74,6 +143,21 @@ def calc_asset_match_status(
 
 def add_compare_status(record: dict[str, Any]) -> dict[str, Any]:
     """给盘点记录补充资产条码和型号的独立比对结果。"""
+    record = add_evidence_countdown(record)
+    record_type = record.get("record_type") or "normal"
+    if record_type == "surplus":
+        record["field_status"] = record.get("field_status") or "盘盈"
+        record["asset_match_status"] = "盘盈"
+        record["model_match_status"] = "盘盈"
+        return record
+    if record_type == "missing":
+        record["field_status"] = record.get("field_status") or "盘亏"
+        record["asset_match_status"] = "盘亏"
+        record["model_match_status"] = "盘亏"
+        return record
+
+    record["record_type"] = record_type
+    record["field_status"] = record.get("field_status") or "正常"
     record["asset_match_status"] = calc_asset_match_status(
         record.get("asset_barcodes") or "",
         bool(record.get("asset_no_barcode")),
@@ -125,6 +209,10 @@ def init_db() -> None:
             rack_no           TEXT DEFAULT '',
             actual_model      TEXT DEFAULT '',
             notes             TEXT DEFAULT '',
+            record_type       TEXT DEFAULT 'normal',
+            field_status      TEXT DEFAULT '正常',
+            missing_reason    TEXT DEFAULT '',
+            created_by        INTEGER,
             match_status      TEXT DEFAULT '未扫'
                               CHECK(match_status IN ('一致', '不一致', '未扫')),
             scanned_at        TEXT
@@ -152,6 +240,10 @@ def init_db() -> None:
         "review_result": "ALTER TABLE scan_records ADD COLUMN review_result TEXT DEFAULT ''",
         "reviewed_at": "ALTER TABLE scan_records ADD COLUMN reviewed_at TEXT",
         "rack_no": "ALTER TABLE scan_records ADD COLUMN rack_no TEXT DEFAULT ''",
+        "record_type": "ALTER TABLE scan_records ADD COLUMN record_type TEXT DEFAULT 'normal'",
+        "field_status": "ALTER TABLE scan_records ADD COLUMN field_status TEXT DEFAULT '正常'",
+        "missing_reason": "ALTER TABLE scan_records ADD COLUMN missing_reason TEXT DEFAULT ''",
+        "created_by": "ALTER TABLE scan_records ADD COLUMN created_by INTEGER",
     }
     for column, statement in record_migrations.items():
         if column not in record_columns:
@@ -297,8 +389,8 @@ def get_tasks_by_user(user_id: int) -> list[dict[str, Any]]:
             SELECT
                 t.id, t.task_name, t.room_name, t.status, t.created_at,
                 t.assigned_at, t.completed_at,
-                COUNT(sr.id) AS total,
-                SUM(CASE WHEN sr.match_status != '未扫' THEN 1 ELSE 0 END) AS scanned,
+                SUM(CASE WHEN sr.id IS NOT NULL AND COALESCE(sr.record_type, 'normal') != 'surplus' THEN 1 ELSE 0 END) AS total,
+                SUM(CASE WHEN sr.id IS NOT NULL AND COALESCE(sr.record_type, 'normal') != 'surplus' AND sr.match_status != '未扫' THEN 1 ELSE 0 END) AS scanned,
                 SUM(CASE WHEN sr.match_status = '不一致' THEN 1 ELSE 0 END) AS mismatch
             FROM tasks t
             LEFT JOIN scan_records sr ON sr.task_id = t.id
@@ -331,8 +423,8 @@ def get_all_tasks() -> list[dict[str, Any]]:
                 t.id, t.task_name, t.room_name, t.status, t.created_at,
                 t.assigned_at, t.completed_at,
                 u.name AS assigned_name,
-                COUNT(sr.id) AS total,
-                SUM(CASE WHEN sr.match_status != '未扫' THEN 1 ELSE 0 END) AS scanned,
+                SUM(CASE WHEN sr.id IS NOT NULL AND COALESCE(sr.record_type, 'normal') != 'surplus' THEN 1 ELSE 0 END) AS total,
+                SUM(CASE WHEN sr.id IS NOT NULL AND COALESCE(sr.record_type, 'normal') != 'surplus' AND sr.match_status != '未扫' THEN 1 ELSE 0 END) AS scanned,
                 SUM(CASE WHEN sr.match_status = '不一致' THEN 1 ELSE 0 END) AS mismatch
             FROM tasks t
             LEFT JOIN scan_records sr ON sr.task_id = t.id
@@ -443,6 +535,125 @@ def review_record(
         conn.close()
 
 
+def refresh_task_status(conn: sqlite3.Connection, task_id: int) -> None:
+    """按现有记录刷新任务状态；盘盈不影响原清单是否全部完成。"""
+    task_items = conn.execute(
+        "SELECT match_status, record_type FROM scan_records WHERE task_id = ?",
+        (task_id,),
+    ).fetchall()
+    normal_items = [r for r in task_items if (r["record_type"] or "normal") != "surplus"]
+    all_normal_done = bool(normal_items) and all(r["match_status"] != "未扫" for r in normal_items)
+    any_done = any(r["match_status"] != "未扫" for r in task_items)
+    if all_normal_done:
+        conn.execute(
+            "UPDATE tasks SET status = 'done', completed_at = ? WHERE id = ?",
+            (datetime.now().isoformat(), task_id),
+        )
+    elif any_done:
+        conn.execute(
+            "UPDATE tasks SET status = 'doing', completed_at = NULL WHERE id = ? AND status != 'done'",
+            (task_id,),
+        )
+
+
+def mark_record_missing(record_id: int, reason: str, notes: str = "") -> dict[str, Any] | None:
+    """把任务清单内设备标记为盘亏：现场应有但未找到。"""
+    conn = get_conn()
+    try:
+        record = dict_from_row(conn.execute(
+            "SELECT * FROM scan_records WHERE id = ?", (record_id,)
+        ).fetchone())
+        if record is None:
+            return None
+        if (record.get("record_type") or "normal") == "surplus":
+            raise ValueError("盘盈记录不能标记为盘亏")
+
+        final_reason = reason.strip()
+        if not final_reason:
+            raise ValueError("请选择盘亏原因")
+        conn.execute("""
+            UPDATE scan_records SET
+                record_type = 'missing',
+                field_status = '盘亏',
+                missing_reason = ?,
+                notes = ?,
+                match_status = '不一致',
+                scanned_at = ?,
+                review_status = '待复核'
+            WHERE id = ?
+        """, (
+            final_reason,
+            notes.strip() or final_reason,
+            datetime.now().isoformat(),
+            record_id,
+        ))
+        refresh_task_status(conn, record["task_id"])
+        conn.commit()
+        return add_compare_status(dict_from_row(conn.execute(
+            "SELECT * FROM scan_records WHERE id = ?", (record_id,)
+        ).fetchone()))
+    finally:
+        conn.close()
+
+
+def create_surplus_record(
+    task_id: int,
+    device_name: str,
+    actual_model: str,
+    asset_barcodes: str,
+    asset_no_barcode: bool,
+    cabinet_barcodes: str,
+    cabinet_no_barcode: bool,
+    rack_no: str,
+    notes: str,
+    created_by: int | None = None,
+) -> dict[str, Any] | None:
+    """登记盘盈设备：现场多出的、原任务清单中没有的设备。"""
+    conn = get_conn()
+    try:
+        task = conn.execute(
+            "SELECT id FROM tasks WHERE id = ? AND is_deleted = 0", (task_id,)
+        ).fetchone()
+        if task is None:
+            return None
+        if not device_name.strip():
+            raise ValueError("请填写盘盈设备名称")
+        if not rack_no.strip():
+            raise ValueError("请填写现场机架号")
+        if not asset_no_barcode and not asset_barcodes.strip():
+            raise ValueError("请扫码资产条码或勾选无条码")
+        if not cabinet_no_barcode and not cabinet_barcodes.strip():
+            raise ValueError("请扫码机柜条码或勾选无条码")
+
+        cur = conn.execute("""
+            INSERT INTO scan_records (
+                task_id, device_name, expected_model, expected_barcode,
+                asset_barcodes, asset_no_barcode, cabinet_barcodes, cabinet_no_barcode,
+                rack_no, actual_model, notes, record_type, field_status,
+                match_status, scanned_at, created_by, review_status
+            ) VALUES (?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, 'surplus', '盘盈', '不一致', ?, ?, '待复核')
+        """, (
+            task_id,
+            device_name.strip(),
+            asset_barcodes.strip(),
+            1 if asset_no_barcode else 0,
+            cabinet_barcodes.strip(),
+            1 if cabinet_no_barcode else 0,
+            rack_no.strip(),
+            actual_model.strip(),
+            notes.strip(),
+            datetime.now().isoformat(),
+            created_by,
+        ))
+        refresh_task_status(conn, task_id)
+        conn.commit()
+        return add_compare_status(dict_from_row(conn.execute(
+            "SELECT * FROM scan_records WHERE id = ?", (cur.lastrowid,)
+        ).fetchone()))
+    finally:
+        conn.close()
+
+
 def submit_scan(
     record_id: int,
     asset_barcodes: str,
@@ -466,26 +677,11 @@ def submit_scan(
         if not rack_no.strip():
             raise ValueError("请填写现场机架号")
 
-        if (asset_no_barcode or cabinet_no_barcode) and not record.get("evidence_photo"):
-            raise ValueError("无条码设备必须上传现场照片")
-
-        submitted_barcodes = split_codes(asset_barcodes)
-        if submitted_barcodes:
-            other_rows = conn.execute(
-                """SELECT asset_barcodes
-                   FROM scan_records
-                   WHERE task_id = ? AND id != ? AND asset_barcodes != ''""",
-                (record["task_id"], record_id),
-            ).fetchall()
-            used_barcodes = {
-                normalize_barcode(code)
-                for row in other_rows
-                for code in row["asset_barcodes"].split(",")
-                if normalize_barcode(code)
-            }
-            duplicates = submitted_barcodes & used_barcodes
-            if duplicates:
-                raise ValueError(f"资产条码已在当前任务的其他设备使用：{', '.join(sorted(duplicates))}")
+        if asset_no_barcode or cabinet_no_barcode:
+            if not record.get("evidence_photo"):
+                raise ValueError("无条码设备必须上传现场照片")
+            if not evidence_photo_is_valid(record.get("evidence_photo") or ""):
+                raise ValueError("照片已过期，请重新盘查")
 
         model_match_status = calc_model_match_status(actual_model, record["expected_model"])
         asset_match_status = calc_asset_match_status(
@@ -504,6 +700,9 @@ def submit_scan(
                 rack_no = ?,
                 actual_model = ?,
                 notes = ?,
+                record_type = 'normal',
+                field_status = '正常',
+                missing_reason = '',
                 match_status = ?,
                 scanned_at = ?
             WHERE id = ?
@@ -521,27 +720,9 @@ def submit_scan(
         ))
         conn.commit()
 
-        # 更新任务状态：如果全部扫完则标记为 done
-        task_items = conn.execute(
-            "SELECT match_status FROM scan_records WHERE task_id = ?",
-            (record["task_id"],),
-        ).fetchall()
-        all_done = all(r["match_status"] != "未扫" for r in task_items)
-        if all_done:
-            conn.execute(
-                "UPDATE tasks SET status = 'done', completed_at = ? WHERE id = ?",
-                (datetime.now().isoformat(), record["task_id"]),
-            )
-            conn.commit()
-        else:
-            # 至少有一条已扫，标记为 doing
-            any_done = any(r["match_status"] != "未扫" for r in task_items)
-            if any_done:
-                conn.execute(
-                    "UPDATE tasks SET status = 'doing' WHERE id = ? AND status = 'pending'",
-                    (record["task_id"],),
-                )
-                conn.commit()
+        # 更新任务状态：如果原清单全部处理完则标记为 done，盘盈只作为异常补充。
+        refresh_task_status(conn, record["task_id"])
+        conn.commit()
 
         # 返回更新后的记录
         return add_compare_status(dict_from_row(conn.execute(

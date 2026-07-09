@@ -50,6 +50,8 @@ function getTaskItems(taskId) { return request("GET", "/tasks/" + taskId + "/ite
 
 // 盘点操作
 function submitScan(data) { return request("POST", "/scan", data); }
+function submitMissing(recordId, data) { return request("POST", "/records/" + recordId + "/missing", data); }
+function submitSurplus(data) { return request("POST", "/surplus", data); }
 function uploadEvidencePhoto(recordId, filePath) {
   return new Promise((resolve, reject) => {
     wx.uploadFile({
@@ -85,6 +87,8 @@ module.exports = {
   getTasks,
   getTaskItems,
   submitScan,
+  submitMissing,
+  submitSurplus,
   uploadEvidencePhoto,
   getReport,
   getExportUrl,

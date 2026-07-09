@@ -492,18 +492,75 @@ def get_worker_options(workers: list[dict]) -> dict[str, int]:
     return {worker["name"]: worker["id"] for worker in workers}
 
 
-def anomaly_rank(record: dict) -> int:
-    """设备明细默认按资产条码风险优先展示。"""
+ANOMALY_TYPES = ["资产条码不一致", "无条码", "设备型号不一致", "盘亏", "盘盈"]
+MATCHED_ANOMALIES = {"资产条码不一致", "无条码", "设备型号不一致"}
+UNMATCHED_ANOMALIES = {"盘亏", "盘盈"}
+
+
+def get_anomaly_types(record: dict) -> list[str]:
+    """按“设备对得上/对不上”的口径识别 5 类现场异常。"""
+    record_type = record.get("record_type") or "normal"
+    if record_type == "missing":
+        return ["盘亏"]
+    if record_type == "surplus":
+        return ["盘盈"]
+
+    types = []
     asset_status = record.get("asset_match_status") or record.get("match_status")
-    if asset_status == "不一致":
-        return 0
-    if asset_status in {"无条码", "无期望条码"}:
-        return 1
-    if asset_status == "未扫":
-        return 2
+    if asset_status not in {"一致", "未扫", "无条码"}:
+        # 新导入清单已限制资产条码不能为空；这里兼容历史“无期望条码”数据，统一归入条码不一致类。
+        types.append("资产条码不一致")
+    if asset_status == "无条码":
+        types.append("无条码")
     if record.get("model_match_status") == "不一致":
-        return 3
-    return 4
+        types.append("设备型号不一致")
+    return types
+
+
+def anomaly_category(record: dict) -> str:
+    """返回异常大类：设备对得上 / 设备对不上 / 正常。"""
+    types = set(get_anomaly_types(record))
+    if types & UNMATCHED_ANOMALIES:
+        return "设备对不上"
+    if types & MATCHED_ANOMALIES:
+        return "设备对得上"
+    return "正常"
+
+
+def is_anomaly_record(record: dict) -> bool:
+    """是否属于需要管理员复核或闭环的现场异常。"""
+    return bool(get_anomaly_types(record))
+
+
+def anomaly_type_text(record: dict) -> str:
+    types = get_anomaly_types(record)
+    return "、".join(types) if types else "-"
+
+
+def anomaly_rank(record: dict) -> int:
+    """设备明细默认按现场异常处理优先级展示。"""
+    types = set(get_anomaly_types(record))
+    if record.get("evidence_photo") and (record.get("evidence_photo_days_left") is None or record.get("evidence_photo_days_left") <= 3):
+        return 0
+    for idx, anomaly_type in enumerate(["盘亏", "盘盈", "资产条码不一致", "无条码", "设备型号不一致"], start=1):
+        if anomaly_type in types:
+            return idx
+    if record.get("match_status") == "未扫":
+        return 6
+    return 7
+
+
+def evidence_countdown_text(record: dict) -> str:
+    """生成现场凭证照片 30 天有效期倒计时文案。"""
+    if not record.get("evidence_photo"):
+        return ""
+    days_left = record.get("evidence_photo_days_left")
+    expires_at = format_time(record.get("evidence_photo_expires_at"))
+    if days_left is None:
+        return "现场凭证照片已过期或已清理，请重新盘查"
+    if days_left <= 0 or not record.get("evidence_photo_valid"):
+        return "现场凭证照片已过期，请重新盘查"
+    return f"现场凭证照片剩余 {days_left} 天过期（到期时间：{expires_at}），请尽快复核处理"
 
 
 def get_grid_selected_rows(grid_response) -> list[dict]:
@@ -634,7 +691,7 @@ def render_upload_page() -> None:
         p2.metric("设备总数", preview["device_count"])
         p3.metric("错误项", error_count)
         p4.metric("提醒项", remind_count)
-        p5.metric("空资产标签", preview["missing_barcode"])
+        p5.metric("空资产条码", preview["missing_barcode"])
         st.dataframe(
             [{"机房名称": row["room_name"], "设备数": row["device_count"]} for row in preview["rooms"]],
             hide_index=True,
@@ -883,7 +940,7 @@ def render_report_page() -> None:
     if selected_task_id in task_options.values():
         default_index = list(task_options.values()).index(selected_task_id)
 
-    select_col, export_col = st.columns([3, 1])
+    select_col, export_col, detail_export_col, surplus_export_col = st.columns([2.6, 1, 1, 1.1])
     with select_col:
         selected_label = st.selectbox(
             "报告任务",
@@ -897,6 +954,20 @@ def render_report_page() -> None:
         st.link_button(
             "📥 下载 Excel 报告",
             f"{API_BASE}/export/{selected_report_id}",
+            width="stretch",
+        )
+    with detail_export_col:
+        st.markdown('<div class="button-bottom-align-spacer"></div>', unsafe_allow_html=True)
+        st.link_button(
+            "📋 导出设备明细",
+            f"{API_BASE}/export/{selected_report_id}/details",
+            width="stretch",
+        )
+    with surplus_export_col:
+        st.markdown('<div class="button-bottom-align-spacer"></div>', unsafe_allow_html=True)
+        st.link_button(
+            "🛠️ 导出盘盈盘亏",
+            f"{API_BASE}/export/{selected_report_id}/surplus_missing",
             width="stretch",
         )
 
@@ -914,17 +985,51 @@ def render_report_page() -> None:
         st.info("当前任务暂无盘点记录。")
         return
 
-    total_count = len(all_records)
-    ok_count = sum(1 for record in all_records if record.get("asset_match_status") == "一致")
-    diff_count = sum(1 for record in all_records if record.get("asset_match_status") not in {"一致", "未扫", "无条码"})
-    pending_count = sum(1 for record in all_records if record["match_status"] == "未扫")
-    no_barcode_count = sum(1 for record in all_records if record.get("asset_match_status") == "无条码")
-    c1, c2, c3, c4, c5 = st.columns(5)
+    inventory_records = [record for record in all_records if (record.get("record_type") or "normal") != "surplus"]
+    anomaly_records = [record for record in all_records if is_anomaly_record(record)]
+    total_count = len(inventory_records)
+    scanned_count = sum(1 for record in inventory_records if record["match_status"] != "未扫")
+    pending_count = sum(1 for record in inventory_records if record["match_status"] == "未扫")
+    anomaly_count = len(anomaly_records)
+    matched_anomaly_count = sum(1 for record in anomaly_records if anomaly_category(record) == "设备对得上")
+    unmatched_anomaly_count = sum(1 for record in anomaly_records if anomaly_category(record) == "设备对不上")
+    review_pending_count = sum(
+        1 for record in anomaly_records
+        if (record.get("review_status") or "待复核") == "待复核"
+    )
+    evidence_expiring_count = sum(
+        1 for record in anomaly_records
+        if record.get("evidence_photo")
+        and (record.get("evidence_photo_days_left") is None or record.get("evidence_photo_days_left") <= 3)
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("设备总数", total_count)
-    c2.metric("条码一致", ok_count)
-    c3.metric("条码异常", diff_count)
-    c4.metric("未扫", pending_count)
-    c5.metric("无条码", no_barcode_count)
+    c2.metric("已盘", scanned_count)
+    c3.metric("未盘", pending_count)
+    c4.metric("异常设备数", anomaly_count)
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("设备对得上异常", matched_anomaly_count)
+    c6.metric("设备对不上异常", unmatched_anomaly_count)
+    c7.metric("待复核", review_pending_count)
+    c8.metric("凭证即将过期", evidence_expiring_count)
+
+    render_section("现场异常分类统计", "🧭")
+    anomaly_summary_rows = []
+    for anomaly_type in ANOMALY_TYPES:
+        type_records = [record for record in all_records if anomaly_type in get_anomaly_types(record)]
+        anomaly_summary_rows.append({
+            "异常大类": "设备对不上" if anomaly_type in UNMATCHED_ANOMALIES else "设备对得上",
+            "异常类型": anomaly_type,
+            "数量": len(type_records),
+            "待复核": sum(1 for record in type_records if (record.get("review_status") or "待复核") == "待复核"),
+            "已闭环": sum(1 for record in type_records if (record.get("review_status") or "") == "已闭环"),
+        })
+    render_header_filter_grid(
+        anomaly_summary_rows,
+        key="anomaly_summary_grid",
+        height=240,
+    )
 
     rooms = {}
     for record in all_records:
@@ -936,22 +1041,40 @@ def render_report_page() -> None:
                 "asset_ok": 0,
                 "asset_diff": 0,
                 "no_barcode": 0,
+                "anomaly": 0,
+                "matched_anomaly": 0,
+                "unmatched_anomaly": 0,
+                "surplus": 0,
+                "missing": 0,
                 "pending": 0,
                 "last_scanned_at": "",
                 "records": [],
             }
         asset_status = record.get("asset_match_status") or record["match_status"]
-        rooms[room_name]["total"] += 1
-        if record["match_status"] == "未扫":
-            rooms[room_name]["pending"] += 1
-        else:
-            rooms[room_name]["scanned"] += 1
-        if asset_status == "一致":
-            rooms[room_name]["asset_ok"] += 1
-        elif asset_status == "无条码":
-            rooms[room_name]["no_barcode"] += 1
-        elif asset_status != "未扫":
-            rooms[room_name]["asset_diff"] += 1
+        record_type = record.get("record_type") or "normal"
+        if record_type != "surplus":
+            rooms[room_name]["total"] += 1
+            if record["match_status"] == "未扫":
+                rooms[room_name]["pending"] += 1
+            else:
+                rooms[room_name]["scanned"] += 1
+        if record_type not in {"surplus", "missing"}:
+            if asset_status == "一致":
+                rooms[room_name]["asset_ok"] += 1
+            elif asset_status == "无条码":
+                rooms[room_name]["no_barcode"] += 1
+            elif asset_status != "未扫":
+                rooms[room_name]["asset_diff"] += 1
+        if record_type == "surplus":
+            rooms[room_name]["surplus"] += 1
+        elif record_type == "missing":
+            rooms[room_name]["missing"] += 1
+        if is_anomaly_record(record):
+            rooms[room_name]["anomaly"] += 1
+            if anomaly_category(record) == "设备对得上":
+                rooms[room_name]["matched_anomaly"] += 1
+            elif anomaly_category(record) == "设备对不上":
+                rooms[room_name]["unmatched_anomaly"] += 1
         rooms[room_name]["records"].append(record)
         if record.get("_last_scanned_at"):
             rooms[room_name]["last_scanned_at"] = max(
@@ -969,6 +1092,11 @@ def render_report_page() -> None:
             "条码一致": data["asset_ok"],
             "条码异常": data["asset_diff"],
             "无条码": data["no_barcode"],
+            "异常设备数": data["anomaly"],
+            "设备对得上异常": data["matched_anomaly"],
+            "设备对不上异常": data["unmatched_anomaly"],
+            "盘盈": data["surplus"],
+            "盘亏": data["missing"],
             "最后盘点时间": format_time(data["last_scanned_at"]),
         }
         for room_name, data in sorted(rooms.items())
@@ -985,27 +1113,35 @@ def render_report_page() -> None:
     with view_col:
         detail_view = st.selectbox(
             "处理视图",
-            ["全部记录", "条码异常", "未扫设备", "无条码", "待复核"],
+            [
+                "全部记录", "全部异常", "设备对得上", "设备对不上",
+                "资产条码不一致", "无条码", "设备型号不一致", "盘亏", "盘盈",
+                "未扫设备", "待复核", "已闭环",
+            ],
             help="用于快速优先处理现场异常，不影响表头内的模糊筛选。",
         )
     records = all_records if selected_room == "全部" else rooms[selected_room]["records"]
-    if detail_view == "条码异常":
-        records = [
-            record for record in records
-            if record.get("asset_match_status") not in {"一致", "未扫", "无条码"}
-        ]
+    if detail_view == "全部异常":
+        records = [record for record in records if is_anomaly_record(record)]
+    elif detail_view == "设备对得上":
+        records = [record for record in records if anomaly_category(record) == "设备对得上"]
+    elif detail_view == "设备对不上":
+        records = [record for record in records if anomaly_category(record) == "设备对不上"]
+    elif detail_view in ANOMALY_TYPES:
+        records = [record for record in records if detail_view in get_anomaly_types(record)]
     elif detail_view == "未扫设备":
         records = [record for record in records if record["match_status"] == "未扫"]
-    elif detail_view == "无条码":
-        records = [record for record in records if record.get("asset_match_status") == "无条码"]
     elif detail_view == "待复核":
         records = [
             record for record in records
-            if (
-                record.get("asset_match_status") not in {"一致", "未扫"}
-                or record.get("model_match_status") == "不一致"
-            )
+            if is_anomaly_record(record)
             and (record.get("review_status") or "待复核") == "待复核"
+        ]
+    elif detail_view == "已闭环":
+        records = [
+            record for record in records
+            if is_anomaly_record(record)
+            and (record.get("review_status") or "") == "已闭环"
         ]
     records = sorted(records, key=anomaly_rank)
 
@@ -1013,6 +1149,9 @@ def render_report_page() -> None:
     device_detail_rows = [
         {
             "机房": record["_room_name"],
+            "异常大类": anomaly_category(record),
+            "异常类型": anomaly_type_text(record),
+            "现场状态": record.get("field_status") or "正常",
             "设备": record["device_name"],
             "设备型号": record["expected_model"],
             "资产条码": record.get("expected_barcode") or "-",
@@ -1023,6 +1162,7 @@ def render_report_page() -> None:
             "资产条码对比结果": record.get("asset_match_status") or record["match_status"],
             "设备型号对比结果": record.get("model_match_status") or "-",
             "复核状态": record.get("review_status") or "待复核",
+            "盘亏原因": record.get("missing_reason") or "-",
             "备注": record["notes"] or "-",
         }
         for record in records
@@ -1035,19 +1175,34 @@ def render_report_page() -> None:
 
     mismatch_records = [
         record for record in records
-        if record.get("asset_match_status") not in {"一致", "未扫"}
-        or record.get("model_match_status") == "不一致"
+        if is_anomaly_record(record)
     ]
     if mismatch_records:
-        render_section("异常复核闭环", "⚠️")
+        render_section("现场异常复核闭环", "⚠️")
         anomaly_options = {
-            f"{record['_room_name']} / {record['device_name']} / {record.get('review_status') or '待复核'}": record
+            (
+                f"{record['_room_name']} / {record['device_name']} / {anomaly_type_text(record)} / {record.get('review_status') or '待复核'}"
+                + (
+                    f" / 凭证剩余{record.get('evidence_photo_days_left')}天"
+                    if record.get("evidence_photo") and record.get("evidence_photo_days_left") is not None
+                    else ""
+                )
+            ): record
             for record in mismatch_records
         }
         anomaly_label = st.selectbox("选择异常记录", list(anomaly_options.keys()))
         anomaly = anomaly_options[anomaly_label]
-        st.info(f"期望型号：{anomaly['expected_model']}；现场型号：{anomaly['actual_model'] or '-'}")
+        st.info(
+            f"异常大类：{anomaly_category(anomaly)}；异常类型：{anomaly_type_text(anomaly)}；"
+            f"期望型号：{anomaly['expected_model'] or '-'}；现场型号：{anomaly['actual_model'] or '-'}"
+        )
         if anomaly.get("evidence_photo"):
+            countdown_text = evidence_countdown_text(anomaly)
+            days_left = anomaly.get("evidence_photo_days_left")
+            if days_left is None or days_left <= 3:
+                st.warning(f"⏰ {countdown_text}")
+            else:
+                st.info(f"⏰ {countdown_text}")
             st.link_button("🖼️ 查看现场凭证", f"{API_BASE}/evidence/{anomaly['evidence_photo']}")
         review_col, reason_col, handler_col = st.columns([1, 1.2, 1])
         with review_col:
@@ -1059,7 +1214,7 @@ def render_report_page() -> None:
         with reason_col:
             review_reason = st.selectbox(
                 "异常原因",
-                ["资源表错误", "现场条码缺失", "贴错条码", "设备更换未同步", "现场录入错误", "其他"],
+                ["现场盘盈", "现场盘亏", "资源表错误", "现场条码缺失", "贴错条码", "设备更换未同步", "现场录入错误", "其他"],
                 key="review_reason",
             )
         with handler_col:
