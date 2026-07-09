@@ -1,0 +1,15 @@
+{
+  "pages": [
+    "pages/login/login",
+    "pages/tasks/tasks",
+    "pages/scan/scan"
+  ],
+  "window": {
+    "navigationBarTitleText": "机房资产盘点",
+    "navigationBarBackgroundColor": "#1677ff",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#f5f5f5"
+  },
+  "requiredBackgroundModes": [],
+  "sitemapLocation": "sitemap.json"
+}

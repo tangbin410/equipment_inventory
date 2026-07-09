@@ -1,0 +1,96 @@
+/* 登录页样式 */
+.login-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 0 24px;
+  background: linear-gradient(180deg, #dcecff 0%, #f4f7fb 58%, #f4f7fb 100%);
+}
+
+.login-box {
+  background: #fff;
+  border-radius: 18px;
+  padding: 42px 28px 34px;
+  width: 100%;
+  max-width: 360px;
+  text-align: center;
+  box-shadow: 0 12px 30px rgba(31,45,61,0.1);
+}
+
+.logo {
+  font-size: 52px;
+  margin-bottom: 10px;
+}
+
+.title {
+  font-size: 22px;
+  font-weight: 700;
+  color: #1f2d3d;
+  display: block;
+  margin-bottom: 6px;
+}
+
+.subtitle {
+  font-size: 14px;
+  color: #6b7c90;
+  display: block;
+  margin-bottom: 32px;
+}
+
+.login-btn {
+  width: 100%;
+  background: linear-gradient(135deg, #1677ff, #3d8bff);
+  color: #fff;
+  border-radius: 12px;
+  padding: 10px 0;
+  font-size: 16px;
+  font-weight: 600;
+  border: none;
+  box-shadow: 0 8px 16px rgba(22,119,255,0.22);
+}
+
+.login-btn:active {
+  background-color: #4096ff;
+}
+
+.login-btn[disabled] {
+  background-color: #91caff;
+}
+
+.dev-hint {
+  display: block;
+  font-size: 12px;
+  color: #bbb;
+  margin-top: 24px;
+  margin-bottom: 8px;
+}
+
+.dev-users {
+  display: flex;
+  flex-direction: column;
+}
+
+.dev-user {
+  background: #f8fbff;
+  border: 1px solid #d8e7fb;
+  border-radius: 10px;
+  padding: 11px 16px;
+  font-size: 14px;
+  color: #1f2d3d;
+  text-align: left;
+  margin-bottom: 8px;
+}
+
+.dev-user:active {
+  background: #f0f5ff;
+  border-color: #1677ff;
+}
+
+.footer-text {
+  display: block;
+  font-size: 11px;
+  color: #ccc;
+  margin-top: 24px;
+}

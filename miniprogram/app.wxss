@@ -1,0 +1,115 @@
+/* 全局样式 */
+page {
+  background-color: #f4f7fb;
+  font-size: 14px;
+  color: #1f2d3d;
+  box-sizing: border-box;
+}
+
+.card {
+  background: #fff;
+  border-radius: 12px;
+  margin: 10px 12px;
+  padding: 14px 16px;
+  box-shadow: 0 6px 18px rgba(31,45,61,0.06);
+}
+
+.btn-primary {
+  width: 100%;
+  background: linear-gradient(135deg, #1677ff, #3d8bff);
+  color: #fff;
+  border-radius: 10px;
+  padding: 12px 0;
+  text-align: center;
+  font-size: 16px;
+  font-weight: 600;
+  margin-top: 12px;
+  box-shadow: 0 8px 16px rgba(22,119,255,0.2);
+}
+
+.btn-primary:active {
+  background-color: #4096ff;
+}
+
+.btn-small {
+  display: inline-block;
+  background: #1677ff;
+  color: #fff;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 13px;
+  border: none;
+  line-height: 1.4;
+}
+
+.btn-small:active {
+  background-color: #4096ff;
+}
+
+.btn-small[disabled] {
+  background-color: #edf2f7;
+  color: #a8b4c2;
+}
+
+.field-label {
+  font-size: 15px;
+  font-weight: 500;
+  color: #333;
+  margin-bottom: 6px;
+  display: block;
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.field-row > view,
+.field-row > text,
+.field-row > button,
+.field-row > checkbox,
+.field-row > input {
+  margin-right: 10px;
+}
+
+.tag {
+  display: inline-block;
+  background: #f0f5ff;
+  color: #1677ff;
+  border: 1px solid #adc6ff;
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 12px;
+  margin: 2px 4px 2px 0;
+}
+
+.tag-success {
+  background: #f6ffed;
+  color: #52c41a;
+  border-color: #b7eb8f;
+}
+
+.tag-error {
+  background: #fff2f0;
+  color: #ff4d4f;
+  border-color: #ffccc7;
+}
+
+.tag-wait {
+  background: #fffbe6;
+  color: #faad14;
+  border-color: #ffe58f;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+}
+
+.status-dot.done { background: #52c41a; }
+.status-dot.ing  { background: #1677ff; }
+.status-dot.wait { background: #d9d9d9; }

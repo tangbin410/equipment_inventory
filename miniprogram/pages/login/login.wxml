@@ -1,0 +1,26 @@
+<view class="login-page">
+  <view class="login-box">
+    <view class="logo">📋</view>
+    <text class="title">机房资产盘点系统</text>
+    <text class="subtitle">现场人员扫码盘点工具</text>
+
+    <button class="login-btn" bindtap="handleLogin" loading="{{loading}}" disabled="{{loading}}">
+      <text wx:if="{{!loading}}">微信一键登录</text>
+      <text wx:else>登录中...</text>
+    </button>
+
+    <text class="dev-hint" wx:if="{{showDevHint}}">
+      开发测试：选择测试账号
+    </text>
+    <view class="dev-users" wx:if="{{showDevHint}}">
+      <view class="dev-user" bindtap="devLogin" data-openid="worker_001">
+        <text>👤 张三（现场人员）</text>
+      </view>
+      <view class="dev-user" bindtap="devLogin" data-openid="worker_002">
+        <text>👤 李四（现场人员）</text>
+      </view>
+    </view>
+  </view>
+
+  <text class="footer-text">v1.0.0  |  传输网管维护</text>
+</view>

@@ -1,0 +1,154 @@
+<!-- 设备盘点页 - 核心页面 -->
+
+<view class="page">
+  <!-- 进度概览 -->
+  <view class="card">
+    <view class="progress-overview">
+      <text class="progress-title">{{taskName}}</text>
+      <text class="progress-detail">已盘点 {{scannedCount}} / {{totalCount}} 台</text>
+    </view>
+    <view class="progress-bar">
+      <view class="progress-fill" style="width: {{totalCount > 0 ? (scannedCount / totalCount * 100) : 0}}%"></view>
+    </view>
+  </view>
+
+  <view class="device-filter-bar">
+    <input class="device-search" placeholder="搜索设备、型号、资产条码或机架号" bindinput="onSearchInput" />
+    <picker mode="selector" range="{{filterOptions}}" bindchange="onDeviceFilterChange">
+      <view class="device-filter">筛选</view>
+    </picker>
+  </view>
+
+  <!-- 加载/空状态 -->
+  <view wx:if="{{loading}}" class="loading">
+    <text>加载中...</text>
+  </view>
+
+  <!-- 设备列表 -->
+  <view wx:else class="device-list">
+    <view class="device-card card" wx:for="{{devices}}" wx:key="id" data-id="{{item.id}}">
+      <!-- 设备头部 - 点击展开/收起 -->
+      <view class="device-header" bindtap="toggleDevice" data-id="{{item.id}}">
+        <view class="device-info">
+          <view class="status-icon {{item.submitted ? item._matchIcon : 'wait'}}">
+            {{item.submitted ? '✓' : '·'}}
+          </view>
+          <view class="device-text">
+            <text class="device-name">{{item.device_name}}</text>
+            <text class="device-model">期望型号: {{item.expected_model}}</text>
+          </view>
+        </view>
+        <view class="expand-icon">{{activeDeviceId == item.id ? '▲' : '▼'}}</view>
+      </view>
+
+      <!-- 已扫结果展示，提交后显示 -->
+      <view wx:if="{{item.submitted}}" class="result-row">
+        <text class="tag {{item._tagCls}}">{{item._matchText}}</text>
+        <text class="result-detail">期望资产条码: {{item._expectedBarcodeText}}</text>
+        <text class="result-detail" wx:if="{{item._hasAssetBarcode}}">
+          扫描资产条码: {{item._assetText}}
+        </text>
+        <text class="result-detail" wx:elif="{{item.assetNoBarcode}}">扫描资产条码: 无条码</text>
+        <text class="result-detail">{{item._assetMatchText}}</text>
+        <text class="result-detail">{{item._modelMatchText}}</text>
+        <text class="result-detail">现场机架号: {{item.rackNo}}</text>
+      </view>
+
+      <!-- 扫描表单，展开时显示 -->
+      <view wx:if="{{activeDeviceId == item.id && !item.submitted}}" class="scan-form">
+        <!-- ① 资产条码 -->
+        <view class="field-group">
+          <text class="field-label">① 资产条码</text>
+          <view class="field-row">
+            <button class="btn-small" bindtap="scanAsset" data-id="{{item.id}}" disabled="{{item.assetNoBarcode}}">扫码</button>
+            <checkbox checked="{{item.assetNoBarcode}}" bindtap="toggleAssetNoBarcode" data-id="{{item.id}}" />
+            <text class="checkbox-label">无条码</text>
+          </view>
+          <view wx:if="{{item._hasAssetBarcode}}" class="barcode-list">
+            <view class="barcode-tag" wx:for="{{item.assetBarcodes}}" wx:for-item="barcode" wx:for-index="idx" wx:key="idx">
+              <text>{{barcode}}</text>
+              <text class="barcode-del" bindtap="removeAssetBarcode" data-id="{{item.id}}" data-index="{{idx}}">×</text>
+            </view>
+          </view>
+        </view>
+
+        <!-- ② 机柜条码 -->
+        <view class="field-group">
+          <text class="field-label">② 机柜条码</text>
+          <view class="field-row">
+            <button class="btn-small" bindtap="scanCabinet" data-id="{{item.id}}" disabled="{{item.cabinetNoBarcode}}">扫码</button>
+            <checkbox checked="{{item.cabinetNoBarcode}}" bindtap="toggleCabinetNoBarcode" data-id="{{item.id}}" />
+            <text class="checkbox-label">无条码</text>
+          </view>
+          <view wx:if="{{item._hasCabinetBarcode}}" class="barcode-list">
+            <view class="barcode-tag" wx:for="{{item.cabinetBarcodes}}" wx:for-item="barcode" wx:for-index="idx" wx:key="idx">
+              <text>{{barcode}}</text>
+              <text class="barcode-del" bindtap="removeCabinetBarcode" data-id="{{item.id}}" data-index="{{idx}}">×</text>
+            </view>
+          </view>
+        </view>
+
+        <!-- ③ 设备型号 -->
+        <view class="field-group">
+          <text class="field-label">③ 设备型号</text>
+          <picker mode="selector" range="{{item.modelOptions}}" bindchange="onModelChange" data-id="{{item.id}}">
+            <view class="picker-value {{item.actualModel ? '' : 'empty'}}">
+              {{item.actualModel || '请选择设备型号'}}
+            </view>
+          </picker>
+          <input
+            wx:if="{{item.showOtherModel}}"
+            class="other-input"
+            placeholder="请输入其他型号"
+            value="{{item.actualModel}}"
+            bindinput="onOtherModelInput"
+            data-id="{{item.id}}"
+          />
+        </view>
+
+        <!-- ④ 设备所属机架号 -->
+        <view class="field-group">
+          <text class="field-label">④ 设备所属机架号（必填）</text>
+          <input
+            class="other-input"
+            placeholder="请输入现场机架号"
+            value="{{item.rackNo}}"
+            bindinput="onRackNoInput"
+            data-id="{{item.id}}"
+          />
+        </view>
+
+        <!-- ⑤ 备注 -->
+        <view class="field-group">
+          <text class="field-label">⑤ 备注</text>
+          <textarea
+            class="notes-textarea"
+            placeholder="选填：设备状态、异常情况等"
+            value="{{item.notes}}"
+            bindinput="onNotesInput"
+            data-id="{{item.id}}"
+            maxlength="200"
+          ></textarea>
+        </view>
+
+        <view wx:if="{{item.assetNoBarcode || item.cabinetNoBarcode}}" class="field-group">
+          <text class="field-label">⑥ 无条码现场凭证</text>
+          <text class="evidence-tip">{{item.evidencePhoto ? '已拍现场凭证，提交时自动上传' : '无条码设备必须拍摄现场凭证'}}</text>
+          <button class="btn-small" bindtap="chooseEvidencePhoto" data-id="{{item.id}}">
+            {{item.evidencePhoto ? '重新拍摄' : '拍摄照片'}}
+          </button>
+          <image wx:if="{{item.evidencePhoto}}" class="evidence-preview" src="{{item.evidencePhoto}}" mode="aspectFill" />
+        </view>
+
+        <!-- 提交按钮 -->
+        <button class="btn-primary submit-btn" bindtap="submitScan" data-id="{{item.id}}">确认提交</button>
+      </view>
+
+      <!-- 提交后再次展开可查看记录 -->
+      <view wx:if="{{activeDeviceId == item.id && item.submitted}}" class="submitted-info">
+        <text class="submitted-note">已提交，比对结果: {{item.match_status}}</text>
+        <button class="btn-small" bindtap="reopenDevice" data-id="{{item.id}}">重新盘点</button>
+      </view>
+    </view>
+  </view>
+</view>
