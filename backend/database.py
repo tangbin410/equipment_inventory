@@ -239,6 +239,7 @@ def init_db() -> None:
                               CHECK(match_status IN ('一致', '不一致', '未扫')),
             scanned_at        TEXT
         );
+
     """)
     # 兼容已经投入使用的数据库，按列增量升级，不清空历史数据。
     task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
@@ -265,6 +266,7 @@ def init_db() -> None:
         "is_active": "ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1",
         "is_deleted": "ALTER TABLE users ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0",
         "deleted_at": "ALTER TABLE users ADD COLUMN deleted_at TEXT",
+        "password_hash": "ALTER TABLE users ADD COLUMN password_hash TEXT DEFAULT ''",
     }
     for column, statement in user_migrations.items():
         if column not in user_columns:
@@ -317,6 +319,37 @@ def init_db() -> None:
     """)
     conn.commit()
     conn.close()
+
+
+def get_user_for_auth(user_id: int) -> dict[str, Any] | None:
+    conn = get_conn()
+    try:
+        return dict_from_row(conn.execute(
+            "SELECT * FROM users WHERE id=? AND is_active=1 AND is_deleted=0", (user_id,)
+        ).fetchone())
+    finally:
+        conn.close()
+
+
+def get_user_by_openid(wx_openid: str) -> dict[str, Any] | None:
+    conn = get_conn()
+    try:
+        return dict_from_row(conn.execute(
+            "SELECT * FROM users WHERE wx_openid=? AND is_deleted=0", (wx_openid,)
+        ).fetchone())
+    finally:
+        conn.close()
+
+
+def set_password_hash(user_id: int, password_hash: str) -> None:
+    conn = get_conn()
+    try:
+        conn.execute("UPDATE users SET password_hash=? WHERE id=?", (password_hash, user_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 
 
 # ──────────────────────────────────────────────

@@ -17,13 +17,20 @@ function request(method, path, data = {}) {
       url,
       method,
       data,
-      header: { "Content-Type": "application/json" },
+      header: {
+        "Content-Type": "application/json",
+        "Authorization": app.globalData.userInfo && app.globalData.userInfo.access_token
+          ? "Bearer " + app.globalData.userInfo.access_token : "",
+      },
       timeout: 15000,
       success(res) {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           resolve(res.data);
         } else {
           const msg = (res.data && res.data.detail) || ("请求失败 (" + res.statusCode + ")");
+          if (res.statusCode === 401) {
+            app.logout();
+          }
           wx.showToast({ title: msg, icon: "none", duration: 3000 });
           reject(new Error(msg));
         }
@@ -62,6 +69,10 @@ function uploadEvidencePhoto(recordId, filePath) {
       url: app.globalData.apiBase + "/records/" + recordId + "/evidence",
       filePath,
       name: "file",
+      header: {
+        "Authorization": app.globalData.userInfo && app.globalData.userInfo.access_token
+          ? "Bearer " + app.globalData.userInfo.access_token : "",
+      },
       success(res) {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           resolve(JSON.parse(res.data));

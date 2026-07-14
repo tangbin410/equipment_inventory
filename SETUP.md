@@ -1,5 +1,19 @@
 # 机房资产盘点系统 - 完整使用指南
 
+## 生产环境认证配置
+
+启动后端前设置以下环境变量：
+
+```powershell
+$env:INVENTORY_SECRET_KEY = "请替换为至少32位随机字符串"
+$env:INVENTORY_ADMIN_PASSWORD = "请设置管理员初始密码"
+$env:INVENTORY_DEV_LOGIN = "0"
+$env:WECHAT_APPID = "微信小程序AppID"
+$env:WECHAT_SECRET = "微信小程序AppSecret"
+```
+
+首次初始化时管理员账号为 `admin_001`，密码取自 `INVENTORY_ADMIN_PASSWORD`。未设置时仅为兼容本地开发使用 `admin_001`，不得直接用于生产环境。生产环境必须关闭测试账号登录，由微信登录凭证换取服务端可信身份。
+
 ## 第一步：安装依赖
 
 ```bash

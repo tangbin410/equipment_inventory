@@ -356,9 +356,14 @@ div[data-testid="stHorizontalBlock"] {
 )
 
 
+def auth_headers() -> dict:
+    token = st.session_state.get("access_token", "")
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 @st.cache_data(ttl=60, show_spinner=False)
-def cached_get(path: str):
-    response = requests.get(API_BASE + path, timeout=REQUEST_TIMEOUT)
+def cached_get(path: str, token: str):
+    response = requests.get(API_BASE + path, headers={"Authorization": f"Bearer {token}"}, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     return response.json()
 
@@ -369,7 +374,7 @@ def clear_cache() -> None:
 
 def api_get(path: str):
     try:
-        return cached_get(path)
+        return cached_get(path, st.session_state.get("access_token", ""))
     except requests.RequestException as exc:
         st.error(f"请求失败：{exc}")
         return None
@@ -382,6 +387,7 @@ def api_post(path: str, data=None, files=None, json=None):
             data=data,
             files=files,
             json=json,
+            headers=auth_headers(),
             timeout=REQUEST_TIMEOUT,
         )
         response.raise_for_status()
@@ -399,7 +405,7 @@ def api_post(path: str, data=None, files=None, json=None):
 
 def api_patch(path: str, json=None):
     try:
-        response = requests.patch(API_BASE + path, json=json, timeout=REQUEST_TIMEOUT)
+        response = requests.patch(API_BASE + path, json=json, headers=auth_headers(), timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         return response.json()
     except requests.RequestException as exc:
@@ -415,7 +421,7 @@ def api_patch(path: str, json=None):
 
 def api_delete(path: str, params=None):
     try:
-        response = requests.delete(API_BASE + path, params=params, timeout=REQUEST_TIMEOUT)
+        response = requests.delete(API_BASE + path, params=params, headers=auth_headers(), timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         return response.json()
     except requests.RequestException as exc:
@@ -425,7 +431,7 @@ def api_delete(path: str, params=None):
 
 def api_download(path: str):
     try:
-        response = requests.get(API_BASE + path, timeout=REQUEST_TIMEOUT)
+        response = requests.get(API_BASE + path, headers=auth_headers(), timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         return response.content
     except requests.RequestException as exc:
@@ -480,6 +486,10 @@ def render_sidebar() -> str:
             format_func=lambda item: f"{PAGE_META[item][0]}  {SIDEBAR_PAGE_LABEL[item]}",
             label_visibility="collapsed",
         )
+        if st.button("退出登录", width="stretch"):
+            st.session_state.pop("access_token", None)
+            clear_cache()
+            st.rerun()
     return page
 
 
@@ -957,23 +967,32 @@ def render_report_page() -> None:
     selected_report_id = task_options[selected_label]
     with export_col:
         st.markdown('<div class="button-bottom-align-spacer"></div>', unsafe_allow_html=True)
-        st.link_button(
+        report_file = api_download(f"/export/{selected_report_id}")
+        st.download_button(
             "📥 下载 Excel 报告",
-            f"{API_BASE}/export/{selected_report_id}",
+            data=report_file or b"",
+            file_name=f"盘点报告_{selected_report_id}.xlsx",
+            disabled=report_file is None,
             width="stretch",
         )
     with detail_export_col:
         st.markdown('<div class="button-bottom-align-spacer"></div>', unsafe_allow_html=True)
-        st.link_button(
+        detail_file = api_download(f"/export/{selected_report_id}/details")
+        st.download_button(
             "📋 导出设备明细",
-            f"{API_BASE}/export/{selected_report_id}/details",
+            data=detail_file or b"",
+            file_name=f"设备明细_{selected_report_id}.xlsx",
+            disabled=detail_file is None,
             width="stretch",
         )
     with surplus_export_col:
         st.markdown('<div class="button-bottom-align-spacer"></div>', unsafe_allow_html=True)
-        st.link_button(
+        exception_file = api_download(f"/export/{selected_report_id}/surplus_missing")
+        st.download_button(
             "🛠️ 导出盘盈盘亏",
-            f"{API_BASE}/export/{selected_report_id}/surplus_missing",
+            data=exception_file or b"",
+            file_name=f"盘盈盘亏_{selected_report_id}.xlsx",
+            disabled=exception_file is None,
             width="stretch",
         )
 
@@ -1209,7 +1228,8 @@ def render_report_page() -> None:
                 st.warning(f"⏰ {countdown_text}")
             else:
                 st.info(f"⏰ {countdown_text}")
-            st.link_button("🖼️ 查看现场凭证", f"{API_BASE}/evidence/{anomaly['evidence_photo']}")
+            token = st.session_state.get("access_token", "")
+            st.link_button("🖼️ 查看现场凭证", f"{API_BASE}/evidence/{anomaly['evidence_photo']}?access_token={token}")
         review_col, reason_col, handler_col = st.columns([1, 1.2, 1])
         with review_col:
             review_status = st.selectbox(
@@ -1392,6 +1412,31 @@ def render_users_page() -> None:
                 st.rerun()
 
 
+def require_admin_login() -> None:
+    if st.session_state.get("access_token"):
+        return
+    st.title("机房资产盘点管理端")
+    st.caption("请使用管理员账号登录")
+    with st.form("admin_login"):
+        username = st.text_input("管理员账号", value="admin_001")
+        password = st.text_input("密码", type="password")
+        submitted = st.form_submit_button("登录", width="stretch")
+    if submitted:
+        try:
+            response = requests.post(
+                API_BASE + "/admin/login",
+                json={"username": username.strip(), "password": password},
+                timeout=REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            st.session_state["access_token"] = response.json()["access_token"]
+            st.rerun()
+        except requests.RequestException:
+            st.error("账号或密码错误，或后端服务不可用")
+    st.stop()
+
+
+require_admin_login()
 current_page = render_sidebar()
 if current_page == PAGE_UPLOAD:
     render_upload_page()

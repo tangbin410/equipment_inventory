@@ -17,6 +17,11 @@ class LoginRequest(BaseModel):
     code: str
 
 
+class AdminLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
 class UserCreateRequest(BaseModel):
     """PC 后台新增小程序账号"""
     wx_openid: str = Field(..., description="登录编码/微信openid")

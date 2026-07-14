@@ -11,14 +11,14 @@ App({
   onLaunch() {
     // 尝试从本地缓存恢复登录状态
     const saved = wx.getStorageSync("userInfo");
-    if (saved && saved.user_id) {
+    if (saved && saved.user_id && saved.access_token) {
       this.globalData.userInfo = saved;
     }
   },
 
   /** 检查是否已登录 */
   isLoggedIn() {
-    return this.globalData.userInfo && this.globalData.userInfo.user_id;
+    return this.globalData.userInfo && this.globalData.userInfo.user_id && this.globalData.userInfo.access_token;
   },
 
   /** 保存登录信息 */

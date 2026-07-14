@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import io
+import json
+import os
 from collections import Counter
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
+from urllib.request import urlopen
 from uuid import uuid4
 
 import openpyxl
-from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
@@ -33,6 +36,8 @@ from .database import (
     get_task_items,
     get_tasks_by_user,
     get_user_by_id,
+    get_user_by_openid,
+    get_user_for_auth,
     get_users,
     get_workers,
     evidence_photo_is_valid,
@@ -44,9 +49,11 @@ from .database import (
     save_evidence_photo,
     submit_scan,
     update_user,
+    set_password_hash,
     add_compare_status,
 )
 from .models import (
+    AdminLoginRequest,
     LoginRequest,
     MissingSubmitRequest,
     ScanResponse,
@@ -57,6 +64,7 @@ from .models import (
     UserUpdateRequest,
     UserOut,
 )
+from .auth import create_access_token, decode_access_token, hash_password, verify_password
 
 app = FastAPI(title="机房资产盘点系统", version="1.0.0")
 EVIDENCE_DIR = Path(__file__).resolve().parent.parent / "data" / "evidence"
@@ -88,12 +96,52 @@ def on_startup():
     """启动时初始化数据库，并创建默认用户。"""
     init_db()
     cleanup_expired_evidence_photos()
-    create_user("admin_001", "管理员", "admin", "默认片区")
+    admin = create_user("admin_001", "管理员", "admin", "默认片区")
+    configured_password = os.getenv("INVENTORY_ADMIN_PASSWORD", "")
+    if configured_password:
+        set_password_hash(admin["id"], hash_password(configured_password))
+    elif not admin.get("password_hash"):
+        set_password_hash(admin["id"], hash_password("admin_001"))
     create_user("worker_001", "张三", "worker", "北区")
     create_user("worker_002", "李四", "worker", "南区")
     create_user("worker_003", "王五", "worker", "西区")
     create_user("worker_004", "赵六", "worker", "南区")
     create_user("worker_005", "周班长", "worker", "北区,南区,西区")
+
+
+def current_user(authorization: str = Header("")) -> dict:
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="请先登录")
+    payload = decode_access_token(authorization[7:].strip())
+    user = get_user_for_auth(int(payload["sub"])) if payload else None
+    if not user:
+        raise HTTPException(status_code=401, detail="登录已失效，请重新登录")
+    return user
+
+
+def admin_user(user: dict = Depends(current_user)) -> dict:
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="仅管理员可执行此操作")
+    return user
+
+
+def _require_task_access(user: dict, task_id: int, require_claim: bool = True) -> dict:
+    task = get_task_by_id(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if user["role"] == "admin":
+        return task
+    if require_claim and task.get("claimed_by") != user["id"]:
+        raise HTTPException(status_code=403, detail="只能操作本人已领取的任务")
+    return task
+
+
+def _require_record_access(user: dict, record_id: int) -> dict:
+    record = get_record_by_id(record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="盘点记录不存在")
+    _require_task_access(user, record["task_id"])
+    return record
 
 
 def _load_workbook(file_content: bytes):
@@ -323,19 +371,19 @@ def _validate_user_payload(wx_openid: str | None, name: str | None, role: str | 
 
 
 @app.get("/api/workers", response_model=list[UserOut])
-def api_workers():
+def api_workers(_: dict = Depends(admin_user)):
     """查询所有现场人员。"""
     return get_workers()
 
 
 @app.get("/api/users", response_model=list[UserOut])
-def api_users():
+def api_users(_: dict = Depends(admin_user)):
     """PC 后台查询全部小程序账号。"""
     return get_users()
 
 
 @app.get("/api/users/{user_id}", response_model=UserOut | None)
-def api_user(user_id: int):
+def api_user(user_id: int, _: dict = Depends(admin_user)):
     """按 ID 查询用户。"""
     user = get_user_by_id(user_id)
     if user is None:
@@ -344,10 +392,10 @@ def api_user(user_id: int):
 
 
 @app.post("/api/users", response_model=UserOut)
-def api_create_user(req: UserCreateRequest):
+def api_create_user(req: UserCreateRequest, actor: dict = Depends(admin_user)):
     """PC 后台新增或更新小程序账号。"""
     _validate_user_payload(req.wx_openid, req.name, req.role, req.area_name)
-    return create_user(
+    user = create_user(
         wx_openid=req.wx_openid,
         name=req.name,
         role=req.role,
@@ -356,10 +404,11 @@ def api_create_user(req: UserCreateRequest):
         employee_no=req.employee_no,
         is_active=1 if req.is_active else 0,
     )
+    return user
 
 
 @app.patch("/api/users/{user_id}", response_model=UserOut)
-def api_update_user(user_id: int, req: UserUpdateRequest):
+def api_update_user(user_id: int, req: UserUpdateRequest, actor: dict = Depends(admin_user)):
     """PC 后台修改小程序账号信息。"""
     data = req.dict(exclude_unset=True)
     _validate_user_payload(
@@ -378,36 +427,53 @@ def api_update_user(user_id: int, req: UserUpdateRequest):
 
 
 @app.delete("/api/users/{user_id}")
-def api_delete_user(user_id: int):
+def api_delete_user(user_id: int, actor: dict = Depends(admin_user)):
     """PC 后台删除小程序账号。采用业务删除，保留历史任务引用。"""
     if not delete_user(user_id):
         raise HTTPException(status_code=404, detail="用户不存在或已删除")
     return {"success": True, "message": "账号已删除"}
 
 
+@app.post("/api/admin/login")
+def api_admin_login(req: AdminLoginRequest):
+    user = get_user_by_openid(req.username.strip())
+    if not user or user["role"] != "admin" or not user["is_active"]:
+        raise HTTPException(status_code=401, detail="账号或密码错误")
+    if not verify_password(req.password, user.get("password_hash") or ""):
+        raise HTTPException(status_code=401, detail="账号或密码错误")
+    return {"access_token": create_access_token(user), "token_type": "bearer", "user": UserOut(**user)}
+
+
 @app.post("/api/login")
 def api_login(req: LoginRequest):
-    """小程序登录。开发阶段直接用 code 模拟 openid。"""
-    from .database import get_conn
-
-    conn = get_conn()
-    try:
-        row = conn.execute(
-            "SELECT * FROM users WHERE wx_openid = ? AND COALESCE(is_deleted, 0) = 0",
-            (req.code,),
-        ).fetchone()
-        if row is None:
-            raise HTTPException(status_code=401, detail="登录失败，用户不存在")
-        if not row["is_active"]:
-            raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
-        return {
-            "user_id": row["id"],
-            "name": row["name"],
-            "role": row["role"],
-            "area_name": row["area_name"] or "默认片区",
-        }
-    finally:
-        conn.close()
+    """小程序登录；生产通过微信 code2session 获取可信 openid。"""
+    code = req.code.strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="登录凭证不能为空")
+    if os.getenv("INVENTORY_DEV_LOGIN", "1") == "1" and code.startswith("worker_"):
+        openid = code
+    else:
+        appid = os.getenv("WECHAT_APPID", "")
+        secret = os.getenv("WECHAT_SECRET", "")
+        if not appid or not secret:
+            raise HTTPException(status_code=503, detail="服务器未配置微信登录")
+        url = "https://api.weixin.qq.com/sns/jscode2session?" + urlencode({
+            "appid": appid, "secret": secret, "js_code": code, "grant_type": "authorization_code"
+        })
+        try:
+            result = json.loads(urlopen(url, timeout=8).read())
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="微信登录服务暂不可用") from exc
+        openid = result.get("openid", "")
+    user = get_user_by_openid(openid)
+    if not user:
+        raise HTTPException(status_code=401, detail="登录失败，用户不存在")
+    if not user["is_active"]:
+        raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
+    return {
+        "user_id": user["id"], "name": user["name"], "role": user["role"],
+        "area_name": user["area_name"] or "默认片区", "access_token": create_access_token(user),
+    }
 
 
 @app.post("/api/upload", response_model=UploadResponse)
@@ -417,6 +483,7 @@ async def api_upload(
     task_name: str = Form(""),
     assigned_to: int | None = Form(None),
     area_name: str = Form("默认片区"),
+    _: dict = Depends(admin_user),
 ):
     """上传单个机房清单，保留给旧页面或外部调用。"""
     wb = _load_workbook(await file.read())
@@ -438,7 +505,7 @@ async def api_upload(
 
 
 @app.post("/api/upload_rooms")
-async def api_upload_rooms(file: UploadFile = File(...)):
+async def api_upload_rooms(file: UploadFile = File(...), _: dict = Depends(admin_user)):
     """上传包含多个机房的清单，按机房自动生成片区待领取任务。"""
     wb = _load_workbook(await file.read())
     rooms = _parse_excel_devices(wb.active)
@@ -471,14 +538,14 @@ async def api_upload_rooms(file: UploadFile = File(...)):
 
 
 @app.post("/api/upload_rooms/preview")
-async def api_preview_upload_rooms(file: UploadFile = File(...)):
+async def api_preview_upload_rooms(file: UploadFile = File(...), _: dict = Depends(admin_user)):
     """预检多机房清单，不写入数据库。"""
     wb = _load_workbook(await file.read())
     return _preview_rooms(_parse_excel_devices(wb.active))
 
 
 @app.get("/api/upload_template")
-def api_upload_template():
+def api_upload_template(_: dict = Depends(admin_user)):
     """下载标准导入模板。"""
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -495,7 +562,7 @@ def api_upload_template():
 
 
 @app.get("/api/tasks")
-def api_tasks(user_id: int | None = None):
+def api_tasks(user_id: int | None = None, _: dict = Depends(admin_user)):
     """查询任务列表。传 user_id 时兼容旧版小程序：只查该现场人员已领取任务。"""
     if user_id:
         return get_claimed_tasks(user_id)
@@ -503,21 +570,23 @@ def api_tasks(user_id: int | None = None):
 
 
 @app.get("/api/tasks/area")
-def api_area_tasks(user_id: int):
+def api_area_tasks(user_id: int | None = None, user: dict = Depends(current_user)):
     """小程序领任务页：查询当前用户所在片区的任务池。"""
-    return get_area_tasks(user_id)
+    return get_area_tasks(user["id"])
 
 
 @app.get("/api/tasks/my")
-def api_my_tasks(user_id: int):
+def api_my_tasks(user_id: int | None = None, user: dict = Depends(current_user)):
     """小程序我的任务页：查询当前用户已经领取的任务。"""
-    return get_claimed_tasks(user_id)
+    return get_claimed_tasks(user["id"])
 
 
 @app.post("/api/tasks/{task_id}/claim")
-def api_claim_task(task_id: int, user_id: int = Body(..., embed=True)):
+def api_claim_task(task_id: int, user_id: int | None = Body(None, embed=True), user: dict = Depends(current_user)):
     """现场人员领取所在片区的待领取任务。"""
-    success, message = claim_task(task_id, user_id)
+    if user["role"] != "worker":
+        raise HTTPException(status_code=403, detail="仅现场人员可领取任务")
+    success, message = claim_task(task_id, user["id"])
     if not success:
         raise HTTPException(status_code=400, detail=message)
     return {"success": True, "message": message}
@@ -526,18 +595,19 @@ def api_claim_task(task_id: int, user_id: int = Body(..., embed=True)):
 @app.post("/api/tasks/{task_id}/release")
 def api_release_task(
     task_id: int,
-    user_id: int = Body(..., embed=True),
+    user_id: int | None = Body(None, embed=True),
     reason: str = Body("", embed=True),
+    user: dict = Depends(current_user),
 ):
     """现场人员释放自己的盘点中任务，任务回到待领取池。"""
-    success, message = release_task(task_id, user_id, reason)
+    success, message = release_task(task_id, user["id"], reason)
     if not success:
         raise HTTPException(status_code=400, detail=message)
     return {"success": True, "message": message}
 
 
 @app.post("/api/tasks/{task_id}/assign")
-def api_assign_task(task_id: int, assigned_to: int = Body(..., embed=True)):
+def api_assign_task(task_id: int, assigned_to: int = Body(..., embed=True), _: dict = Depends(admin_user)):
     """单个机房任务下发给指定现场人员。"""
     if not assign_task(task_id, assigned_to):
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -545,7 +615,7 @@ def api_assign_task(task_id: int, assigned_to: int = Body(..., embed=True)):
 
 
 @app.post("/api/tasks/batch_assign")
-def api_batch_assign_tasks(assignments: list[dict[str, int]] = Body(..., embed=True)):
+def api_batch_assign_tasks(assignments: list[dict[str, int]] = Body(..., embed=True), _: dict = Depends(admin_user)):
     """批量下发多个机房任务。"""
     if not assignments:
         raise HTTPException(status_code=400, detail="请至少选择一个任务")
@@ -554,7 +624,7 @@ def api_batch_assign_tasks(assignments: list[dict[str, int]] = Body(..., embed=T
 
 
 @app.delete("/api/tasks/{task_id}")
-def api_delete_task(task_id: int, reason: str = "管理员作废"):
+def api_delete_task(task_id: int, reason: str = "管理员作废", _: dict = Depends(admin_user)):
     """作废某个机房盘点任务，保留审计数据但不再参与业务展示。"""
     if not reason.strip():
         raise HTTPException(status_code=400, detail="请填写作废原因")
@@ -564,17 +634,16 @@ def api_delete_task(task_id: int, reason: str = "管理员作废"):
 
 
 @app.get("/api/tasks/{task_id}/items")
-def api_task_items(task_id: int):
+def api_task_items(task_id: int, user: dict = Depends(current_user)):
     """查询某个任务下的设备清单。"""
-    task = get_task_by_id(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="任务不存在")
+    task = _require_task_access(user, task_id)
     return {"task": task, "items": get_task_items(task_id)}
 
 
 @app.post("/api/scan", response_model=ScanResponse)
-def api_scan(req: ScanSubmitRequest):
+def api_scan(req: ScanSubmitRequest, user: dict = Depends(current_user)):
     """现场人员提交一条盘点结果。"""
+    _require_record_access(user, req.record_id)
     try:
         result = submit_scan(
             record_id=req.record_id,
@@ -601,8 +670,9 @@ def api_scan(req: ScanSubmitRequest):
 
 
 @app.post("/api/records/{record_id}/missing", response_model=ScanResponse)
-def api_mark_missing(record_id: int, req: MissingSubmitRequest):
+def api_mark_missing(record_id: int, req: MissingSubmitRequest, user: dict = Depends(current_user)):
     """把任务清单内的设备标记为盘亏：现场应有但未找到。"""
+    _require_record_access(user, record_id)
     try:
         result = mark_record_missing(record_id, req.reason, req.notes)
     except ValueError as exc:
@@ -620,8 +690,9 @@ def api_mark_missing(record_id: int, req: MissingSubmitRequest):
 
 
 @app.post("/api/surplus")
-def api_create_surplus(req: SurplusSubmitRequest):
+def api_create_surplus(req: SurplusSubmitRequest, user: dict = Depends(current_user)):
     """登记盘盈设备：现场多出、任务清单中没有的设备。"""
+    _require_task_access(user, req.task_id)
     try:
         record = create_surplus_record(
             task_id=req.task_id,
@@ -633,7 +704,7 @@ def api_create_surplus(req: SurplusSubmitRequest):
             cabinet_no_barcode=req.cabinet_no_barcode,
             rack_no=req.rack_no,
             notes=req.notes,
-            created_by=req.created_by,
+            created_by=user["id"],
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -651,12 +722,10 @@ def api_create_surplus(req: SurplusSubmitRequest):
 
 
 @app.post("/api/records/{record_id}/evidence")
-async def api_upload_evidence(record_id: int, file: UploadFile = File(...)):
+async def api_upload_evidence(record_id: int, file: UploadFile = File(...), user: dict = Depends(current_user)):
     """上传无条码设备的现场照片凭证。"""
     cleanup_expired_evidence_photos()
-    record = get_record_by_id(record_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="盘点记录不存在")
+    record = _require_record_access(user, record_id)
     suffix = Path(file.filename or "photo.jpg").suffix.lower()
     if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
         raise HTTPException(status_code=400, detail="仅支持 JPG、PNG 或 WebP 图片")
@@ -676,8 +745,16 @@ async def api_upload_evidence(record_id: int, file: UploadFile = File(...)):
 
 
 @app.get("/api/evidence/{filename:path}")
-def api_evidence(filename: str):
+def api_evidence(filename: str, access_token: str = Query("")):
     """查看现场照片凭证。"""
+    payload = decode_access_token(access_token)
+    user = get_user_for_auth(int(payload["sub"])) if payload else None
+    if not user:
+        raise HTTPException(status_code=401, detail="登录已失效，请重新登录")
+    match = __import__("re").search(r"(?:^|/)record_(\d+)(?:/|$)|(?:^|/)(\d+)_", filename)
+    if not match:
+        raise HTTPException(status_code=400, detail="照片路径不合法")
+    _require_record_access(user, int(match.group(1) or match.group(2)))
     cleanup_expired_evidence_photos()
     path = evidence_photo_path(filename)
     if path is None:
@@ -696,6 +773,7 @@ def api_review_record(
     reason: str = Body(""),
     handler: str = Body(""),
     result: str = Body(""),
+    _: dict = Depends(admin_user),
 ):
     """复核并闭环异常记录。"""
     valid_statuses = {"待复核", "已确认", "已确认异常", "已退回现场", "已整改", "已闭环"}
@@ -709,12 +787,10 @@ def api_review_record(
 
 
 @app.get("/api/report/{task_id}")
-def api_report(task_id: int):
+def api_report(task_id: int, user: dict = Depends(current_user)):
     """获取单个任务盘点报告。"""
     cleanup_expired_evidence_photos()
-    task = get_task_by_id(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="任务不存在")
+    task = _require_task_access(user, task_id)
     records = get_report(task_id)
     return {
         "task": task,
@@ -820,7 +896,7 @@ def _append_device_detail_row(ws, task: dict, record: dict) -> None:
 
 
 @app.get("/api/export/{task_id}")
-def api_export(task_id: int):
+def api_export(task_id: int, _: dict = Depends(admin_user)):
     """导出单个任务盘点结果 Excel。"""
     cleanup_expired_evidence_photos()
     task = get_task_by_id(task_id)
@@ -891,7 +967,7 @@ def api_export(task_id: int):
 
 
 @app.get("/api/export/{task_id}/details")
-def api_export_details(task_id: int):
+def api_export_details(task_id: int, _: dict = Depends(admin_user)):
     """单独导出设备明细表，便于管理员二次筛选和留档。"""
     cleanup_expired_evidence_photos()
     task = get_task_by_id(task_id)
@@ -909,7 +985,7 @@ def api_export_details(task_id: int):
 
 
 @app.get("/api/export/{task_id}/surplus_missing")
-def api_export_surplus_missing(task_id: int):
+def api_export_surplus_missing(task_id: int, _: dict = Depends(admin_user)):
     """单独导出盘盈盘亏清单，作为后续整治闭环台账。"""
     cleanup_expired_evidence_photos()
     task = get_task_by_id(task_id)
@@ -955,7 +1031,7 @@ def api_export_surplus_missing(task_id: int):
 
 
 @app.get("/api/summary")
-def api_summary():
+def api_summary(_: dict = Depends(admin_user)):
     """一次性返回所有任务和盘点记录，供 PC 报告页使用。"""
     cleanup_expired_evidence_photos()
     from .database import get_conn
