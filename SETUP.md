@@ -10,9 +10,12 @@ $env:INVENTORY_ADMIN_PASSWORD = "请设置管理员初始密码"
 $env:INVENTORY_DEV_LOGIN = "0"
 $env:WECHAT_APPID = "微信小程序AppID"
 $env:WECHAT_SECRET = "微信小程序AppSecret"
+$env:INVENTORY_SQLITE_TIMEOUT_SECONDS = "30"
+$env:INVENTORY_BACKUP_KEEP = "10"
 ```
 
 首次初始化时管理员账号为 `admin_001`，密码取自 `INVENTORY_ADMIN_PASSWORD`。未设置时仅为兼容本地开发使用 `admin_001`，不得直接用于生产环境。生产环境必须关闭测试账号登录，由微信登录凭证换取服务端可信身份。
+SQLite 默认启用 WAL、30 秒忙等待和启动备份；备份文件保存在 `data/backups/`，默认保留最近 10 份。
 
 ## 第一步：安装依赖
 

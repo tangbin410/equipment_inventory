@@ -10,6 +10,13 @@ Page({
   },
 
   onLoad() {
+    try {
+      const account = wx.getAccountInfoSync();
+      const envVersion = account && account.miniProgram && account.miniProgram.envVersion;
+      this.setData({ showDevHint: envVersion === "develop" });
+    } catch (err) {
+      this.setData({ showDevHint: true });
+    }
     // 如果已登录，直接跳转任务页
     if (app.isLoggedIn()) {
       wx.reLaunch({ url: "/pages/home/home" });

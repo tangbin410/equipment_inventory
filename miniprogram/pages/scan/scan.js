@@ -10,7 +10,7 @@ Page({
     allDevices: [],       // 完整设备列表
     keyword: "",
     deviceFilter: "all",
-    filterOptions: ["全部设备", "未盘点", "条码异常", "盘盈", "盘亏"],
+    filterOptions: ["全部设备", "未盘点", "异常设备", "盘盈", "盘亏"],
     activeDeviceId: null, // 当前展开的设备ID
     showSurplusForm: false,
     surplusForm: {
@@ -40,6 +40,7 @@ Page({
       return;
     }
     this.taskId = options.task_id;
+    this.restoreSurplusForm();
     this.loadDevices();
   },
 
@@ -111,10 +112,27 @@ Page({
     const matchesStatus =
       filter === "all"
       || (filter === "pending" && !device.submitted)
-      || (filter === "mismatch" && device.submitted && device.assetMatchStatus !== "一致")
+      || (filter === "mismatch" && device.submitted && device.match_status === "不一致")
       || (filter === "surplus" && device.recordType === "surplus")
       || (filter === "missing" && device.recordType === "missing");
     return matchesText && matchesStatus;
+  },
+
+  newRequestId(prefix, id) {
+    return `${prefix}_${id}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  },
+
+  ensureRequestId(key, prefix, id) {
+    let requestId = wx.getStorageSync(key);
+    if (!requestId) {
+      requestId = this.newRequestId(prefix, id);
+      wx.setStorageSync(key, requestId);
+    }
+    return requestId;
+  },
+
+  clearRequestId(key) {
+    wx.removeStorageSync(key);
   },
 
   makeDevice(item) {
@@ -340,7 +358,12 @@ Page({
             if (!modalRes.confirm) return;
             try {
               const device = this.data.allDevices.find((d) => d.id === id);
-              const result = await submitMissing(id, { reason, notes: device ? device.notes : "" });
+              const requestKey = `missing_request_${id}`;
+              const result = await submitMissing(id, {
+                client_request_id: this.ensureRequestId(requestKey, "missing", id),
+                reason,
+                notes: device ? device.notes : "",
+              });
               this.updateDevice(id, () => ({
                 submitted: true,
                 recordType: "missing",
@@ -359,6 +382,7 @@ Page({
                 scannedCount: this.data.allDevices.filter((d) => d.recordType !== "surplus" && d.submitted).length,
               });
               wx.removeStorageSync(`scan_draft_${id}`);
+              this.clearRequestId(requestKey);
               wx.showToast({ title: "已标记盘亏", icon: "success" });
             } catch (err) {
               // API wrapper 已显示错误
@@ -385,6 +409,14 @@ Page({
     form._cabinetText = form.cabinetBarcodes.length > 0 ? form.cabinetBarcodes.join(", ") : "";
     form._hasCabinetBarcode = form.cabinetBarcodes.length > 0;
     this.setData({ surplusForm: form });
+    wx.setStorageSync(`surplus_draft_${this.taskId}`, form);
+  },
+
+  restoreSurplusForm() {
+    const draft = wx.getStorageSync(`surplus_draft_${this.taskId}`);
+    if (draft) {
+      this.updateSurplusForm(draft);
+    }
   },
 
   async scanSurplusAsset() {
@@ -447,6 +479,8 @@ Page({
   },
 
   resetSurplusForm() {
+    wx.removeStorageSync(`surplus_draft_${this.taskId}`);
+    this.clearRequestId(`surplus_request_${this.taskId}`);
     this.setData({
       showSurplusForm: false,
       surplusForm: {
@@ -491,7 +525,9 @@ Page({
     }
     try {
       const user = app.globalData.userInfo || {};
+      const requestKey = `surplus_request_${this.taskId}`;
       const result = await submitSurplus({
+        client_request_id: this.ensureRequestId(requestKey, "surplus", this.taskId),
         task_id: Number(this.taskId),
         device_name: form.deviceName,
         actual_model: form.actualModel,
@@ -570,7 +606,9 @@ Page({
       if (device.evidencePhoto) {
         await uploadEvidencePhoto(id, device.evidencePhoto);
       }
+      const requestKey = `scan_request_${id}`;
       const result = await submitScan({
+        client_request_id: this.ensureRequestId(requestKey, "scan", id),
         record_id: id,
         asset_barcodes: device.assetBarcodes.join(","),
         asset_no_barcode: device.assetNoBarcode,
@@ -599,6 +637,7 @@ Page({
         scannedCount: this.data.allDevices.filter((d) => d.recordType !== "surplus" && d.submitted).length,
       });
       wx.removeStorageSync(`scan_draft_${id}`);
+      this.clearRequestId(requestKey);
 
       wx.showToast({
         title: result.match_status === "一致" ? "盘点完成 ✅" : "盘点完成 ⚠️",

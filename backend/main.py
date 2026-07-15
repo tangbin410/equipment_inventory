@@ -21,6 +21,7 @@ from .database import (
     batch_assign_tasks,
     batch_create_records,
     cleanup_expired_evidence_photos,
+    create_audit_log,
     create_surplus_record,
     create_task,
     create_user,
@@ -29,7 +30,10 @@ from .database import (
     claim_task,
     get_all_tasks,
     get_area_tasks,
+    get_audit_logs,
     get_claimed_tasks,
+    get_conn,
+    get_idempotent_result,
     get_report,
     get_record_by_id,
     get_task_by_id,
@@ -47,10 +51,12 @@ from .database import (
     release_task,
     review_record,
     save_evidence_photo,
+    save_idempotent_result,
     submit_scan,
     update_user,
     set_password_hash,
     add_compare_status,
+    add_task_closure_status,
 )
 from .models import (
     AdminLoginRequest,
@@ -125,10 +131,15 @@ def admin_user(user: dict = Depends(current_user)) -> dict:
     return user
 
 
-def _require_task_access(user: dict, task_id: int, require_claim: bool = True) -> dict:
+def _get_task_or_404(task_id: int) -> dict:
     task = get_task_by_id(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
+    return task
+
+
+def _require_task_access(user: dict, task_id: int, require_claim: bool = True) -> dict:
+    task = _get_task_or_404(task_id)
     if user["role"] == "admin":
         return task
     if require_claim and task.get("claimed_by") != user["id"]:
@@ -142,6 +153,17 @@ def _require_record_access(user: dict, record_id: int) -> dict:
         raise HTTPException(status_code=404, detail="盘点记录不存在")
     _require_task_access(user, record["task_id"])
     return record
+
+
+def _audit(
+    actor: dict | None,
+    action: str,
+    target_type: str,
+    target_id: int | None = None,
+    detail: dict | None = None,
+    request_id: str = "",
+) -> None:
+    create_audit_log(actor, action, target_type, target_id, detail or {}, request_id)
 
 
 def _load_workbook(file_content: bytes):
@@ -404,6 +426,7 @@ def api_create_user(req: UserCreateRequest, actor: dict = Depends(admin_user)):
         employee_no=req.employee_no,
         is_active=1 if req.is_active else 0,
     )
+    _audit(actor, "user.upsert", "user", user["id"], {"wx_openid": user.get("wx_openid"), "role": user.get("role")})
     return user
 
 
@@ -423,6 +446,7 @@ def api_update_user(user_id: int, req: UserUpdateRequest, actor: dict = Depends(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
+    _audit(actor, "user.update", "user", user_id, {"fields": sorted(data.keys())})
     return user
 
 
@@ -431,6 +455,7 @@ def api_delete_user(user_id: int, actor: dict = Depends(admin_user)):
     """PC 后台删除小程序账号。采用业务删除，保留历史任务引用。"""
     if not delete_user(user_id):
         raise HTTPException(status_code=404, detail="用户不存在或已删除")
+    _audit(actor, "user.delete", "user", user_id)
     return {"success": True, "message": "账号已删除"}
 
 
@@ -441,6 +466,7 @@ def api_admin_login(req: AdminLoginRequest):
         raise HTTPException(status_code=401, detail="账号或密码错误")
     if not verify_password(req.password, user.get("password_hash") or ""):
         raise HTTPException(status_code=401, detail="账号或密码错误")
+    _audit(user, "admin.login", "user", user["id"])
     return {"access_token": create_access_token(user), "token_type": "bearer", "user": UserOut(**user)}
 
 
@@ -467,9 +493,14 @@ def api_login(req: LoginRequest):
         openid = result.get("openid", "")
     user = get_user_by_openid(openid)
     if not user:
+        if os.getenv("INVENTORY_ALLOW_LOGIN_REQUESTS", "0") == "1":
+            user = create_user(openid, "待绑定用户", "worker", "默认片区", is_active=0)
+            _audit(None, "worker.login_request", "user", user["id"], {"wx_openid": openid})
+            raise HTTPException(status_code=403, detail="账号待管理员启用，请联系管理员")
         raise HTTPException(status_code=401, detail="登录失败，用户不存在")
     if not user["is_active"]:
-        raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
+        raise HTTPException(status_code=403, detail="账号未启用，请联系管理员")
+    _audit(user, "worker.login", "user", user["id"])
     return {
         "user_id": user["id"], "name": user["name"], "role": user["role"],
         "area_name": user["area_name"] or "默认片区", "access_token": create_access_token(user),
@@ -483,7 +514,7 @@ async def api_upload(
     task_name: str = Form(""),
     assigned_to: int | None = Form(None),
     area_name: str = Form("默认片区"),
-    _: dict = Depends(admin_user),
+    actor: dict = Depends(admin_user),
 ):
     """上传单个机房清单，保留给旧页面或外部调用。"""
     wb = _load_workbook(await file.read())
@@ -496,6 +527,7 @@ async def api_upload(
     final_task_name = task_name if task_name else f"{room_name}-盘点"
     task_id = create_task(final_task_name, room_name, assigned_to, area_name)
     count = batch_create_records(task_id, devices)
+    _audit(actor, "task.import", "task", task_id, {"room_name": room_name, "area_name": area_name, "device_count": count})
     return UploadResponse(
         task_id=task_id,
         task_name=final_task_name,
@@ -505,7 +537,7 @@ async def api_upload(
 
 
 @app.post("/api/upload_rooms")
-async def api_upload_rooms(file: UploadFile = File(...), _: dict = Depends(admin_user)):
+async def api_upload_rooms(file: UploadFile = File(...), actor: dict = Depends(admin_user)):
     """上传包含多个机房的清单，按机房自动生成片区待领取任务。"""
     wb = _load_workbook(await file.read())
     rooms = _parse_excel_devices(wb.active)
@@ -528,6 +560,7 @@ async def api_upload_rooms(file: UploadFile = File(...), _: dict = Depends(admin
             "area_name": area_name,
             "device_count": count,
         })
+        _audit(actor, "task.import", "task", task_id, {"room_name": room_name, "area_name": area_name, "device_count": count})
 
     return {
         "task_count": len(created),
@@ -589,6 +622,7 @@ def api_claim_task(task_id: int, user_id: int | None = Body(None, embed=True), u
     success, message = claim_task(task_id, user["id"])
     if not success:
         raise HTTPException(status_code=400, detail=message)
+    _audit(user, "task.claim", "task", task_id)
     return {"success": True, "message": message}
 
 
@@ -603,33 +637,37 @@ def api_release_task(
     success, message = release_task(task_id, user["id"], reason)
     if not success:
         raise HTTPException(status_code=400, detail=message)
+    _audit(user, "task.release", "task", task_id, {"reason": reason})
     return {"success": True, "message": message}
 
 
 @app.post("/api/tasks/{task_id}/assign")
-def api_assign_task(task_id: int, assigned_to: int = Body(..., embed=True), _: dict = Depends(admin_user)):
+def api_assign_task(task_id: int, assigned_to: int = Body(..., embed=True), actor: dict = Depends(admin_user)):
     """单个机房任务下发给指定现场人员。"""
     if not assign_task(task_id, assigned_to):
         raise HTTPException(status_code=404, detail="任务不存在")
+    _audit(actor, "task.assign", "task", task_id, {"assigned_to": assigned_to})
     return {"success": True, "message": "任务已下发"}
 
 
 @app.post("/api/tasks/batch_assign")
-def api_batch_assign_tasks(assignments: list[dict[str, int]] = Body(..., embed=True), _: dict = Depends(admin_user)):
+def api_batch_assign_tasks(assignments: list[dict[str, int]] = Body(..., embed=True), actor: dict = Depends(admin_user)):
     """批量下发多个机房任务。"""
     if not assignments:
         raise HTTPException(status_code=400, detail="请至少选择一个任务")
     count = batch_assign_tasks(assignments)
+    _audit(actor, "task.batch_assign", "task", None, {"assignments": assignments, "updated": count})
     return {"success": True, "updated": count, "message": f"已下发 {count} 个机房任务"}
 
 
 @app.delete("/api/tasks/{task_id}")
-def api_delete_task(task_id: int, reason: str = "管理员作废", _: dict = Depends(admin_user)):
+def api_delete_task(task_id: int, reason: str = "管理员作废", actor: dict = Depends(admin_user)):
     """作废某个机房盘点任务，保留审计数据但不再参与业务展示。"""
     if not reason.strip():
         raise HTTPException(status_code=400, detail="请填写作废原因")
     if not delete_task(task_id, reason):
         raise HTTPException(status_code=404, detail="任务不存在")
+    _audit(actor, "task.delete", "task", task_id, {"reason": reason})
     return {"success": True, "message": "任务已作废，不再参与统计"}
 
 
@@ -644,6 +682,11 @@ def api_task_items(task_id: int, user: dict = Depends(current_user)):
 def api_scan(req: ScanSubmitRequest, user: dict = Depends(current_user)):
     """现场人员提交一条盘点结果。"""
     _require_record_access(user, req.record_id)
+    action = "scan.submit"
+    request_id = req.client_request_id.strip()
+    cached = get_idempotent_result(user["id"], action, request_id)
+    if cached:
+        return cached
     try:
         result = submit_scan(
             record_id=req.record_id,
@@ -659,40 +702,63 @@ def api_scan(req: ScanSubmitRequest, user: dict = Depends(current_user)):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="盘点记录不存在")
-    return ScanResponse(
-        success=True,
-        record_id=result["id"],
-        match_status=result["match_status"],
-        asset_match_status=result["asset_match_status"],
-        model_match_status=result["model_match_status"],
-        message=f"盘点完成，比对结果：{result['match_status']}",
+    response = {
+        "success": True,
+        "record_id": result["id"],
+        "match_status": result["match_status"],
+        "asset_match_status": result["asset_match_status"],
+        "model_match_status": result["model_match_status"],
+        "message": f"盘点完成，比对结果：{result['match_status']}",
+    }
+    response = save_idempotent_result(user["id"], action, request_id, response, "scan_record", result["id"])
+    _audit(
+        user,
+        action,
+        "scan_record",
+        result["id"],
+        {"match_status": result["match_status"], "asset_match_status": result["asset_match_status"], "model_match_status": result["model_match_status"]},
+        request_id,
     )
+    return response
 
 
 @app.post("/api/records/{record_id}/missing", response_model=ScanResponse)
 def api_mark_missing(record_id: int, req: MissingSubmitRequest, user: dict = Depends(current_user)):
     """把任务清单内的设备标记为盘亏：现场应有但未找到。"""
     _require_record_access(user, record_id)
+    action = "record.missing"
+    request_id = req.client_request_id.strip()
+    cached = get_idempotent_result(user["id"], action, request_id)
+    if cached:
+        return cached
     try:
         result = mark_record_missing(record_id, req.reason, req.notes)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="盘点记录不存在")
-    return ScanResponse(
-        success=True,
-        record_id=result["id"],
-        match_status=result["match_status"],
-        asset_match_status=result["asset_match_status"],
-        model_match_status=result["model_match_status"],
-        message="已标记为盘亏，待管理员复核",
-    )
+    response = {
+        "success": True,
+        "record_id": result["id"],
+        "match_status": result["match_status"],
+        "asset_match_status": result["asset_match_status"],
+        "model_match_status": result["model_match_status"],
+        "message": "已标记为盘亏，待管理员复核",
+    }
+    response = save_idempotent_result(user["id"], action, request_id, response, "scan_record", result["id"])
+    _audit(user, action, "scan_record", result["id"], {"reason": req.reason}, request_id)
+    return response
 
 
 @app.post("/api/surplus")
 def api_create_surplus(req: SurplusSubmitRequest, user: dict = Depends(current_user)):
     """登记盘盈设备：现场多出、任务清单中没有的设备。"""
     _require_task_access(user, req.task_id)
+    action = "record.surplus"
+    request_id = req.client_request_id.strip()
+    cached = get_idempotent_result(user["id"], action, request_id)
+    if cached:
+        return cached
     try:
         record = create_surplus_record(
             task_id=req.task_id,
@@ -705,12 +771,13 @@ def api_create_surplus(req: SurplusSubmitRequest, user: dict = Depends(current_u
             rack_no=req.rack_no,
             notes=req.notes,
             created_by=user["id"],
+            client_request_id=request_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if record is None:
         raise HTTPException(status_code=404, detail="任务不存在")
-    return {
+    response = {
         "success": True,
         "record_id": record["id"],
         "record": record,
@@ -719,6 +786,9 @@ def api_create_surplus(req: SurplusSubmitRequest, user: dict = Depends(current_u
         "model_match_status": record["model_match_status"],
         "message": "盘盈设备已登记，待管理员复核",
     }
+    response = save_idempotent_result(user["id"], action, request_id, response, "scan_record", record["id"])
+    _audit(user, action, "scan_record", record["id"], {"task_id": req.task_id, "device_name": req.device_name}, request_id)
+    return response
 
 
 @app.post("/api/records/{record_id}/evidence")
@@ -741,6 +811,7 @@ async def api_upload_evidence(record_id: int, file: UploadFile = File(...), user
     if not save_evidence_photo(record_id, relative_path):
         path.unlink(missing_ok=True)
         raise HTTPException(status_code=404, detail="盘点记录不存在")
+    _audit(user, "record.evidence_upload", "scan_record", record_id, {"filename": relative_path})
     return {"success": True, "filename": relative_path}
 
 
@@ -773,7 +844,7 @@ def api_review_record(
     reason: str = Body(""),
     handler: str = Body(""),
     result: str = Body(""),
-    _: dict = Depends(admin_user),
+    actor: dict = Depends(admin_user),
 ):
     """复核并闭环异常记录。"""
     valid_statuses = {"待复核", "已确认", "已确认异常", "已退回现场", "已整改", "已闭环"}
@@ -783,7 +854,14 @@ def api_review_record(
         raise HTTPException(status_code=400, detail="闭环时必须填写处理说明")
     if not review_record(record_id, status, note, reason, handler, result):
         raise HTTPException(status_code=404, detail="异常记录不存在")
+    _audit(actor, "record.review", "scan_record", record_id, {"status": status, "reason": reason, "handler": handler, "result": result})
     return {"success": True, "message": "异常复核状态已更新"}
+
+
+@app.get("/api/audit_logs")
+def api_audit_logs(limit: int = 200, _: dict = Depends(admin_user)):
+    """查询最近操作审计日志。"""
+    return get_audit_logs(limit)
 
 
 @app.get("/api/report/{task_id}")
@@ -899,9 +977,7 @@ def _append_device_detail_row(ws, task: dict, record: dict) -> None:
 def api_export(task_id: int, _: dict = Depends(admin_user)):
     """导出单个任务盘点结果 Excel。"""
     cleanup_expired_evidence_photos()
-    task = get_task_by_id(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="任务不存在")
+    task = _get_task_or_404(task_id)
     records = get_report(task_id)
 
     wb = openpyxl.Workbook()
@@ -922,10 +998,12 @@ def api_export(task_id: int, _: dict = Depends(admin_user)):
     ws.append([
         "机房名称", "任务名称", "设备数", "已盘", "未扫", "异常设备数",
         "设备对得上异常", "设备对不上异常", "条码一致", "资产条码不一致", "无条码", "盘盈", "盘亏",
+        "现场状态", "闭环状态",
     ])
     ws.append([
         task["room_name"], task["task_name"], total, scanned, pending, len(anomaly_records),
         matched_anomaly, unmatched_anomaly, asset_ok, asset_diff, no_barcode, surplus, missing,
+        task.get("field_status") or "", task.get("closure_status") or "",
     ])
 
     ws = wb.create_sheet("设备明细")
@@ -970,9 +1048,7 @@ def api_export(task_id: int, _: dict = Depends(admin_user)):
 def api_export_details(task_id: int, _: dict = Depends(admin_user)):
     """单独导出设备明细表，便于管理员二次筛选和留档。"""
     cleanup_expired_evidence_photos()
-    task = get_task_by_id(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="任务不存在")
+    task = _get_task_or_404(task_id)
     records = get_report(task_id)
 
     wb = openpyxl.Workbook()
@@ -988,9 +1064,7 @@ def api_export_details(task_id: int, _: dict = Depends(admin_user)):
 def api_export_surplus_missing(task_id: int, _: dict = Depends(admin_user)):
     """单独导出盘盈盘亏清单，作为后续整治闭环台账。"""
     cleanup_expired_evidence_photos()
-    task = get_task_by_id(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="任务不存在")
+    task = _get_task_or_404(task_id)
     records = [
         record for record in get_report(task_id)
         if (record.get("record_type") or "normal") in {"surplus", "missing"}
@@ -1034,13 +1108,11 @@ def api_export_surplus_missing(task_id: int, _: dict = Depends(admin_user)):
 def api_summary(_: dict = Depends(admin_user)):
     """一次性返回所有任务和盘点记录，供 PC 报告页使用。"""
     cleanup_expired_evidence_photos()
-    from .database import get_conn
-
     conn = get_conn()
     try:
         rows = conn.execute("""
             SELECT t.id, t.task_name, t.room_name, t.area_name, t.status, t.created_at, t.assigned_to,
-                   t.assigned_at, t.completed_at,
+                   t.assigned_at, t.completed_at, t.field_completed_at, t.closed_at,
                    u.name as assigned_name,
                    sr.id as record_id, sr.device_name, sr.expected_model,
                    sr.expected_barcode, sr.asset_barcodes, sr.asset_no_barcode,
@@ -1070,9 +1142,13 @@ def api_summary(_: dict = Depends(admin_user)):
                     "created_at": data["created_at"],
                     "assigned_at": data["assigned_at"],
                     "completed_at": data["completed_at"],
+                    "field_completed_at": data["field_completed_at"],
+                    "closed_at": data["closed_at"],
                     "assigned_name": data["assigned_name"],
                     "total": 0,
                     "scanned": 0,
+                    "anomaly_count": 0,
+                    "review_pending": 0,
                     "last_scanned_at": "",
                     "records": [],
                 }
@@ -1110,8 +1186,13 @@ def api_summary(_: dict = Depends(admin_user)):
 
         result = list(tasks_map.values())
         for task in result:
-            task["total"] = len(task["records"])
-            task["scanned"] = sum(1 for r in task["records"] if r["match_status"] != "未扫")
+            inventory_records = [r for r in task["records"] if (r.get("record_type") or "normal") != "surplus"]
+            anomaly_records = [r for r in task["records"] if _record_anomaly_types(r)]
+            task["total"] = len(inventory_records)
+            task["scanned"] = sum(1 for r in inventory_records if r["match_status"] != "未扫")
+            task["anomaly_count"] = len(anomaly_records)
+            task["review_pending"] = sum(1 for r in anomaly_records if (r.get("review_status") or "待复核") != "已闭环")
+            add_task_closure_status(task)
         return result
     finally:
         conn.close()

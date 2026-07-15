@@ -1,11 +1,21 @@
 /* 小程序入口 */
 
+const env = require("./env");
+
+function getApiBase() {
+  try {
+    const account = wx.getAccountInfoSync();
+    const envVersion = account && account.miniProgram && account.miniProgram.envVersion;
+    return envVersion === "develop" ? env.devApiBase : env.prodApiBase;
+  } catch (err) {
+    return env.devApiBase;
+  }
+}
+
 App({
   globalData: {
     userInfo: null,       // { user_id, name, role }
-    // === 【重要】真机测试时把 localhost 改为电脑的局域网IP ===
-    // 例: http://192.168.1.100:8000/api
-    apiBase: "http://localhost:8000/api",
+    apiBase: getApiBase(),
   },
 
   onLaunch() {

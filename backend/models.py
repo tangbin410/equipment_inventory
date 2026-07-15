@@ -46,6 +46,7 @@ class UserUpdateRequest(BaseModel):
 
 class ScanSubmitRequest(BaseModel):
     """现场人员提交盘点结果"""
+    client_request_id: str = Field("", description="客户端提交幂等ID")
     record_id: int = Field(..., description="设备记录ID")
     asset_barcodes: str = Field("", description="扫码到的资产条码，多条用逗号分隔")
     asset_no_barcode: bool = Field(False, description="是否无条码")
@@ -58,12 +59,14 @@ class ScanSubmitRequest(BaseModel):
 
 class MissingSubmitRequest(BaseModel):
     """现场人员提交盘亏结果"""
+    client_request_id: str = Field("", description="客户端提交幂等ID")
     reason: str = Field(..., description="盘亏原因")
     notes: str = Field("", description="现场备注")
 
 
 class SurplusSubmitRequest(BaseModel):
     """现场人员登记盘盈设备"""
+    client_request_id: str = Field("", description="客户端提交幂等ID")
     task_id: int = Field(..., description="任务ID")
     device_name: str = Field(..., description="现场多出设备名称")
     actual_model: str = Field("", description="现场设备型号")
@@ -99,6 +102,9 @@ class TaskOut(BaseModel):
     status: str
     claimed_by: int | None = None
     claimed_name: str | None = None
+    field_status: str = ""
+    closure_status: str = ""
+    review_pending: int = 0
     total: int
     scanned: int
     created_at: str
