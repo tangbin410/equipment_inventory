@@ -7,7 +7,7 @@
       <text class="user-name">{{userName}}</text>
       <text class="user-role">现场人员 · {{areaName}}</text>
     </view>
-    <button class="logout-btn" bindtap="handleLogout">退出登录</button>
+    <button class="back-btn" bindtap="goBack">返回上级</button>
   </view>
 
   <!-- 任务统计 -->
@@ -62,9 +62,7 @@
           <text class="task-name">{{item.task_name}}</text>
         </view>
         <view class="task-status">
-          <text class="tag {{item._tagCls}}">
-            {{item._statusTag}}
-          </text>
+          <text class="tag {{item._tagCls}}">{{item._statusTag}}</text>
         </view>
       </view>
 
@@ -73,8 +71,10 @@
       <view class="task-meta-row">
         <text class="task-meta">未扫 {{item._unscanned}}</text>
         <text class="task-meta warn">异常 {{item._mismatch}}</text>
-        <text class="task-action" data-id="{{item.id}}" catchtap="openTask">{{item._actionText}}</text>
-        <text wx:if="{{item._canRelease}}" class="release-action" data-id="{{item.id}}" catchtap="releaseTask">释放任务</text>
+        <view class="task-actions">
+          <text class="task-action" data-id="{{item.id}}" catchtap="openTask">{{item._actionText}}</text>
+          <text wx:if="{{item._canRelease}}" class="release-action" data-id="{{item.id}}" catchtap="releaseTask">释放任务</text>
+        </view>
       </view>
 
       <!-- 进度条 -->

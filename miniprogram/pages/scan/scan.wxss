@@ -17,6 +17,18 @@
 .device-filter-bar picker { margin-left: 8px; }
 .evidence-preview { display: block; width: 120px; height: 90px; margin-top: 8px; border-radius: 6px; border: 1px solid #d9e7f7; }
 .evidence-tip { display: block; color: #d97706; font-size: 12px; margin-bottom: 8px; }
+.evidence-box {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px dashed #f2c27b;
+  border-radius: 8px;
+  background: #fffaf0;
+}
+.evidence-btn {
+  background: #fff7e6;
+  color: #ad6800;
+  border: 1px solid #ffd591;
+}
 .surplus-entry {
   display: flex;
   justify-content: space-between;

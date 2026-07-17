@@ -514,39 +514,53 @@ async def api_upload(
     task_name: str = Form(""),
     assigned_to: int | None = Form(None),
     area_name: str = Form("默认片区"),
+    force_import: bool = Form(False),
     actor: dict = Depends(admin_user),
 ):
     """上传单个机房清单，保留给旧页面或外部调用。"""
     wb = _load_workbook(await file.read())
     rooms = _parse_excel_devices(wb.active, fixed_room_name=room_name, fixed_area_name=area_name)
     preview = _preview_rooms(rooms)
-    if not preview["valid"]:
+    if not preview["valid"] and not force_import:
         raise HTTPException(status_code=400, detail="清单预检未通过，请先处理空资产条码、重复网元、重复标签或空设备型号")
     devices = rooms[room_name]
 
     final_task_name = task_name if task_name else f"{room_name}-盘点"
     task_id = create_task(final_task_name, room_name, assigned_to, area_name)
     count = batch_create_records(task_id, devices)
-    _audit(actor, "task.import", "task", task_id, {"room_name": room_name, "area_name": area_name, "device_count": count})
+    error_count = sum(1 for row in preview.get("issue_rows", []) if row.get("级别") == "错误")
+    _audit(
+        actor,
+        "task.import",
+        "task",
+        task_id,
+        {"room_name": room_name, "area_name": area_name, "device_count": count, "force_import": force_import, "error_count": error_count},
+    )
+    message_prefix = "已按管理员确认继续导入；" if force_import and error_count else ""
     return UploadResponse(
         task_id=task_id,
         task_name=final_task_name,
         device_count=count,
-        message=f"成功导入 {count} 台设备，任务已创建。",
+        message=f"{message_prefix}成功导入 {count} 台设备，任务已创建。",
     )
 
 
 @app.post("/api/upload_rooms")
-async def api_upload_rooms(file: UploadFile = File(...), actor: dict = Depends(admin_user)):
+async def api_upload_rooms(
+    file: UploadFile = File(...),
+    force_import: bool = Form(False),
+    actor: dict = Depends(admin_user),
+):
     """上传包含多个机房的清单，按机房自动生成片区待领取任务。"""
     wb = _load_workbook(await file.read())
     rooms = _parse_excel_devices(wb.active)
     preview = _preview_rooms(rooms)
-    if not preview["valid"]:
+    if not preview["valid"] and not force_import:
         raise HTTPException(status_code=400, detail="清单预检未通过，请先处理空资产条码、重复网元、重复标签或空设备型号")
 
     created = []
     total_devices = 0
+    error_count = sum(1 for row in preview.get("issue_rows", []) if row.get("级别") == "错误")
     for room_name, devices in rooms.items():
         area_name = (devices[0].get("_area_name") or "默认片区").strip() if devices else "默认片区"
         task_name = f"{room_name}-盘点"
@@ -560,13 +574,20 @@ async def api_upload_rooms(file: UploadFile = File(...), actor: dict = Depends(a
             "area_name": area_name,
             "device_count": count,
         })
-        _audit(actor, "task.import", "task", task_id, {"room_name": room_name, "area_name": area_name, "device_count": count})
+        _audit(
+            actor,
+            "task.import",
+            "task",
+            task_id,
+            {"room_name": room_name, "area_name": area_name, "device_count": count, "force_import": force_import, "error_count": error_count},
+        )
 
+    message_prefix = "已按管理员确认继续导入；" if force_import and error_count else ""
     return {
         "task_count": len(created),
         "device_count": total_devices,
         "tasks": created,
-        "message": f"成功识别 {len(created)} 个机房，导入 {total_devices} 台设备，任务已按片区进入待领取池。",
+        "message": f"{message_prefix}成功识别 {len(created)} 个机房，导入 {total_devices} 台设备，任务已按片区进入待领取池。",
     }
 
 
@@ -792,9 +813,16 @@ def api_create_surplus(req: SurplusSubmitRequest, user: dict = Depends(current_u
 
 
 @app.post("/api/records/{record_id}/evidence")
-async def api_upload_evidence(record_id: int, file: UploadFile = File(...), user: dict = Depends(current_user)):
+async def api_upload_evidence(
+    record_id: int,
+    file: UploadFile = File(...),
+    evidence_type: str = Form("general"),
+    user: dict = Depends(current_user),
+):
     """上传无条码设备的现场照片凭证。"""
     cleanup_expired_evidence_photos()
+    if evidence_type not in {"general", "asset", "cabinet"}:
+        raise HTTPException(status_code=400, detail="凭证类型无效")
     record = _require_record_access(user, record_id)
     suffix = Path(file.filename or "photo.jpg").suffix.lower()
     if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
@@ -804,14 +832,14 @@ async def api_upload_evidence(record_id: int, file: UploadFile = File(...), user
         raise HTTPException(status_code=400, detail="照片不能超过 10MB")
     evidence_dir = EVIDENCE_DIR / f"task_{record['task_id']}" / f"record_{record_id}"
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{record_id}_{uuid4().hex}{suffix}"
+    filename = f"{record_id}_{evidence_type}_{uuid4().hex}{suffix}"
     relative_path = f"task_{record['task_id']}/record_{record_id}/{filename}"
     path = evidence_dir / filename
     path.write_bytes(content)
-    if not save_evidence_photo(record_id, relative_path):
+    if not save_evidence_photo(record_id, relative_path, evidence_type):
         path.unlink(missing_ok=True)
         raise HTTPException(status_code=404, detail="盘点记录不存在")
-    _audit(user, "record.evidence_upload", "scan_record", record_id, {"filename": relative_path})
+    _audit(user, "record.evidence_upload", "scan_record", record_id, {"filename": relative_path, "evidence_type": evidence_type})
     return {"success": True, "filename": relative_path}
 
 

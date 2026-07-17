@@ -63,12 +63,15 @@ function releaseTask(taskId, userId, reason = "") { return request("POST", "/tas
 function submitScan(data) { return request("POST", "/scan", data); }
 function submitMissing(recordId, data) { return request("POST", "/records/" + recordId + "/missing", data); }
 function submitSurplus(data) { return request("POST", "/surplus", data); }
-function uploadEvidencePhoto(recordId, filePath) {
+function uploadEvidencePhoto(recordId, filePath, evidenceType = "general") {
   return new Promise((resolve, reject) => {
     wx.uploadFile({
       url: app.globalData.apiBase + "/records/" + recordId + "/evidence",
       filePath,
       name: "file",
+      formData: {
+        evidence_type: evidenceType,
+      },
       header: {
         "Authorization": app.globalData.userInfo && app.globalData.userInfo.access_token
           ? "Bearer " + app.globalData.userInfo.access_token : "",

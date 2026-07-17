@@ -61,7 +61,7 @@ Page({
         _progressPct: t.total > 0 ? (t.scanned / t.total * 100) : 0,
         _unscanned: Math.max((t.total || 0) - (t.scanned || 0), 0),
         _mismatch: t.mismatch || 0,
-        _tagCls: t.status === "done" ? "tag-success" : t.status === "doing" ? "" : "tag-wait",
+        _tagCls: t.status === "done" ? "tag-success" : t.status === "doing" ? "tag-doing" : "tag-wait",
         _actionText: t.status === "done" ? "查看结果" : "继续盘点",
         _canRelease: t.status === "doing",
       }));
@@ -134,16 +134,13 @@ Page({
     });
   },
 
-  /** 退出登录 */
-  handleLogout() {
-    wx.showModal({
-      title: "提示",
-      content: "确定要退出登录吗？",
-      success: (res) => {
-        if (res.confirm) {
-          app.logout();
-        }
-      },
-    });
+  /** 返回上级 */
+  goBack() {
+    const pages = getCurrentPages();
+    if (pages.length > 1) {
+      wx.navigateBack();
+      return;
+    }
+    wx.reLaunch({ url: "/pages/home/home" });
   },
 });

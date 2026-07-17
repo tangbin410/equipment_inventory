@@ -30,7 +30,7 @@
   margin-top: 2px;
 }
 
-.logout-btn {
+.back-btn {
   background: rgba(255,255,255,0.2);
   color: #fff;
   border: 1px solid rgba(255,255,255,0.4);
@@ -40,7 +40,7 @@
   line-height: 1.8;
 }
 
-.logout-btn:active {
+.back-btn:active {
   background: rgba(255,255,255,0.35);
 }
 
@@ -106,14 +106,15 @@
 .task-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 6px;
+  align-items: center;
+  margin-bottom: 8px;
 }
 
 .task-title-row {
   display: flex;
   align-items: center;
   flex: 1;
+  min-width: 0;
 }
 
 .task-name {
@@ -121,6 +122,35 @@
   font-weight: 600;
   color: #1f2d3d;
   flex: 1;
+  line-height: 1.35;
+}
+
+.task-status {
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+.task-status .tag {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 58px;
+  height: 28px;
+  line-height: 1;
+  margin: 0;
+  padding: 0 10px;
+  border-radius: 999px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  box-sizing: border-box;
+  white-space: nowrap;
+}
+
+.tag-doing {
+  color: #1677ff;
+  border-color: #b7d7ff;
+  background: #eef6ff;
 }
 
 .task-room {
@@ -132,6 +162,7 @@
 .task-meta-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   margin-bottom: 10px;
 }
 
@@ -149,22 +180,52 @@
   background: #fff7e6;
 }
 
+.task-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 1;
+  min-width: 150px;
+}
+
 .task-action {
   margin-left: auto;
+  min-width: 72px;
+  height: 30px;
+  line-height: 30px;
+  box-sizing: border-box;
   font-size: 12px;
-  color: #1677ff;
-  background: #eaf4ff;
+  font-weight: 700;
+  text-align: center;
+  color: #fff;
+  background: linear-gradient(135deg, #1677ff, #3d8bff);
   border-radius: 999px;
-  padding: 3px 10px;
+  padding: 0 12px;
+  box-shadow: 0 6px 12px rgba(22,119,255,0.18);
 }
 
 .release-action {
-  margin-left: 6px;
+  margin-left: 8px;
+  min-width: 72px;
+  height: 30px;
+  line-height: 30px;
+  box-sizing: border-box;
   font-size: 12px;
+  font-weight: 700;
+  text-align: center;
   color: #d64545;
-  background: #fff1f0;
+  background: #fff7f7;
+  border: 1px solid #ffd6d6;
   border-radius: 999px;
-  padding: 3px 10px;
+  padding: 0 12px;
+}
+
+.task-action:active {
+  opacity: 0.86;
+}
+
+.release-action:active {
+  background: #ffecec;
 }
 
 .progress-row {

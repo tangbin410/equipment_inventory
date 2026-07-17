@@ -20,6 +20,11 @@ EVIDENCE_RETENTION_DAYS = 30
 DB_TIMEOUT_SECONDS = float(os.getenv("INVENTORY_SQLITE_TIMEOUT_SECONDS", "30"))
 DB_BUSY_TIMEOUT_MS = int(DB_TIMEOUT_SECONDS * 1000)
 DB_BACKUP_KEEP = int(os.getenv("INVENTORY_BACKUP_KEEP", "10"))
+EVIDENCE_TYPE_COLUMNS = {
+    "general": "evidence_photo",
+    "asset": "asset_evidence_photo",
+    "cabinet": "cabinet_evidence_photo",
+}
 
 
 # ──────────────────────────────────────────────
@@ -93,6 +98,16 @@ def evidence_photo_is_valid(photo_path: str) -> bool:
         return False
     uploaded_at = datetime.fromtimestamp(path.stat().st_mtime)
     return datetime.now() - uploaded_at <= timedelta(days=EVIDENCE_RETENTION_DAYS)
+
+
+def evidence_photo_for_type(record: dict[str, Any], evidence_type: str) -> str:
+    """按凭证类型取照片；兼容旧版本单张 evidence_photo。"""
+    column = EVIDENCE_TYPE_COLUMNS.get(evidence_type, "evidence_photo")
+    return record.get(column) or record.get("evidence_photo") or ""
+
+
+def evidence_photo_is_valid_for_type(record: dict[str, Any], evidence_type: str) -> bool:
+    return evidence_photo_is_valid(evidence_photo_for_type(record, evidence_type))
 
 
 def add_evidence_countdown(record: dict[str, Any]) -> dict[str, Any]:
@@ -388,6 +403,8 @@ def init_db() -> None:
     record_columns = {row["name"] for row in conn.execute("PRAGMA table_info(scan_records)")}
     record_migrations = {
         "evidence_photo": "ALTER TABLE scan_records ADD COLUMN evidence_photo TEXT DEFAULT ''",
+        "asset_evidence_photo": "ALTER TABLE scan_records ADD COLUMN asset_evidence_photo TEXT DEFAULT ''",
+        "cabinet_evidence_photo": "ALTER TABLE scan_records ADD COLUMN cabinet_evidence_photo TEXT DEFAULT ''",
         "review_status": "ALTER TABLE scan_records ADD COLUMN review_status TEXT DEFAULT '待复核'",
         "review_note": "ALTER TABLE scan_records ADD COLUMN review_note TEXT DEFAULT ''",
         "review_reason": "ALTER TABLE scan_records ADD COLUMN review_reason TEXT DEFAULT ''",
@@ -1095,14 +1112,23 @@ def get_record_by_id(record_id: int) -> dict[str, Any] | None:
         conn.close()
 
 
-def save_evidence_photo(record_id: int, photo_path: str) -> bool:
-    """保存无条码现场照片相对路径。"""
+def save_evidence_photo(record_id: int, photo_path: str, evidence_type: str = "general") -> bool:
+    """保存无条码现场照片相对路径，支持区分资产/机柜凭证。"""
+    column = EVIDENCE_TYPE_COLUMNS.get(evidence_type)
+    if column is None:
+        raise ValueError("凭证类型无效")
     conn = get_conn()
     try:
-        cur = conn.execute(
-            "UPDATE scan_records SET evidence_photo = ? WHERE id = ?",
-            (photo_path, record_id),
-        )
+        if column == "evidence_photo":
+            cur = conn.execute(
+                "UPDATE scan_records SET evidence_photo = ? WHERE id = ?",
+                (photo_path, record_id),
+            )
+        else:
+            cur = conn.execute(
+                f"UPDATE scan_records SET {column} = ?, evidence_photo = COALESCE(NULLIF(evidence_photo, ''), ?) WHERE id = ?",
+                (photo_path, photo_path, record_id),
+            )
         conn.commit()
         return cur.rowcount > 0
     finally:
@@ -1337,11 +1363,14 @@ def submit_scan(
         if not rack_no.strip():
             raise ValueError("请填写现场机架号")
 
-        if asset_no_barcode or cabinet_no_barcode:
-            if not record.get("evidence_photo"):
-                raise ValueError("无条码设备必须上传现场照片")
-            if not evidence_photo_is_valid(record.get("evidence_photo") or ""):
-                raise ValueError("照片已过期，请重新盘查")
+        if asset_no_barcode and not evidence_photo_for_type(record, "asset"):
+            raise ValueError("资产无条码设备必须上传资产无条码凭证")
+        if asset_no_barcode and not evidence_photo_is_valid_for_type(record, "asset"):
+            raise ValueError("资产无条码凭证已过期，请重新盘查")
+        if cabinet_no_barcode and not evidence_photo_for_type(record, "cabinet"):
+            raise ValueError("机柜无条码设备必须上传机柜无条码凭证")
+        if cabinet_no_barcode and not evidence_photo_is_valid_for_type(record, "cabinet"):
+            raise ValueError("机柜无条码凭证已过期，请重新盘查")
 
         model_match_status = calc_model_match_status(actual_model, record["expected_model"])
         asset_match_status = calc_asset_match_status(

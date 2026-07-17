@@ -1432,6 +1432,8 @@ def render_upload_page() -> None:
     render_page_head(PAGE_UPLOAD)
     tasks = api_get("/tasks") or []
     pending_dispatch = [task for task in tasks if task.get("status") == "pending"]
+    if notice := st.session_state.pop("upload_notice", None):
+        st.success(notice)
 
     render_section("导入 Excel 清单", "📁")
     st.markdown(
@@ -1446,12 +1448,22 @@ def render_upload_page() -> None:
     upload_file = st.file_uploader("选择 Excel 文件", type=["xlsx", "xls"])
     file_bytes = upload_file.getvalue() if upload_file else b""
     file_token = f"{upload_file.name}:{len(file_bytes)}" if upload_file else ""
+    preview = st.session_state.get("upload_preview") if st.session_state.get("upload_preview_token") == file_token else None
+    preview_ready = st.session_state.get("preview_file_token") == file_token
+    requires_force_import = bool(preview and not preview.get("valid"))
+    force_import = False
+    if requires_force_import:
+        force_import = st.session_state.get(f"force_import_{file_token}", False)
     preview_col, import_col = st.columns(2)
     with preview_col:
         preview_clicked = st.button("🔎 预检清单", width="stretch", disabled=upload_file is None)
     with import_col:
-        preview_ready = st.session_state.get("preview_file_token") == file_token
-        submitted = st.button("📤 导入并生成待盘点机房", type="primary", width="stretch", disabled=not preview_ready)
+        submitted = st.button(
+            "📤 导入并生成待盘点机房",
+            type="primary",
+            width="stretch",
+            disabled=not preview_ready or (requires_force_import and not force_import),
+        )
 
     if preview_clicked and upload_file:
         files = {"file": (upload_file.name, file_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
@@ -1459,10 +1471,10 @@ def render_upload_page() -> None:
         if preview:
             st.session_state["upload_preview"] = preview
             st.session_state["upload_preview_token"] = file_token
-            st.session_state["preview_file_token"] = file_token if preview["valid"] else ""
+            st.session_state["preview_file_token"] = file_token
+            st.session_state.pop(f"force_import_{file_token}", None)
             st.rerun()
 
-    preview = st.session_state.get("upload_preview") if st.session_state.get("upload_preview_token") == file_token else None
     if preview:
         issue_rows = preview.get("issue_rows", [])
         error_count = sum(1 for row in issue_rows if row.get("级别") == "错误")
@@ -1495,17 +1507,24 @@ def render_upload_page() -> None:
             else:
                 st.success("预检通过，可以正式导入。")
         else:
-            st.error("预检未通过，请下载异常明细并修改清单后重新上传。")
+            st.error("预检发现异常。建议先下载异常明细核对；如确认这些异常可带入现场核查，可勾选下方确认项后继续导入。")
+            st.checkbox(
+                "我已查看预检异常，确认仍继续导入并生成待盘点机房",
+                key=f"force_import_{file_token}",
+                help="继续导入不会修正清单异常，现场盘点和后续报表会保留这些风险数据。",
+            )
 
     if submitted and upload_file:
         files = {"file": (upload_file.name, file_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
-        result = api_post("/upload_rooms", files=files)
+        data = {"force_import": "1"} if requires_force_import else None
+        result = api_post("/upload_rooms", data=data, files=files)
         if result:
             st.session_state.pop("upload_preview", None)
             st.session_state.pop("upload_preview_token", None)
             st.session_state.pop("preview_file_token", None)
+            st.session_state.pop(f"force_import_{file_token}", None)
+            st.session_state["upload_notice"] = result["message"]
             clear_cache()
-            st.success(result["message"])
             st.rerun()
 
     render_section("片区待领取任务池", "🧭")

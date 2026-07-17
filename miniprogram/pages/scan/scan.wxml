@@ -47,6 +47,13 @@
           <text class="barcode-del" bindtap="removeSurplusAssetBarcode" data-index="{{idx}}">×</text>
         </view>
       </view>
+      <view wx:if="{{surplusForm.assetNoBarcode}}" class="evidence-box">
+        <text class="evidence-tip">{{surplusForm.assetEvidencePhoto ? '资产无条码凭证已拍摄，提交后自动上传' : '资产无条码必须拍摄资产凭证'}}</text>
+        <button class="btn-small evidence-btn" bindtap="chooseSurplusEvidencePhoto" data-type="asset">
+          {{surplusForm.assetEvidencePhoto ? '重新上传资产无条码凭证' : '上传资产无条码凭证'}}
+        </button>
+        <image wx:if="{{surplusForm.assetEvidencePhoto}}" class="evidence-preview" src="{{surplusForm.assetEvidencePhoto}}" mode="aspectFill" />
+      </view>
     </view>
     <view class="field-group">
       <text class="field-label">③ 机柜条码</text>
@@ -61,6 +68,13 @@
           <text class="barcode-del" bindtap="removeSurplusCabinetBarcode" data-index="{{idx}}">×</text>
         </view>
       </view>
+      <view wx:if="{{surplusForm.cabinetNoBarcode}}" class="evidence-box">
+        <text class="evidence-tip">{{surplusForm.cabinetEvidencePhoto ? '机柜无条码凭证已拍摄，提交后自动上传' : '机柜无条码必须拍摄机柜凭证'}}</text>
+        <button class="btn-small evidence-btn" bindtap="chooseSurplusEvidencePhoto" data-type="cabinet">
+          {{surplusForm.cabinetEvidencePhoto ? '重新上传机柜无条码凭证' : '上传机柜无条码凭证'}}
+        </button>
+        <image wx:if="{{surplusForm.cabinetEvidencePhoto}}" class="evidence-preview" src="{{surplusForm.cabinetEvidencePhoto}}" mode="aspectFill" />
+      </view>
     </view>
     <view class="field-group">
       <text class="field-label">④ 设备型号</text>
@@ -73,12 +87,6 @@
     <view class="field-group">
       <text class="field-label">⑥ 备注</text>
       <textarea class="notes-textarea" placeholder="选填：现场位置、异常说明等" value="{{surplusForm.notes}}" data-field="notes" bindinput="onSurplusInput" maxlength="200"></textarea>
-    </view>
-    <view wx:if="{{surplusForm.assetNoBarcode || surplusForm.cabinetNoBarcode}}" class="field-group">
-      <text class="field-label">⑦ 无条码现场凭证</text>
-      <text class="evidence-tip">{{surplusForm.evidencePhoto ? '已拍现场凭证，提交后自动上传' : '无条码盘盈设备必须拍摄现场凭证'}}</text>
-      <button class="btn-small" bindtap="chooseSurplusEvidencePhoto">{{surplusForm.evidencePhoto ? '重新拍摄' : '拍摄照片'}}</button>
-      <image wx:if="{{surplusForm.evidencePhoto}}" class="evidence-preview" src="{{surplusForm.evidencePhoto}}" mode="aspectFill" />
     </view>
     <button class="btn-primary submit-btn" bindtap="submitSurplusDevice">确认登记盘盈</button>
   </view>
@@ -135,6 +143,13 @@
               <text class="barcode-del" bindtap="removeAssetBarcode" data-id="{{item.id}}" data-index="{{idx}}">×</text>
             </view>
           </view>
+          <view wx:if="{{item.assetNoBarcode}}" class="evidence-box">
+            <text class="evidence-tip">{{item.assetEvidencePhoto ? '资产无条码凭证已拍摄，提交时自动上传' : '资产无条码必须拍摄资产凭证'}}</text>
+            <button class="btn-small evidence-btn" bindtap="chooseEvidencePhoto" data-id="{{item.id}}" data-type="asset">
+              {{item.assetEvidencePhoto ? '重新上传资产无条码凭证' : '上传资产无条码凭证'}}
+            </button>
+            <image wx:if="{{item.assetEvidencePhoto}}" class="evidence-preview" src="{{item.assetEvidencePhoto}}" mode="aspectFill" />
+          </view>
         </view>
 
         <!-- ② 机柜条码 -->
@@ -150,6 +165,13 @@
               <text>{{barcode}}</text>
               <text class="barcode-del" bindtap="removeCabinetBarcode" data-id="{{item.id}}" data-index="{{idx}}">×</text>
             </view>
+          </view>
+          <view wx:if="{{item.cabinetNoBarcode}}" class="evidence-box">
+            <text class="evidence-tip">{{item.cabinetEvidencePhoto ? '机柜无条码凭证已拍摄，提交时自动上传' : '机柜无条码必须拍摄机柜凭证'}}</text>
+            <button class="btn-small evidence-btn" bindtap="chooseEvidencePhoto" data-id="{{item.id}}" data-type="cabinet">
+              {{item.cabinetEvidencePhoto ? '重新上传机柜无条码凭证' : '上传机柜无条码凭证'}}
+            </button>
+            <image wx:if="{{item.cabinetEvidencePhoto}}" class="evidence-preview" src="{{item.cabinetEvidencePhoto}}" mode="aspectFill" />
           </view>
         </view>
 
@@ -194,15 +216,6 @@
             data-id="{{item.id}}"
             maxlength="200"
           ></textarea>
-        </view>
-
-        <view wx:if="{{item.assetNoBarcode || item.cabinetNoBarcode}}" class="field-group">
-          <text class="field-label">⑥ 无条码现场凭证</text>
-          <text class="evidence-tip">{{item.evidencePhoto ? '已拍现场凭证，提交时自动上传' : '无条码设备必须拍摄现场凭证'}}</text>
-          <button class="btn-small" bindtap="chooseEvidencePhoto" data-id="{{item.id}}">
-            {{item.evidencePhoto ? '重新拍摄' : '拍摄照片'}}
-          </button>
-          <image wx:if="{{item.evidencePhoto}}" class="evidence-preview" src="{{item.evidencePhoto}}" mode="aspectFill" />
         </view>
 
         <!-- 提交按钮 -->
