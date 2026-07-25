@@ -1,0 +1,55 @@
+<view class="page">
+  <view class="top-card">
+    <text class="title">{{areaName}}任务池</text>
+    <text class="sub">待领取任务可由同片区任一现场人员领取</text>
+    <view class="stats">
+      <view class="stat">
+        <text class="num">{{pendingCount}}</text>
+        <text class="label">待领取</text>
+      </view>
+      <view class="stat">
+        <text class="num">{{doingCount}}</text>
+        <text class="label">盘点中</text>
+      </view>
+      <view class="stat">
+        <text class="num">{{doneCount}}</text>
+        <text class="label">已完成</text>
+      </view>
+    </view>
+  </view>
+
+  <view class="tabs">
+    <view class="tab {{statusFilter === 'all' ? 'active' : ''}}" data-status="all" bindtap="setFilter">全部</view>
+    <view class="tab {{statusFilter === 'pending' ? 'active' : ''}}" data-status="pending" bindtap="setFilter">待领取</view>
+    <view class="tab {{statusFilter === 'doing' ? 'active' : ''}}" data-status="doing" bindtap="setFilter">盘点中</view>
+    <view class="tab {{statusFilter === 'done' ? 'active' : ''}}" data-status="done" bindtap="setFilter">已完成</view>
+  </view>
+
+  <view wx:if="{{loading}}" class="empty">加载中...</view>
+  <view wx:elif="{{empty}}" class="empty">暂无符合条件的机房任务</view>
+
+  <view wx:else class="task-list">
+    <view class="task-card" wx:for="{{tasks}}" wx:key="id">
+      <view class="card-head">
+        <text class="room">{{item.room_name}}</text>
+        <text class="tag {{item._statusCls}}">{{item._statusText}}</text>
+      </view>
+      <text class="task-name">{{item.task_name}}</text>
+      <view class="meta-row">
+        <text class="meta">设备 {{item._total}}</text>
+        <text class="meta">已扫 {{item._scanned}}</text>
+        <text class="meta warn">异常 {{item._mismatch}}</text>
+      </view>
+      <view class="progress-row">
+        <view class="progress-bar">
+          <view class="progress-fill" style="width: {{item._progressPct}}%"></view>
+        </view>
+        <text class="progress-text">{{item._scanned}}/{{item._total}}</text>
+      </view>
+      <view class="bottom-row">
+        <text class="claimed">{{item._claimedText}}</text>
+        <button wx:if="{{item._canClaim}}" class="claim-btn" data-id="{{item.id}}" catchtap="claimTask">领取任务</button>
+      </view>
+    </view>
+  </view>
+</view>

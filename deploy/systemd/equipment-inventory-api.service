@@ -1,0 +1,16 @@
+[Unit]
+Description=Equipment Inventory FastAPI backend
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/equipment_inventory
+EnvironmentFile=/opt/equipment_inventory/.env
+ExecStart=/opt/equipment_inventory/.venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --workers 1
+Restart=always
+RestartSec=5
+User=inventory
+Group=inventory
+
+[Install]
+WantedBy=multi-user.target

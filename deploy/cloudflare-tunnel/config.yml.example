@@ -1,0 +1,15 @@
+# Cloudflare Tunnel config example.
+# Replace <TUNNEL-UUID> with your tunnel id and update credentials-file path.
+#
+# Recommended public hostname:
+#   https://api.equip-inventory.xyz -> http://127.0.0.1:8000
+#
+# Do not expose Streamlit admin port 8501 for field trials.
+
+tunnel: <TUNNEL-UUID>
+credentials-file: C:\Users\Administrator\.cloudflared\<TUNNEL-UUID>.json
+
+ingress:
+  - hostname: api.equip-inventory.xyz
+    service: http://127.0.0.1:8000
+  - service: http_status:404

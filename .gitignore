@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+
+.env
+.venv/
+venv/
+
+.playwright-cli/
+output/
+
+data/inventory.db
+data/backups/
+data/evidence/
+
+*.log

@@ -3,19 +3,22 @@
 const app = getApp();
 const { login } = require("../../utils/api");
 
+// 临时模式开关：由 switch_miniprogram_mode.ps1 自动切换。
+const ENABLE_DEV_LOGIN = true;
+
 Page({
   data: {
     loading: false,
-    showDevHint: true,  // 开发测试用
+    showDevHint: false,
   },
 
   onLoad() {
     try {
       const account = wx.getAccountInfoSync();
       const envVersion = account && account.miniProgram && account.miniProgram.envVersion;
-      this.setData({ showDevHint: envVersion === "develop" });
+      this.setData({ showDevHint: ENABLE_DEV_LOGIN && envVersion === "develop" });
     } catch (err) {
-      this.setData({ showDevHint: true });
+      this.setData({ showDevHint: false });
     }
     // 如果已登录，直接跳转任务页
     if (app.isLoggedIn()) {
