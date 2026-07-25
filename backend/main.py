@@ -16,6 +16,7 @@ from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Q
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
+from .ai_agent import analyze_inventory, build_inventory_rows, check_model_available
 from .database import (
     assign_task,
     batch_assign_tasks,
@@ -35,10 +36,10 @@ from .database import (
     get_conn,
     get_idempotent_result,
     get_report,
+    get_system_setting,
     get_record_by_id,
     get_task_by_id,
     get_task_items,
-    get_tasks_by_user,
     get_user_by_id,
     get_user_by_openid,
     get_user_for_auth,
@@ -49,16 +50,18 @@ from .database import (
     init_db,
     mark_record_missing,
     release_task,
-    review_record,
     save_evidence_photo,
+    save_ai_analysis_result,
     save_idempotent_result,
+    set_system_setting,
     submit_scan,
     update_user,
     set_password_hash,
     add_compare_status,
-    add_task_closure_status,
+    add_task_field_status,
 )
 from .models import (
+    AIAnalysisRequest,
     AdminLoginRequest,
     LoginRequest,
     MissingSubmitRequest,
@@ -764,7 +767,7 @@ def api_mark_missing(record_id: int, req: MissingSubmitRequest, user: dict = Dep
         "match_status": result["match_status"],
         "asset_match_status": result["asset_match_status"],
         "model_match_status": result["model_match_status"],
-        "message": "已标记为盘亏，待管理员复核",
+        "message": "已标记为盘亏，可在后台 AI 模型分析中核查",
     }
     response = save_idempotent_result(user["id"], action, request_id, response, "scan_record", result["id"])
     _audit(user, action, "scan_record", result["id"], {"reason": req.reason}, request_id)
@@ -805,7 +808,7 @@ def api_create_surplus(req: SurplusSubmitRequest, user: dict = Depends(current_u
         "match_status": record["match_status"],
         "asset_match_status": record["asset_match_status"],
         "model_match_status": record["model_match_status"],
-        "message": "盘盈设备已登记，待管理员复核",
+        "message": "盘盈设备已登记，可在后台 AI 模型分析中核查",
     }
     response = save_idempotent_result(user["id"], action, request_id, response, "scan_record", record["id"])
     _audit(user, action, "scan_record", record["id"], {"task_id": req.task_id, "device_name": req.device_name}, request_id)
@@ -864,28 +867,6 @@ def api_evidence(filename: str, access_token: str = Query("")):
     return FileResponse(path)
 
 
-@app.post("/api/records/{record_id}/review")
-def api_review_record(
-    record_id: int,
-    status: str = Body(...),
-    note: str = Body(""),
-    reason: str = Body(""),
-    handler: str = Body(""),
-    result: str = Body(""),
-    actor: dict = Depends(admin_user),
-):
-    """复核并闭环异常记录。"""
-    valid_statuses = {"待复核", "已确认", "已确认异常", "已退回现场", "已整改", "已闭环"}
-    if status not in valid_statuses:
-        raise HTTPException(status_code=400, detail="无效的复核状态")
-    if status == "已闭环" and not note.strip():
-        raise HTTPException(status_code=400, detail="闭环时必须填写处理说明")
-    if not review_record(record_id, status, note, reason, handler, result):
-        raise HTTPException(status_code=404, detail="异常记录不存在")
-    _audit(actor, "record.review", "scan_record", record_id, {"status": status, "reason": reason, "handler": handler, "result": result})
-    return {"success": True, "message": "异常复核状态已更新"}
-
-
 @app.get("/api/audit_logs")
 def api_audit_logs(limit: int = 200, _: dict = Depends(admin_user)):
     """查询最近操作审计日志。"""
@@ -898,16 +879,14 @@ def api_report(task_id: int, user: dict = Depends(current_user)):
     cleanup_expired_evidence_photos()
     task = _require_task_access(user, task_id)
     records = get_report(task_id)
+    inventory_records = [r for r in records if (r.get("record_type") or "normal") != "surplus"]
     return {
         "task": task,
         "records": records,
         "summary": {
-            "total": len(records),
-            "一致": sum(1 for r in records if r["match_status"] == "一致"),
-            "不一致": sum(1 for r in records if r["match_status"] == "不一致"),
-            "未扫": sum(1 for r in records if r["match_status"] == "未扫"),
-            "盘盈": sum(1 for r in records if (r.get("record_type") or "normal") == "surplus"),
-            "盘亏": sum(1 for r in records if (r.get("record_type") or "normal") == "missing"),
+            "total": len(inventory_records),
+            "已盘": sum(1 for r in inventory_records if r["match_status"] != "未扫"),
+            "未盘": sum(1 for r in inventory_records if r["match_status"] == "未扫"),
         },
     }
 
@@ -932,204 +911,34 @@ def _excel_response(wb: openpyxl.Workbook, filename: str) -> Response:
     )
 
 
-EXPORT_MATCHED_ANOMALIES = {"资产条码不一致", "无条码", "设备型号不一致"}
-EXPORT_UNMATCHED_ANOMALIES = {"盘亏", "盘盈"}
+INVENTORY_DATA_HEADERS = [
+    "任务ID", "任务名称", "机房名称", "片区", "领取人", "任务状态", "任务创建时间",
+    "领取时间", "现场完成时间", "设备名称", "清单设备型号", "清单资产条码",
+    "现场设备型号", "现场资产条码", "资产无条码", "现场机柜条码", "机柜无条码",
+    "现场机架号", "现场状态", "盘点时间", "盘亏原因", "现场备注", "凭证照片状态",
+]
 
 
-def _record_anomaly_types(record: dict) -> list[str]:
-    """导出用：按 2 大类 5 小类识别现场异常。"""
-    record_type = record.get("record_type") or "normal"
-    if record_type == "missing":
-        return ["盘亏"]
-    if record_type == "surplus":
-        return ["盘盈"]
-
-    types = []
-    asset_status = record.get("asset_match_status") or record.get("match_status")
-    if asset_status not in {"一致", "未扫", "无条码"}:
-        types.append("资产条码不一致")
-    if asset_status == "无条码":
-        types.append("无条码")
-    if record.get("model_match_status") == "不一致":
-        types.append("设备型号不一致")
-    return types
-
-
-def _record_anomaly_category(record: dict) -> str:
-    types = set(_record_anomaly_types(record))
-    if types & EXPORT_UNMATCHED_ANOMALIES:
-        return "设备对不上"
-    if types & EXPORT_MATCHED_ANOMALIES:
-        return "设备对得上"
-    return "正常"
-
-
-def _record_anomaly_text(record: dict) -> str:
-    types = _record_anomaly_types(record)
-    return "、".join(types) if types else ""
-
-
-def _append_device_detail_header(ws) -> None:
-    """设备明细导出表头，和 PC 设备明细表保持一致。"""
-    ws.append([
-        "机房", "异常大类", "异常类型", "现场状态", "设备", "设备型号", "资产条码",
-        "现场设备型号", "现场资产条码", "现场机柜条码", "现场机架号",
-        "资产条码对比结果", "设备型号对比结果", "盘亏原因", "备注", "总体比对结果", "盘点时间",
-    ])
-
-
-def _append_device_detail_row(ws, task: dict, record: dict) -> None:
-    """写入一行设备明细。"""
-    ws.append([
-        task["room_name"],
-        _record_anomaly_category(record),
-        _record_anomaly_text(record),
-        record.get("field_status") or "正常",
-        record["device_name"],
-        record["expected_model"],
-        record["expected_barcode"],
-        record["actual_model"],
-        record["asset_barcodes"] or ("无条码" if record["asset_no_barcode"] else ""),
-        record["cabinet_barcodes"] or ("无条码" if record["cabinet_no_barcode"] else ""),
-        record.get("rack_no") or "",
-        record.get("asset_match_status") or record["match_status"],
-        record.get("model_match_status") or "",
-        record.get("missing_reason") or "",
-        record["notes"],
-        record["match_status"],
-        record["scanned_at"] or "",
-    ])
+def _append_inventory_data_sheet(wb: openpyxl.Workbook, tasks: list[dict]) -> None:
+    """导出任务清单和现场盘点合并后的原始数据。"""
+    ws = wb.active
+    ws.title = "资产盘点数据"
+    ws.append(INVENTORY_DATA_HEADERS)
+    for row in build_inventory_rows(tasks):
+        ws.append([row.get(header) or "" for header in INVENTORY_DATA_HEADERS])
 
 
 @app.get("/api/export/{task_id}")
 def api_export(task_id: int, _: dict = Depends(admin_user)):
-    """导出单个任务盘点结果 Excel。"""
+    """导出单个任务的资产盘点原始数据。"""
     cleanup_expired_evidence_photos()
     task = _get_task_or_404(task_id)
     records = get_report(task_id)
+    task["records"] = records
 
     wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "机房汇总"
-    inventory_records = [r for r in records if (r.get("record_type") or "normal") != "surplus"]
-    anomaly_records = [r for r in records if _record_anomaly_types(r)]
-    total = len(inventory_records)
-    scanned = sum(1 for r in inventory_records if r["match_status"] != "未扫")
-    pending = sum(1 for r in inventory_records if r["match_status"] == "未扫")
-    asset_ok = sum(1 for r in inventory_records if r.get("asset_match_status") == "一致")
-    asset_diff = sum(1 for r in inventory_records if "资产条码不一致" in _record_anomaly_types(r))
-    no_barcode = sum(1 for r in inventory_records if "无条码" in _record_anomaly_types(r))
-    surplus = sum(1 for r in records if (r.get("record_type") or "normal") == "surplus")
-    missing = sum(1 for r in records if (r.get("record_type") or "normal") == "missing")
-    matched_anomaly = sum(1 for r in anomaly_records if _record_anomaly_category(r) == "设备对得上")
-    unmatched_anomaly = sum(1 for r in anomaly_records if _record_anomaly_category(r) == "设备对不上")
-    ws.append([
-        "机房名称", "任务名称", "设备数", "已盘", "未扫", "异常设备数",
-        "设备对得上异常", "设备对不上异常", "条码一致", "资产条码不一致", "无条码", "盘盈", "盘亏",
-        "现场状态", "闭环状态",
-    ])
-    ws.append([
-        task["room_name"], task["task_name"], total, scanned, pending, len(anomaly_records),
-        matched_anomaly, unmatched_anomaly, asset_ok, asset_diff, no_barcode, surplus, missing,
-        task.get("field_status") or "", task.get("closure_status") or "",
-    ])
-
-    ws = wb.create_sheet("设备明细")
-    _append_device_detail_header(ws)
-    for record in records:
-        _append_device_detail_row(ws, task, record)
-
-    ws = wb.create_sheet("异常复核")
-    ws.append([
-        "机房", "异常大类", "异常类型", "现场状态", "设备", "期望资产条码", "扫描资产条码", "资产条码对比结果",
-        "期望型号", "现场型号", "型号对比结果", "复核状态", "异常原因",
-        "盘亏原因", "处理人", "处理结论", "处理说明", "复核时间",
-    ])
-    for record in records:
-        if not _record_anomaly_types(record):
-            continue
-        ws.append([
-            task["room_name"],
-            _record_anomaly_category(record),
-            _record_anomaly_text(record),
-            record.get("field_status") or "正常",
-            record["device_name"],
-            record["expected_barcode"],
-            record["asset_barcodes"] or ("无条码" if record["asset_no_barcode"] else ""),
-            record.get("asset_match_status") or record["match_status"],
-            record["expected_model"],
-            record["actual_model"],
-            record.get("model_match_status") or "",
-            record.get("review_status") or "",
-            record.get("review_reason") or "",
-            record.get("missing_reason") or "",
-            record.get("review_handler") or "",
-            record.get("review_result") or "",
-            record.get("review_note") or "",
-            record.get("reviewed_at") or "",
-        ])
-
-    return _excel_response(wb, f"盘点结果_{task['room_name']}_{task_id}.xlsx")
-
-
-@app.get("/api/export/{task_id}/details")
-def api_export_details(task_id: int, _: dict = Depends(admin_user)):
-    """单独导出设备明细表，便于管理员二次筛选和留档。"""
-    cleanup_expired_evidence_photos()
-    task = _get_task_or_404(task_id)
-    records = get_report(task_id)
-
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "设备明细"
-    _append_device_detail_header(ws)
-    for record in records:
-        _append_device_detail_row(ws, task, record)
-    return _excel_response(wb, f"设备明细_{task['room_name']}_{task_id}.xlsx")
-
-
-@app.get("/api/export/{task_id}/surplus_missing")
-def api_export_surplus_missing(task_id: int, _: dict = Depends(admin_user)):
-    """单独导出盘盈盘亏清单，作为后续整治闭环台账。"""
-    cleanup_expired_evidence_photos()
-    task = _get_task_or_404(task_id)
-    records = [
-        record for record in get_report(task_id)
-        if (record.get("record_type") or "normal") in {"surplus", "missing"}
-    ]
-
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "盘盈盘亏清单"
-    ws.append([
-        "机房", "任务名称", "整治类型", "设备", "期望型号", "现场型号",
-        "期望资产条码", "现场资产条码", "现场机柜条码", "现场机架号",
-        "盘亏原因", "现场备注", "复核状态", "异常原因", "处理人",
-        "处理结论", "处理说明", "盘点时间", "复核时间",
-    ])
-    for record in records:
-        ws.append([
-            task["room_name"],
-            task["task_name"],
-            record.get("field_status") or ("盘盈" if record.get("record_type") == "surplus" else "盘亏"),
-            record["device_name"],
-            record.get("expected_model") or "",
-            record.get("actual_model") or "",
-            record.get("expected_barcode") or "",
-            record.get("asset_barcodes") or ("无条码" if record.get("asset_no_barcode") else ""),
-            record.get("cabinet_barcodes") or ("无条码" if record.get("cabinet_no_barcode") else ""),
-            record.get("rack_no") or "",
-            record.get("missing_reason") or "",
-            record.get("notes") or "",
-            record.get("review_status") or "待复核",
-            record.get("review_reason") or "",
-            record.get("review_handler") or "",
-            record.get("review_result") or "",
-            record.get("review_note") or "",
-            record.get("scanned_at") or "",
-            record.get("reviewed_at") or "",
-        ])
-    return _excel_response(wb, f"盘盈盘亏清单_{task['room_name']}_{task_id}.xlsx")
+    _append_inventory_data_sheet(wb, [task])
+    return _excel_response(wb, f"资产盘点数据_{task['room_name']}_{task_id}.xlsx")
 
 
 @app.get("/api/summary")
@@ -1140,15 +949,14 @@ def api_summary(_: dict = Depends(admin_user)):
     try:
         rows = conn.execute("""
             SELECT t.id, t.task_name, t.room_name, t.area_name, t.status, t.created_at, t.assigned_to,
-                   t.assigned_at, t.completed_at, t.field_completed_at, t.closed_at,
+                   t.assigned_at, t.completed_at, t.field_completed_at,
                    u.name as assigned_name,
                    sr.id as record_id, sr.device_name, sr.expected_model,
                    sr.expected_barcode, sr.asset_barcodes, sr.asset_no_barcode,
                    sr.cabinet_barcodes, sr.cabinet_no_barcode, sr.rack_no,
                     sr.actual_model, sr.notes, sr.match_status, sr.scanned_at,
                     sr.record_type, sr.field_status, sr.missing_reason, sr.created_by,
-                    sr.evidence_photo, sr.review_status, sr.review_note,
-                    sr.review_reason, sr.review_handler, sr.review_result, sr.reviewed_at
+                    sr.evidence_photo
             FROM tasks t
             LEFT JOIN users u ON u.id = t.assigned_to
             LEFT JOIN scan_records sr ON sr.task_id = t.id
@@ -1171,12 +979,9 @@ def api_summary(_: dict = Depends(admin_user)):
                     "assigned_at": data["assigned_at"],
                     "completed_at": data["completed_at"],
                     "field_completed_at": data["field_completed_at"],
-                    "closed_at": data["closed_at"],
                     "assigned_name": data["assigned_name"],
                     "total": 0,
                     "scanned": 0,
-                    "anomaly_count": 0,
-                    "review_pending": 0,
                     "last_scanned_at": "",
                     "records": [],
                 }
@@ -1200,12 +1005,6 @@ def api_summary(_: dict = Depends(admin_user)):
                     "missing_reason": data["missing_reason"],
                     "created_by": data["created_by"],
                     "evidence_photo": data["evidence_photo"],
-                    "review_status": data["review_status"],
-                    "review_note": data["review_note"],
-                    "review_reason": data["review_reason"],
-                    "review_handler": data["review_handler"],
-                    "review_result": data["review_result"],
-                    "reviewed_at": data["reviewed_at"],
                 })
                 tasks_map[task_id]["records"].append(record)
                 if record["scanned_at"]:
@@ -1215,15 +1014,137 @@ def api_summary(_: dict = Depends(admin_user)):
         result = list(tasks_map.values())
         for task in result:
             inventory_records = [r for r in task["records"] if (r.get("record_type") or "normal") != "surplus"]
-            anomaly_records = [r for r in task["records"] if _record_anomaly_types(r)]
             task["total"] = len(inventory_records)
             task["scanned"] = sum(1 for r in inventory_records if r["match_status"] != "未扫")
-            task["anomaly_count"] = len(anomaly_records)
-            task["review_pending"] = sum(1 for r in anomaly_records if (r.get("review_status") or "待复核") != "已闭环")
-            add_task_closure_status(task)
+            add_task_field_status(task)
         return result
     finally:
         conn.close()
+
+
+@app.post("/api/ai/analyze")
+def api_ai_analyze(payload: AIAnalysisRequest, actor: dict = Depends(admin_user)):
+    """对选中任务做只读 AI 分析，发送前先脱敏。"""
+    ai_status = _ai_status_payload()
+    if not ai_status["enabled"]:
+        raise HTTPException(status_code=400, detail="AI 模型分析已关闭")
+    if not ai_status["available"]:
+        raise HTTPException(status_code=400, detail="AI 模型未配置，请先配置 DeepSeek API Key 或本地 agent 服务")
+
+    task_ids = sorted({int(task_id) for task_id in payload.task_ids if int(task_id) > 0})
+    if not task_ids:
+        raise HTTPException(status_code=400, detail="请先选择需要分析的任务")
+
+    tasks = []
+    for task_id in task_ids:
+        task = _get_task_or_404(task_id)
+        task["records"] = get_report(task_id)
+        tasks.append(task)
+
+    analysis_scope = "、".join(f"{task['room_name']}({task['id']})" for task in tasks)
+    try:
+        result = analyze_inventory(tasks)
+        analysis_result = json.dumps(result["analysis_items"], ensure_ascii=False)
+        status = "success"
+        error_message = ""
+    except Exception as exc:
+        result = {
+            "model_provider": "deepseek",
+            "model_name": os.getenv("DEEPSEEK_MODEL", ""),
+            "prompt_version": "",
+            "input_summary": "",
+            "desensitized_payload": "",
+            "analysis_items": [],
+        }
+        analysis_result = "[]"
+        status = "failed"
+        error_message = str(exc)
+
+    analysis_id = save_ai_analysis_result(
+        task_ids=task_ids,
+        analysis_scope=analysis_scope,
+        model_provider=result["model_provider"],
+        model_name=result["model_name"],
+        prompt_version=result["prompt_version"],
+        input_summary=result["input_summary"],
+        desensitized_payload=result["desensitized_payload"],
+        analysis_result=analysis_result,
+        status=status,
+        error_message=error_message,
+        created_by=actor.get("id"),
+    )
+    _audit(actor, "ai.analyze", "ai_analysis", analysis_id, {"task_ids": task_ids, "status": status})
+    return {
+        "id": analysis_id,
+        "status": status,
+        "error_message": error_message,
+        "analysis_items": result["analysis_items"],
+        "input_summary": result["input_summary"],
+        "model_provider": result["model_provider"],
+        "model_name": result["model_name"],
+    }
+
+
+def _ai_status_payload() -> dict:
+    external_agent_url = _clean_env_setting(os.getenv("INVENTORY_AI_AGENT_URL", ""))
+    api_key = _clean_env_setting(os.getenv("DEEPSEEK_API_KEY", ""))
+    api_key_configured = bool(api_key) and len(api_key) >= 10 and not _has_control_chars(api_key)
+    enabled = get_system_setting("ai_enabled", "1") == "1"
+    model = _clean_env_setting(os.getenv("DEEPSEEK_MODEL", ""))
+    model_name = external_agent_url if external_agent_url else model
+    configured = bool(external_agent_url or (api_key_configured and model_name))
+    model_provider = "local-agent" if external_agent_url else "deepseek"
+    return {
+        "enabled": enabled,
+        "configured": configured,
+        "available": enabled and configured,
+        "api_key_configured": api_key_configured,
+        "model_provider": model_provider,
+        "model_name": model_name,
+        "base_url": _clean_env_setting(os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")),
+        "external_agent_url": external_agent_url,
+    }
+
+
+def _clean_env_setting(value: str) -> str:
+    return str(value or "").strip().strip("\"'")
+
+
+def _has_control_chars(value: str) -> bool:
+    return any(ord(ch) < 32 or ord(ch) == 127 for ch in str(value or ""))
+
+
+@app.get("/api/ai/status")
+def api_ai_status(_: dict = Depends(admin_user)):
+    """查询 AI 模型状态。"""
+    return _ai_status_payload()
+
+
+@app.post("/api/ai/check")
+def api_ai_check(_: dict = Depends(admin_user)):
+    """真实检测 AI 模型是否可用。"""
+    ai_status = _ai_status_payload()
+    if not ai_status["enabled"]:
+        return {"ok": False, "message": "AI 模型分析已关闭，请先启用模型", "status": ai_status}
+    if not ai_status["configured"]:
+        missing = []
+        if not ai_status["external_agent_url"]:
+            if not ai_status["api_key_configured"]:
+                missing.append("DEEPSEEK_API_KEY")
+            if not ai_status["model_name"]:
+                missing.append("DEEPSEEK_MODEL")
+        return {"ok": False, "message": f"模型配置不完整：缺少 {', '.join(missing) or '模型配置'}", "status": ai_status}
+    result = check_model_available()
+    return {**result, "status": _ai_status_payload()}
+
+
+@app.patch("/api/ai/status")
+def api_update_ai_status(enabled: bool = Body(..., embed=True), actor: dict = Depends(admin_user)):
+    """启用或关闭 AI 模型分析。"""
+    set_system_setting("ai_enabled", "1" if enabled else "0")
+    status = _ai_status_payload()
+    _audit(actor, "ai.status.update", "system_setting", None, {"enabled": enabled})
+    return status
 
 
 @app.get("/health")

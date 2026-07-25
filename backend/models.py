@@ -79,6 +79,11 @@ class SurplusSubmitRequest(BaseModel):
     created_by: int | None = Field(None, description="登记人ID")
 
 
+class AIAnalysisRequest(BaseModel):
+    """PC 后台发起 AI 模型分析"""
+    task_ids: list[int] = Field(..., description="需要合并分析的任务ID列表")
+
+
 # ──────────────────────────────────────────────
 # 响应模型
 # ──────────────────────────────────────────────
@@ -92,22 +97,6 @@ class UserOut(BaseModel):
     phone: str = ""
     employee_no: str = ""
     is_active: int = 1
-
-
-class TaskOut(BaseModel):
-    id: int
-    task_name: str
-    room_name: str
-    area_name: str = "默认片区"
-    status: str
-    claimed_by: int | None = None
-    claimed_name: str | None = None
-    field_status: str = ""
-    closure_status: str = ""
-    review_pending: int = 0
-    total: int
-    scanned: int
-    created_at: str
 
 
 class UploadResponse(BaseModel):

@@ -6,7 +6,6 @@ import io
 import json
 import secrets
 import time
-import zipfile
 from datetime import datetime, timedelta
 from html import escape
 import openpyxl
@@ -17,6 +16,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 
 API_BASE = "http://localhost:8000/api"
 REQUEST_TIMEOUT = 10
+AI_REQUEST_TIMEOUT = 90
 PC_LOGIN_KEEP_SECONDS = 15 * 60
 PC_SESSION_QUERY_KEY = "pc_session"
 
@@ -43,13 +43,15 @@ class CenterHeaderComponent {
 
 PAGE_UPLOAD = "上传任务清单"
 PAGE_TASKS = "任务看板"
-PAGE_REPORT = "盘点报告"
+PAGE_REPORT = "资产盘点数据"
+PAGE_AI = "AI模型分析"
 PAGE_USERS = "账号管理"
 
 SIDEBAR_PAGE_LABEL = {
     PAGE_UPLOAD: "上传任务清单",
     PAGE_TASKS: "任务看板总览",
-    PAGE_REPORT: "盘点报告分析",
+    PAGE_REPORT: "资产盘点数据",
+    PAGE_AI: "AI模型分析",
     PAGE_USERS: "小程序账号管理",
 }
 
@@ -60,10 +62,11 @@ STATUS_TEXT = {
 }
 
 PAGE_META = {
-    PAGE_UPLOAD: ("📤", "上传任务清单", "导入包含多个机房的 Excel，系统自动按片区生成待领取任务。"),
-    PAGE_TASKS: ("📋", "任务看板", "查看各片区机房领取与盘点进度，支持删除不需要继续盘点的机房任务。"),
-    PAGE_REPORT: ("📊", "盘点报告", "按机房汇总盘点结果，快速定位未扫和型号不一致设备。"),
-    PAGE_USERS: ("👤", "账号管理", "维护小程序登录账号、负责片区和启停状态，便于现场人员按片区领取任务。"),
+    PAGE_UPLOAD: ("📤", "上传任务清单", "导入 Excel 并生成待领取任务"),
+    PAGE_TASKS: ("📋", "任务看板", "查看领取与盘点进度，支持作废任务"),
+    PAGE_REPORT: ("📊", "资产盘点数据", "查询并导出清单与现场原始数据"),
+    PAGE_AI: ("🤖", "AI模型分析", "对多机房、多片区盘点数据做脱敏 AI 分析，输出整改建议清单。"),
+    PAGE_USERS: ("👤", "账号管理", "维护账号、片区和启停状态"),
 }
 
 
@@ -192,6 +195,15 @@ h1, h2, h3, p { letter-spacing: 0; }
     color: #ffffff !important;
     font-weight: 750 !important;
 }
+[data-testid="stSidebar"] div[class*="st-key-sidebar_logout_btn"] {
+    width: 16.3rem !important;
+    max-width: 100%;
+}
+[data-testid="stSidebar"] div[class*="st-key-sidebar_logout_btn"] button {
+    width: 100% !important;
+    box-sizing: border-box;
+    margin: 0;
+}
 
 .button-bottom-align-spacer {
     height: 1.15rem;
@@ -241,6 +253,18 @@ h1, h2, h3, p { letter-spacing: 0; }
     font-weight: 800;
     line-height: 1.3;
 }
+.page-title-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.65rem;
+    flex-wrap: wrap;
+}
+.page-title-muted {
+    color: var(--muted);
+    font-size: 0.92rem;
+    line-height: 1.5;
+    font-weight: 400;
+}
 .page-desc {
     margin: 0.28rem 0 0;
     color: var(--muted);
@@ -258,6 +282,11 @@ h1, h2, h3, p { letter-spacing: 0; }
     margin: 1.15rem 0 0.7rem;
     padding-left: 0.5rem;
     border-left: 4px solid var(--primary);
+}
+.section-title-muted {
+    color: var(--muted);
+    font-size: 0.9rem;
+    font-weight: 400;
 }
 .soft-panel {
     background: linear-gradient(180deg, #ffffff 0%, var(--panel-soft) 100%);
@@ -389,6 +418,73 @@ h1, h2, h3, p { letter-spacing: 0; }
     border-radius: 12px;
     padding: 0.35rem;
 }
+div[class*="st-key-upload_file_row"] [data-testid="stFileUploader"] {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    min-height: 0;
+}
+div[class*="st-key-upload_file_row"] [data-testid="stFileUploader"] section {
+    padding: 0;
+    border: 0;
+    background: transparent;
+}
+div[class*="st-key-upload_file_row"] [data-testid="stFileUploader"] section > div {
+    min-height: 0;
+    padding: 0;
+    background: transparent;
+    border: 0;
+}
+div[class*="st-key-upload_file_row"] [data-testid="stFileUploader"] small,
+div[class*="st-key-upload_file_row"] [data-testid="stFileUploaderDropzoneInstructions"] {
+    display: none;
+}
+div[class*="st-key-upload_file_row"] [data-testid="stFileUploader"] button {
+    width: 100%;
+    min-height: 2.9rem;
+    border-radius: 10px;
+    border: 1px solid var(--line-strong);
+    background: #ffffff;
+    color: transparent !important;
+    box-shadow: 0 8px 18px rgba(22, 103, 199, 0.05);
+    position: relative;
+}
+div[class*="st-key-upload_file_row"] [data-testid="stFileUploader"] button:hover {
+    border-color: var(--primary);
+    background: #f5fbff;
+}
+div[class*="st-key-upload_file_row"] [data-testid="stFileUploader"] button > * {
+    visibility: hidden;
+}
+div[class*="st-key-upload_file_row"] [data-testid="stFileUploader"] button::after {
+    content: "📤 选择Excel文件";
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #0b5db8;
+    font-size: 0.96rem;
+    font-weight: 650;
+}
+div[class*="st-key-upload_file_row"] [data-testid="stLinkButton"] a {
+    min-height: 2.9rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 650;
+}
+div[class*="st-key-upload_file_row"] .stButton > button {
+    min-height: 2.9rem;
+    font-weight: 650;
+}
+.upload-file-selected {
+    color: var(--muted);
+    font-size: 0.86rem;
+    line-height: 1.45;
+    margin-top: -0.2rem;
+    margin-bottom: 0.65rem;
+}
 [data-testid="stSelectbox"], [data-testid="stTextInput"] {
     font-size: 0.92rem;
 }
@@ -452,6 +548,95 @@ div[data-testid="stHorizontalBlock"] {
     font-size: 0.9rem;
     line-height: 1.65;
 }
+.ai-workbench-row {
+    margin: 0.2rem 0 1rem;
+}
+.ai-intro-panel {
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    box-shadow: 0 12px 28px rgba(22, 103, 199, 0.06);
+}
+.ai-intro-panel {
+    min-height: 11.4rem;
+    padding: 1rem 1.05rem;
+}
+.ai-intro-title {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    color: #112844;
+    font-size: 1.34rem;
+    line-height: 1.35;
+    font-weight: 820;
+    margin-bottom: 0.55rem;
+}
+.ai-intro-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: 10px;
+    background: linear-gradient(135deg, #1f7ee4 0%, #0b5db8 100%);
+    color: #ffffff;
+    font-size: 1.02rem;
+}
+.ai-intro-desc {
+    color: var(--muted);
+    font-size: 0.92rem;
+    line-height: 1.75;
+    margin: 0 0 0.8rem;
+}
+.ai-intro-source {
+    color: #7a8ba1;
+    font-size: 0.84rem;
+}
+.ai-status-tile {
+    min-height: 5.3rem;
+    border-radius: 12px;
+    padding: 0.78rem 0.85rem;
+    border: 1px solid var(--line);
+    background: #ffffff;
+    box-shadow: 0 8px 20px rgba(22, 103, 199, 0.05);
+    position: relative;
+    overflow: hidden;
+}
+.ai-status-tile::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 4px;
+    height: 100%;
+}
+.ai-status-ok {
+    border-color: #bfe8d5;
+    background: linear-gradient(180deg, #ffffff 0%, #f1fbf6 100%);
+}
+.ai-status-ok::before { background: var(--success); }
+.ai-status-bad {
+    border-color: #f2c2c2;
+    background: linear-gradient(180deg, #ffffff 0%, #fff5f5 100%);
+}
+.ai-status-bad::before { background: var(--danger); }
+.ai-status-label {
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-weight: 650;
+    margin-bottom: 0.35rem;
+}
+.ai-status-value {
+    color: #103b68;
+    font-size: 1.28rem;
+    line-height: 1.25;
+    font-weight: 820;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ai-status-ok .ai-status-value { color: #08764a; }
+.ai-status-bad .ai-status-value { color: #b42323; }
 .danger-zone {
     border-left: 4px solid var(--danger);
     background: #fff7f7;
@@ -461,7 +646,7 @@ div[data-testid="stHorizontalBlock"] {
     line-height: 1.7;
 }
 .login-wrap {
-    padding: 4.2rem 1rem 2rem;
+    padding: 2.2rem 1rem 2rem;
 }
 .login-hero {
     min-height: 26rem;
@@ -513,16 +698,30 @@ div[data-testid="stHorizontalBlock"] {
 .login-points {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.75rem;
-    margin-top: 2.2rem;
+    gap: 0.68rem;
+    margin-top: 1.85rem;
     max-width: 34rem;
 }
 .login-point {
+    display: flex;
+    align-items: center;
+    gap: 0.58rem;
     border: 1px solid rgba(255,255,255,0.16);
     background: rgba(255,255,255,0.11);
-    border-radius: 14px;
-    padding: 0.8rem 0.9rem;
+    border-radius: 12px;
+    padding: 0.68rem 0.78rem;
     font-weight: 720;
+}
+.login-point-icon {
+    width: 1.65rem;
+    height: 1.65rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 9px;
+    background: rgba(255,255,255,0.13);
+    border: 1px solid rgba(255,255,255,0.13);
+    font-size: 0.92rem;
 }
 div[class*="st-key-login_panel"] {
     border-radius: 24px;
@@ -611,16 +810,6 @@ div[class*="st-key-login_panel"] .stFormSubmitButton > button[kind="primary"] {
     box-shadow: 0 13px 24px rgba(22, 103, 199, 0.24);
     font-size: 1rem !important;
     letter-spacing: 0.08em;
-}
-.login-security-note {
-    margin-top: 0.95rem;
-    color: #35536f;
-    font-size: 0.86rem;
-    line-height: 1.65;
-    background: #f0f7ff;
-    border: 1px solid #d6e8fb;
-    border-radius: 13px;
-    padding: 0.72rem 0.85rem;
 }
 </style>
 """,
@@ -731,13 +920,14 @@ def api_get(path: str):
 
 def api_post(path: str, data=None, files=None, json=None):
     try:
+        timeout = AI_REQUEST_TIMEOUT if path in {"/ai/analyze", "/ai/check"} else REQUEST_TIMEOUT
         response = requests.post(
             API_BASE + path,
             data=data,
             files=files,
             json=json,
             headers=auth_headers(),
-            timeout=REQUEST_TIMEOUT,
+            timeout=timeout,
         )
         response.raise_for_status()
         return response.json()
@@ -763,16 +953,6 @@ def api_delete(path: str, params=None):
         return response.json()
     except requests.RequestException as exc:
         st.error(f"删除失败：{request_error_detail(exc)}")
-        return None
-
-
-def api_download(path: str):
-    try:
-        response = requests.get(API_BASE + path, headers=auth_headers(), timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-        return response.content
-    except requests.RequestException as exc:
-        st.error(f"下载失败：{request_error_detail(exc)}")
         return None
 
 
@@ -802,17 +982,12 @@ def task_stage(task: dict) -> str:
     return STATUS_TEXT.get(task.get("status"), "待领取")
 
 
-def task_closure_stage(task: dict) -> str:
-    return task.get("closure_status") or ("已闭环" if task.get("status") == "done" else "现场未完成")
-
-
 TASK_DELETE_QUERY_FIELDS = {
     "机房名称": "room_name",
     "任务名称": "task_name",
     "片区": "area_name",
     "领取人": "claimed_name",
     "现场状态": "field_stage",
-    "闭环状态": "closure_stage",
 }
 
 
@@ -820,8 +995,6 @@ def task_query_value(task: dict, field: str) -> str:
     """按管理员选择的字段提取任务查询文本。"""
     if field == "field_stage":
         return task_stage(task)
-    if field == "closure_stage":
-        return task_closure_stage(task)
     if field == "area_name":
         return task.get("area_name") or "默认片区"
     return str(task.get(field) or "")
@@ -845,7 +1018,6 @@ def task_delete_result_rows(tasks: list[dict]) -> list[dict]:
             "任务名称": task["task_name"],
             "领取人": task.get("claimed_name") or "-",
             "现场状态": task_stage(task),
-            "闭环状态": task_closure_stage(task),
             "进度": f"{task.get('scanned') or 0}/{task.get('total') or 0}",
         }
         for task in tasks
@@ -898,6 +1070,7 @@ def render_delete_task_dialog(task: dict) -> None:
 REPORT_QUERY_FIELDS = {
     "全部查询": "__all__",
     "机房名称": "room_name",
+    "任务名称": "task_name",
     "片区": "area_name",
     "领取人": "assigned_name",
 }
@@ -907,8 +1080,6 @@ def report_query_value(task: dict, field: str) -> str:
     """按管理员选择的字段提取报告任务查询文本。"""
     if field == "field_stage":
         return task_stage(task)
-    if field == "closure_stage":
-        return task_closure_stage(task)
     if field == "area_name":
         return task.get("area_name") or "默认片区"
     if field == "assigned_name":
@@ -935,47 +1106,10 @@ def report_result_rows(tasks: list[dict]) -> list[dict]:
             "任务名称": task["task_name"],
             "领取人": task.get("assigned_name") or "-",
             "现场状态": task_stage(task),
-            "闭环状态": task_closure_stage(task),
-            "异常数": task.get("anomaly_count") or 0,
-            "待闭环": task.get("review_pending") or 0,
             "进度": f"{task.get('scanned') or 0}/{task.get('total') or 0}",
         }
         for task in tasks
     ]
-
-
-def safe_download_name(value: str) -> str:
-    """生成适合 Excel/zip 内文件名的短名称。"""
-    text = str(value or "").strip() or "未命名"
-    for char in '\\/:*?"<>|':
-        text = text.replace(char, "_")
-    return text[:60]
-
-
-def build_selected_export(
-    selected_tasks: list[dict],
-    endpoint_suffix: str,
-    file_prefix: str,
-) -> tuple[bytes | None, str]:
-    """按勾选任务生成单个 Excel 或多个 Excel 的 zip 包。"""
-    if not selected_tasks:
-        return None, ""
-    if len(selected_tasks) == 1:
-        task = selected_tasks[0]
-        data = api_download(f"/export/{task['id']}{endpoint_suffix}")
-        filename = f"{file_prefix}_{safe_download_name(task['room_name'])}_{task['id']}.xlsx"
-        return data, filename
-
-    output = io.BytesIO()
-    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-        for task in selected_tasks:
-            data = api_download(f"/export/{task['id']}{endpoint_suffix}")
-            if data is None:
-                continue
-            filename = f"{file_prefix}_{safe_download_name(task['room_name'])}_{task['id']}.xlsx"
-            archive.writestr(filename, data)
-    data = output.getvalue()
-    return (data if data else None), f"{file_prefix}_批量_{len(selected_tasks)}份.zip"
 
 
 def render_sidebar() -> str:
@@ -991,11 +1125,11 @@ def render_sidebar() -> str:
         )
         page = st.radio(
             "功能导航",
-            [PAGE_UPLOAD, PAGE_TASKS, PAGE_REPORT, PAGE_USERS],
+            [PAGE_UPLOAD, PAGE_TASKS, PAGE_REPORT, PAGE_AI, PAGE_USERS],
             format_func=lambda item: f"{PAGE_META[item][0]}  {SIDEBAR_PAGE_LABEL[item]}",
             label_visibility="collapsed",
         )
-        if st.button("退出登录", width="stretch"):
+        if st.button("退出登录", width="stretch", key="sidebar_logout_btn"):
             clear_pc_login_session()
             clear_cache()
             st.rerun()
@@ -1004,13 +1138,21 @@ def render_sidebar() -> str:
 
 def render_page_head(page: str) -> None:
     icon, title, desc = PAGE_META[page]
+    if page == PAGE_AI:
+        title_html = f'<h1 class="page-title">{escape(title)}</h1><p class="page-desc">{escape(desc)}</p>'
+    else:
+        title_html = (
+            f'<div class="page-title-row">'
+            f'<h1 class="page-title">{escape(title)}</h1>'
+            f'<span class="page-title-muted">{escape(desc)}</span>'
+            f'</div>'
+        )
     st.markdown(
         f"""
 <div class="page-head">
-    <div class="page-icon">{icon}</div>
+    <div class="page-icon">{escape(icon)}</div>
     <div>
-        <h1 class="page-title">{title}</h1>
-        <p class="page-desc">{desc}</p>
+{title_html}
     </div>
 </div>
 """,
@@ -1018,83 +1160,9 @@ def render_page_head(page: str) -> None:
     )
 
 
-def render_section(title: str, icon: str) -> None:
-    st.markdown(f'<div class="section-title">{icon}<span>{title}</span></div>', unsafe_allow_html=True)
-
-
-def get_worker_options(workers: list[dict]) -> dict[str, int]:
-    return {worker["name"]: worker["id"] for worker in workers}
-
-
-ANOMALY_TYPES = ["资产条码不一致", "无条码", "设备型号不一致", "盘亏", "盘盈"]
-MATCHED_ANOMALIES = {"资产条码不一致", "无条码", "设备型号不一致"}
-UNMATCHED_ANOMALIES = {"盘亏", "盘盈"}
-
-
-def get_anomaly_types(record: dict) -> list[str]:
-    """按“设备对得上/对不上”的口径识别 5 类现场异常。"""
-    record_type = record.get("record_type") or "normal"
-    if record_type == "missing":
-        return ["盘亏"]
-    if record_type == "surplus":
-        return ["盘盈"]
-
-    types = []
-    asset_status = record.get("asset_match_status") or record.get("match_status")
-    if asset_status not in {"一致", "未扫", "无条码"}:
-        # 新导入清单已限制资产条码不能为空；这里兼容历史“无期望条码”数据，统一归入条码不一致类。
-        types.append("资产条码不一致")
-    if asset_status == "无条码":
-        types.append("无条码")
-    if record.get("model_match_status") == "不一致":
-        types.append("设备型号不一致")
-    return types
-
-
-def anomaly_category(record: dict) -> str:
-    """返回异常大类：设备对得上 / 设备对不上 / 正常。"""
-    types = set(get_anomaly_types(record))
-    if types & UNMATCHED_ANOMALIES:
-        return "设备对不上"
-    if types & MATCHED_ANOMALIES:
-        return "设备对得上"
-    return "正常"
-
-
-def is_anomaly_record(record: dict) -> bool:
-    """是否属于需要管理员复核或闭环的现场异常。"""
-    return bool(get_anomaly_types(record))
-
-
-def anomaly_type_text(record: dict) -> str:
-    types = get_anomaly_types(record)
-    return "、".join(types) if types else "-"
-
-
-def anomaly_rank(record: dict) -> int:
-    """设备明细默认按现场异常处理优先级展示。"""
-    types = set(get_anomaly_types(record))
-    if record.get("evidence_photo") and (record.get("evidence_photo_days_left") is None or record.get("evidence_photo_days_left") <= 3):
-        return 0
-    for idx, anomaly_type in enumerate(["盘亏", "盘盈", "资产条码不一致", "无条码", "设备型号不一致"], start=1):
-        if anomaly_type in types:
-            return idx
-    if record.get("match_status") == "未扫":
-        return 6
-    return 7
-
-
-def evidence_countdown_text(record: dict) -> str:
-    """生成现场凭证照片 30 天有效期倒计时文案。"""
-    if not record.get("evidence_photo"):
-        return ""
-    days_left = record.get("evidence_photo_days_left")
-    expires_at = format_time(record.get("evidence_photo_expires_at"))
-    if days_left is None:
-        return "现场凭证照片已过期或已清理，请重新盘查"
-    if days_left <= 0 or not record.get("evidence_photo_valid"):
-        return "现场凭证照片已过期，请重新盘查"
-    return f"现场凭证照片剩余 {days_left} 天过期（到期时间：{expires_at}），请尽快复核处理"
+def render_section(title: str, icon: str, muted: str = "") -> None:
+    muted_html = f'<span class="section-title-muted">{escape(muted)}</span>' if muted else ""
+    st.markdown(f'<div class="section-title">{icon}<span>{escape(title)}</span>{muted_html}</div>', unsafe_allow_html=True)
 
 
 USER_ROLE_LABELS = {"worker": "现场人员", "admin": "管理员"}
@@ -1435,34 +1503,39 @@ def render_upload_page() -> None:
     if notice := st.session_state.pop("upload_notice", None):
         st.success(notice)
 
-    render_section("导入 Excel 清单", "📁")
-    st.markdown(
-        """
-<div class="soft-panel">
-    <p>Excel 至少需要包含：机房名称、机房所在片区、网元名称、设备型号、资产标签号。系统会按机房拆分，并把任务放入对应片区的待领取池。</p>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-    st.link_button("📥 下载标准模板", f"{API_BASE}/upload_template")
-    upload_file = st.file_uploader("选择 Excel 文件", type=["xlsx", "xls"])
-    file_bytes = upload_file.getvalue() if upload_file else b""
-    file_token = f"{upload_file.name}:{len(file_bytes)}" if upload_file else ""
-    preview = st.session_state.get("upload_preview") if st.session_state.get("upload_preview_token") == file_token else None
-    preview_ready = st.session_state.get("preview_file_token") == file_token
-    requires_force_import = bool(preview and not preview.get("valid"))
-    force_import = False
-    if requires_force_import:
-        force_import = st.session_state.get(f"force_import_{file_token}", False)
-    preview_col, import_col = st.columns(2)
-    with preview_col:
-        preview_clicked = st.button("🔎 预检清单", width="stretch", disabled=upload_file is None)
-    with import_col:
-        submitted = st.button(
-            "📤 导入并生成待盘点机房",
-            type="primary",
-            width="stretch",
-            disabled=not preview_ready or (requires_force_import and not force_import),
+    render_section("导入 Excel 清单", "📁", "需包含：机房名称、片区、网元名称、设备型号、资产标签号")
+    with st.container(key="upload_file_row"):
+        upload_col, template_col, preview_col, import_col = st.columns([2, 2, 2, 4])
+        with upload_col:
+            upload_file = st.file_uploader(
+                "选择 Excel 文件",
+                type=["xlsx", "xls"],
+                label_visibility="collapsed",
+                key="upload_excel_file",
+            )
+        file_bytes = upload_file.getvalue() if upload_file else b""
+        file_token = f"{upload_file.name}:{len(file_bytes)}" if upload_file else ""
+        preview = st.session_state.get("upload_preview") if st.session_state.get("upload_preview_token") == file_token else None
+        preview_ready = st.session_state.get("preview_file_token") == file_token
+        requires_force_import = bool(preview and not preview.get("valid"))
+        force_import = False
+        if requires_force_import:
+            force_import = st.session_state.get(f"force_import_{file_token}", False)
+        with template_col:
+            st.link_button("📥 下载标准模板", f"{API_BASE}/upload_template", width="stretch")
+        with preview_col:
+            preview_clicked = st.button("🔎 预检清单", width="stretch", disabled=upload_file is None)
+        with import_col:
+            submitted = st.button(
+                "📤 导入并生成待盘点机房",
+                type="primary",
+                width="stretch",
+                disabled=not preview_ready or (requires_force_import and not force_import),
+            )
+    if upload_file:
+        st.markdown(
+            f'<div class="upload-file-selected">已选择：{escape(upload_file.name)}</div>',
+            unsafe_allow_html=True,
         )
 
     if preview_clicked and upload_file:
@@ -1562,15 +1635,13 @@ def render_tasks_page() -> None:
     pending = sum(1 for task in tasks if task["status"] == "pending")
     doing = sum(1 for task in tasks if task["status"] == "doing")
     done = sum(1 for task in tasks if task["status"] == "done")
-    pending_closure = sum(1 for task in tasks if task_closure_stage(task) == "待闭环")
     overdue = sum(1 for task in tasks if is_overdue(task))
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("任务总数", total)
     c2.metric("待领取", pending)
     c3.metric("盘点中", doing)
     c4.metric("现场完成", done)
-    c5.metric("待闭环", pending_closure)
-    c6.metric("超时任务", overdue, help="领取后超过 7 天仍未完成")
+    c5.metric("超时任务", overdue, help="领取后超过 7 天仍未完成")
 
     render_section("任务列表", "📌")
     task_table_rows = []
@@ -1583,9 +1654,6 @@ def render_tasks_page() -> None:
             "任务名称": task["task_name"],
             "领取人": task.get("claimed_name") or "-",
             "现场状态": task_stage(task),
-            "闭环状态": task_closure_stage(task),
-            "异常数": task.get("anomaly_count") or 0,
-            "待闭环": task.get("review_pending") or 0,
             "进度": f"{task.get('scanned') or 0}/{task.get('total') or 0}",
             "完成率": f"{(task.get('scanned') or 0) / (task.get('total') or 1):.0%}",
             "领取时间": format_time(task.get("claimed_at")),
@@ -1600,16 +1668,7 @@ def render_tasks_page() -> None:
         enable_selection=False,
     )
 
-    render_section("作废任务", "🗑️")
-    st.markdown(
-        """
-<div class="user-guide-card">
-    <div class="user-guide-title">作废方式</div>
-    <p>先选择查询字段，再输入对应内容，点击查询后显示相关任务。勾选任务后点击“作废选中任务”，会弹出卡片填写作废原因。</p>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
+    render_section("作废任务", "🗑️", "查询并勾选任务后填写作废原因")
     task_field_col, task_keyword_col, task_button_col = st.columns([1, 2.4, 0.8])
     with task_field_col:
         delete_field_label = st.selectbox(
@@ -1696,18 +1755,186 @@ def render_tasks_page() -> None:
                     render_delete_task_dialog(selected_delete_task)
 
 
+INVENTORY_DATA_HEADERS = [
+    "任务ID", "任务名称", "机房名称", "片区", "领取人", "任务状态", "任务创建时间",
+    "领取时间", "现场完成时间", "设备名称", "清单设备型号", "清单资产条码",
+    "现场设备型号", "现场资产条码", "资产无条码", "现场机柜条码", "机柜无条码",
+    "现场机架号", "现场状态", "盘点时间", "盘亏原因", "现场备注", "凭证照片状态",
+]
+
+
+def bool_text(value) -> str:
+    return "是" if bool(value) else "否"
+
+
+def inventory_data_rows(tasks: list[dict]) -> list[dict]:
+    rows = []
+    for task in tasks:
+        for record in task.get("records") or []:
+            rows.append({
+                "任务ID": task.get("id"),
+                "任务名称": task.get("task_name") or "",
+                "机房名称": task.get("room_name") or "",
+                "片区": task.get("area_name") or "默认片区",
+                "领取人": task.get("assigned_name") or "-",
+                "任务状态": task_stage(task),
+                "任务创建时间": format_time(task.get("created_at")),
+                "领取时间": format_time(task.get("assigned_at") or task.get("claimed_at")),
+                "现场完成时间": format_time(task.get("field_completed_at") or task.get("completed_at")),
+                "设备名称": record.get("device_name") or "",
+                "清单设备型号": record.get("expected_model") or "",
+                "清单资产条码": record.get("expected_barcode") or "",
+                "现场设备型号": record.get("actual_model") or "",
+                "现场资产条码": record.get("asset_barcodes") or ("无条码" if record.get("asset_no_barcode") else ""),
+                "资产无条码": bool_text(record.get("asset_no_barcode")),
+                "现场机柜条码": record.get("cabinet_barcodes") or ("无条码" if record.get("cabinet_no_barcode") else ""),
+                "机柜无条码": bool_text(record.get("cabinet_no_barcode")),
+                "现场机架号": record.get("rack_no") or "",
+                "现场状态": record.get("field_status") or "正常",
+                "盘点时间": format_time(record.get("scanned_at")),
+                "盘亏原因": record.get("missing_reason") or "",
+                "现场备注": record.get("notes") or "",
+                "凭证照片状态": "已上传" if record.get("evidence_photo") else "未上传",
+            })
+    return rows
+
+
+def build_inventory_data_export(selected_tasks: list[dict]) -> tuple[bytes | None, str]:
+    rows = inventory_data_rows(selected_tasks)
+    if not rows:
+        return None, ""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "资产盘点数据"
+    ws.append(INVENTORY_DATA_HEADERS)
+    for row in rows:
+        ws.append([row.get(header) or "" for header in INVENTORY_DATA_HEADERS])
+    for column in ws.columns:
+        max_len = max(len(str(cell.value or "")) for cell in column)
+        ws.column_dimensions[column[0].column_letter].width = min(max(max_len + 2, 12), 36)
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue(), f"资产盘点数据_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+
+
+def render_ai_status_tile(label: str, value: str, ok: bool) -> None:
+    css_class = "ai-status-ok" if ok else "ai-status-bad"
+    st.markdown(
+        f"""
+<div class="ai-status-tile {css_class}">
+    <div class="ai-status-label">{escape(label)}</div>
+    <div class="ai-status-value" title="{escape(value)}">{escape(value)}</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def render_ai_workbench_top() -> dict:
+    status = api_get("/ai/status") or {}
+    enabled = bool(status.get("enabled"))
+    configured = bool(status.get("configured"))
+    check_result = st.session_state.get("ai_check_result") or {}
+    has_check_result = bool(check_result)
+
+    if not enabled:
+        availability_text = "不可用"
+        availability_ok = False
+    elif not configured:
+        availability_text = "未配置"
+        availability_ok = False
+    elif has_check_result:
+        availability_ok = bool(check_result.get("ok"))
+        availability_text = "可用" if availability_ok else "不可用"
+    else:
+        availability_text = "待检测"
+        availability_ok = False
+
+    key_ok = bool(status.get("api_key_configured") or status.get("external_agent_url"))
+    model_name = status.get("model_name") or "未配置"
+    model_ok = model_name != "未配置"
+    source_text = f"来源：{status.get('model_provider') or '-'} · API：{status.get('base_url') or '-'}"
+
+    st.markdown('<div class="ai-workbench-row">', unsafe_allow_html=True)
+    intro_col, status_col, action_col = st.columns([1.2, 1.25, 0.72])
+    with intro_col:
+        st.markdown(
+            f"""
+<div class="ai-intro-panel">
+    <div class="ai-intro-title"><span class="ai-intro-icon">AI</span><span>AI模型分析</span></div>
+    <p class="ai-intro-desc">面向多机房、多片区资产盘点数据，先本地脱敏，再调用模型输出清单式问题和整改建议。</p>
+    <div class="ai-intro-source">{escape(source_text)}</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+    with status_col:
+        tile_cols = st.columns(2)
+        with tile_cols[0]:
+            render_ai_status_tile("启用状态", "已启用" if enabled else "已关闭", enabled)
+            render_ai_status_tile("Key / Agent", "已配置" if key_ok else "未配置", key_ok)
+        with tile_cols[1]:
+            render_ai_status_tile("模型可用性", availability_text, availability_ok)
+            render_ai_status_tile("模型", model_name, model_ok)
+    with action_col:
+        target_enabled = not enabled
+        button_label = "关闭模型" if enabled else "启用模型"
+        if st.button(button_label, type="primary" if not enabled else "secondary", width="stretch", key="toggle_ai_enabled_btn"):
+            result = api_patch("/ai/status", json={"enabled": target_enabled})
+            if result:
+                st.session_state.pop("ai_check_result", None)
+                clear_cache()
+                st.rerun()
+        if st.button("检测模型是否可用", type="primary", width="stretch", key="check_ai_model_btn"):
+            result = api_post("/ai/check")
+            if result:
+                st.session_state["ai_check_result"] = result
+                st.rerun()
+        check_result = st.session_state.get("ai_check_result")
+        if check_result:
+            if check_result.get("ok"):
+                st.success(check_result.get("message") or "模型可用。")
+            else:
+                st.error(check_result.get("message") or "模型不可用。")
+    st.markdown('</div>', unsafe_allow_html=True)
+    return status
+
+
+def build_ai_analysis_report_export(result: dict) -> tuple[bytes, str]:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "AI分析报告"
+    ws.append(["报告ID", result.get("id") or ""])
+    ws.append(["状态", result.get("status") or ""])
+    ws.append(["输入摘要", result.get("input_summary") or ""])
+    ws.append(["模型来源", result.get("model_provider") or ""])
+    ws.append(["模型名称", result.get("model_name") or ""])
+    ws.append([])
+    headers = ["问题类型", "涉及机房", "涉及设备", "风险等级", "判断依据", "整改建议", "优先级"]
+    ws.append(headers)
+    for item in result.get("analysis_items") or []:
+        ws.append([item.get(header) or "" for header in headers])
+    for column in ws.columns:
+        max_len = max(len(str(cell.value or "")) for cell in column)
+        ws.column_dimensions[column[0].column_letter].width = min(max(max_len + 2, 12), 42)
+    output = io.BytesIO()
+    wb.save(output)
+    report_id = result.get("id") or datetime.now().strftime("%Y%m%d_%H%M%S")
+    return output.getvalue(), f"AI分析报告_{report_id}.xlsx"
+
+
 def render_report_page() -> None:
     render_page_head(PAGE_REPORT)
     summary = api_get("/summary") or []
     if not summary:
-        st.info("暂无盘点报告数据。")
+        st.info("暂无资产盘点数据。")
         return
 
     st.markdown(
         """
 <div class="user-guide-card">
-    <div class="user-guide-title">报告查询</div>
-    <p>可按全部、机房名称、片区或领取人查询报告任务。选择“全部查询”时无需输入内容，点击查询即可显示全部机房报告。</p>
+    <div class="user-guide-title">数据查询</div>
+    <p>按全部、机房名称、任务名称、片区或领取人查询资产盘点任务，勾选后查看并导出任务清单与现场盘点合并数据。</p>
 </div>
 """,
         unsafe_allow_html=True,
@@ -1750,7 +1977,7 @@ def render_report_page() -> None:
             st.session_state["report_selected_ids"] = []
 
     if not st.session_state.get("report_query_has_run"):
-        st.info("请先选择字段并输入内容查询报告任务。")
+        st.info("请先选择字段并输入内容查询资产盘点任务。")
         return
 
     result_ids = set(st.session_state.get("report_query_result_ids", []))
@@ -1758,11 +1985,11 @@ def render_report_page() -> None:
     field_label = st.session_state.get("report_query_field_label", report_field_label)
     value_text = st.session_state.get("report_query_result_value", "")
     if not report_candidates:
-        st.warning(f"没有查到“{field_label} = {value_text}”相关报告任务。")
+        st.warning(f"没有查到“{field_label} = {value_text}”相关资产盘点任务。")
         return
 
     shown_report_candidates = report_candidates[:80]
-    st.success(f"查询到 {len(report_candidates)} 个相关报告任务。")
+    st.success(f"查询到 {len(report_candidates)} 个相关资产盘点任务。")
     if len(report_candidates) > 80:
         st.caption("匹配结果较多，当前仅显示前 80 条，请输入更精确的条件。")
     report_grid = render_header_filter_grid(
@@ -1776,310 +2003,197 @@ def render_report_page() -> None:
     )
     selected_rows = get_grid_selected_rows(report_grid)
     if selected_rows:
-        selected_ids = [
+        st.session_state["report_selected_ids"] = [
             int(row["_task_id"])
             for row in selected_rows
             if row.get("_task_id") is not None
         ]
-        st.session_state["report_selected_ids"] = selected_ids
 
     selected_report_ids = set(st.session_state.get("report_selected_ids", []))
     selected_tasks = [task for task in shown_report_candidates if task["id"] in selected_report_ids]
     report_tip_col, report_download_col = st.columns([2.4, 0.8])
     with report_tip_col:
         st.markdown(
-            '<div class="user-list-actions">勾选上方查询结果中的一份或多份报告，然后点击右侧按钮下载 Excel 报告。</div>',
+            '<div class="user-list-actions">勾选任务后，下方展示任务清单字段和现场盘点字段合并后的原始数据。</div>',
             unsafe_allow_html=True,
         )
     with report_download_col:
         st.markdown('<div class="button-bottom-align-spacer"></div>', unsafe_allow_html=True)
-        report_file, report_filename = build_selected_export(selected_tasks, "", "盘点报告")
+        report_file, report_filename = build_inventory_data_export(selected_tasks)
         st.download_button(
-            "📥 下载 Excel 报告",
+            "📥 下载资产盘点数据",
             data=report_file or b"",
-            file_name=report_filename or "盘点报告.xlsx",
+            file_name=report_filename or "资产盘点数据.xlsx",
             disabled=report_file is None,
             width="stretch",
         )
 
     if not selected_tasks:
-        st.info("请先勾选需要查看或下载的报告任务。")
+        st.info("请先勾选需要查看或下载的资产盘点任务。")
         return
 
-    all_records = []
-    if len(selected_tasks) == 1:
-        selected_task = selected_tasks[0]
-        st.caption(
-            f"现场状态：{task_stage(selected_task)}；闭环状态：{task_closure_stage(selected_task)}；"
-            f"待闭环异常：{selected_task.get('review_pending') or 0}"
-        )
-    else:
-        st.caption(f"当前已选择 {len(selected_tasks)} 份报告，下方汇总和设备明细为多任务合并结果。")
-    for task in selected_tasks:
-        for record in task["records"]:
-            item = dict(record)
-            item["_room_name"] = task["room_name"]
-            item["_task_id"] = task["id"]
-            item["_last_scanned_at"] = task.get("last_scanned_at") or ""
-            all_records.append(item)
-
-    if not all_records:
-        st.info("当前任务暂无盘点记录。")
-        return
-
+    all_records = [
+        record
+        for task in selected_tasks
+        for record in task.get("records") or []
+    ]
     inventory_records = [record for record in all_records if (record.get("record_type") or "normal") != "surplus"]
-    anomaly_records = [record for record in all_records if is_anomaly_record(record)]
     total_count = len(inventory_records)
-    scanned_count = sum(1 for record in inventory_records if record["match_status"] != "未扫")
-    pending_count = sum(1 for record in inventory_records if record["match_status"] == "未扫")
-    anomaly_count = len(anomaly_records)
-    matched_anomaly_count = sum(1 for record in anomaly_records if anomaly_category(record) == "设备对得上")
-    unmatched_anomaly_count = sum(1 for record in anomaly_records if anomaly_category(record) == "设备对不上")
-    review_pending_count = sum(
-        1 for record in anomaly_records
-        if (record.get("review_status") or "待复核") == "待复核"
-    )
-    evidence_expiring_count = sum(
-        1 for record in anomaly_records
-        if record.get("evidence_photo")
-        and (record.get("evidence_photo_days_left") is None or record.get("evidence_photo_days_left") <= 3)
-    )
+    scanned_count = sum(1 for record in inventory_records if record.get("match_status") != "未扫")
+    pending_count = sum(1 for record in inventory_records if record.get("match_status") == "未扫")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("设备总数", total_count)
     c2.metric("已盘", scanned_count)
     c3.metric("未盘", pending_count)
-    c4.metric("异常设备数", anomaly_count)
-    c5, c6, c7, c8 = st.columns(4)
-    c5.metric("设备对得上异常", matched_anomaly_count)
-    c6.metric("设备对不上异常", unmatched_anomaly_count)
-    c7.metric("待复核", review_pending_count)
-    c8.metric("凭证即将过期", evidence_expiring_count)
+    c4.metric("进度", f"{scanned_count}/{total_count}")
 
-    rooms = {}
-    for record in all_records:
-        room_name = record["_room_name"]
-        if room_name not in rooms:
-            rooms[room_name] = {
-                "total": 0,
-                "scanned": 0,
-                "asset_ok": 0,
-                "asset_diff": 0,
-                "no_barcode": 0,
-                "anomaly": 0,
-                "matched_anomaly": 0,
-                "unmatched_anomaly": 0,
-                "surplus": 0,
-                "missing": 0,
-                "asset_barcode_diff": 0,
-                "model_diff": 0,
-                "review_pending": 0,
-                "review_closed": 0,
-                "pending": 0,
-                "last_scanned_at": "",
-                "records": [],
-            }
-        asset_status = record.get("asset_match_status") or record["match_status"]
-        record_type = record.get("record_type") or "normal"
-        if record_type != "surplus":
-            rooms[room_name]["total"] += 1
-            if record["match_status"] == "未扫":
-                rooms[room_name]["pending"] += 1
-            else:
-                rooms[room_name]["scanned"] += 1
-        if record_type not in {"surplus", "missing"}:
-            if asset_status == "一致":
-                rooms[room_name]["asset_ok"] += 1
-            elif asset_status == "无条码":
-                rooms[room_name]["no_barcode"] += 1
-            elif asset_status != "未扫":
-                rooms[room_name]["asset_diff"] += 1
-        if record_type == "surplus":
-            rooms[room_name]["surplus"] += 1
-        elif record_type == "missing":
-            rooms[room_name]["missing"] += 1
-        if is_anomaly_record(record):
-            anomaly_types = get_anomaly_types(record)
-            rooms[room_name]["anomaly"] += 1
-            if "资产条码不一致" in anomaly_types:
-                rooms[room_name]["asset_barcode_diff"] += 1
-            if "设备型号不一致" in anomaly_types:
-                rooms[room_name]["model_diff"] += 1
-            review_status = record.get("review_status") or "待复核"
-            if review_status == "已闭环":
-                rooms[room_name]["review_closed"] += 1
-            else:
-                rooms[room_name]["review_pending"] += 1
-            if anomaly_category(record) == "设备对得上":
-                rooms[room_name]["matched_anomaly"] += 1
-            elif anomaly_category(record) == "设备对不上":
-                rooms[room_name]["unmatched_anomaly"] += 1
-        rooms[room_name]["records"].append(record)
-        if record.get("_last_scanned_at"):
-            rooms[room_name]["last_scanned_at"] = max(
-                rooms[room_name]["last_scanned_at"],
-                record["_last_scanned_at"],
-            )
-
-    render_section("机房异常汇总", "🏢")
-    room_summary_rows = [
-        {
-            "机房名称": room_name,
-            "设备数": data["total"],
-            "条码一致": data["asset_ok"],
-            "条码异常": data["asset_diff"],
-            "无条码": data["no_barcode"],
-            "型号不一致": data["model_diff"],
-            "盘亏": data["missing"],
-            "盘盈": data["surplus"],
-            "最近盘点时间": format_time(data["last_scanned_at"]),
-        }
-        for room_name, data in sorted(rooms.items())
-    ]
+    rows = inventory_data_rows(selected_tasks)
+    render_section("资产盘点数据", "🧾")
+    display_limit = 500
+    shown_rows = rows[:display_limit]
+    if len(rows) > display_limit:
+        st.caption(f"数据较多，页面优先展示前 {display_limit} 条；完整数据请下载 Excel。")
     render_header_filter_grid(
-        room_summary_rows,
-        key="room_anomaly_summary_grid",
-        height=260,
-        show_filters=True,
-        sortable=False,
-        use_center_header_component=True,
-    )
-
-    records = sorted(all_records, key=anomaly_rank)
-
-    detail_title_col, detail_export_col, surplus_export_col = st.columns([2.4, 1, 1])
-    with detail_title_col:
-        render_section("设备明细", "🧾")
-    with detail_export_col:
-        st.markdown('<div class="button-bottom-align-spacer"></div>', unsafe_allow_html=True)
-        detail_file, detail_filename = build_selected_export(selected_tasks, "/details", "设备明细")
-        st.download_button(
-            "📋 导出设备明细",
-            data=detail_file or b"",
-            file_name=detail_filename or "设备明细.xlsx",
-            disabled=detail_file is None,
-            width="stretch",
-        )
-    with surplus_export_col:
-        st.markdown('<div class="button-bottom-align-spacer"></div>', unsafe_allow_html=True)
-        exception_file, exception_filename = build_selected_export(selected_tasks, "/surplus_missing", "盘盈盘亏")
-        st.download_button(
-            "🛠️ 导出盘盈盘亏",
-            data=exception_file or b"",
-            file_name=exception_filename or "盘盈盘亏.xlsx",
-            disabled=exception_file is None,
-            width="stretch",
-        )
-    device_display_limit = 500
-    shown_records = records[:device_display_limit]
-    if len(records) > device_display_limit:
-        st.caption(
-            f"设备明细较多，页面优先展示前 {device_display_limit} 条；完整设备明细请点击右侧“导出设备明细”。"
-        )
-    device_detail_rows = [
-        {
-            "设备名称": record["device_name"],
-            "机房": record["_room_name"],
-            "异常大类": anomaly_category(record),
-            "异常类型": anomaly_type_text(record),
-            "现场状态": record.get("field_status") or "正常",
-            "设备型号": record["expected_model"],
-            "资产条码": record.get("expected_barcode") or "-",
-            "现场设备型号": record["actual_model"] or "-",
-            "现场资产条码": record.get("asset_barcodes") or ("无条码" if record.get("asset_no_barcode") else "-"),
-            "现场机柜条码": record.get("cabinet_barcodes") or ("无条码" if record.get("cabinet_no_barcode") else "-"),
-            "现场机架号": record.get("rack_no") or "-",
-            "资产条码对比结果": record.get("asset_match_status") or record["match_status"],
-            "设备型号对比结果": record.get("model_match_status") or "-",
-            "复核状态": record.get("review_status") or "待复核",
-            "盘亏原因": record.get("missing_reason") or "-",
-            "备注": record["notes"] or "-",
-        }
-        for record in shown_records
-    ]
-    render_header_filter_grid(
-        device_detail_rows,
-        key="device_detail_grid",
-        height=280,
+        shown_rows,
+        key="inventory_data_grid",
+        height=360,
         fit_columns_on_grid_load=False,
         pagination_page_size=50,
     )
 
-    mismatch_records = [
-        record for record in records
-        if is_anomaly_record(record)
-    ]
-    if mismatch_records:
-        render_section("现场异常复核闭环", "⚠️")
-        anomaly_options = {
-            (
-                f"{record['_room_name']} / {record['device_name']} / {anomaly_type_text(record)} / {record.get('review_status') or '待复核'}"
-                + (
-                    f" / 凭证剩余{record.get('evidence_photo_days_left')}天"
-                    if record.get("evidence_photo") and record.get("evidence_photo_days_left") is not None
-                    else ""
-                )
-            ): record
-            for record in mismatch_records
-        }
-        anomaly_label = st.selectbox("选择异常记录", list(anomaly_options.keys()))
-        anomaly = anomaly_options[anomaly_label]
-        st.info(
-            f"异常大类：{anomaly_category(anomaly)}；异常类型：{anomaly_type_text(anomaly)}；"
-            f"期望型号：{anomaly['expected_model'] or '-'}；现场型号：{anomaly['actual_model'] or '-'}"
-        )
-        if anomaly.get("evidence_photo"):
-            countdown_text = evidence_countdown_text(anomaly)
-            days_left = anomaly.get("evidence_photo_days_left")
-            if days_left is None or days_left <= 3:
-                st.warning(f"⏰ {countdown_text}")
-            else:
-                st.info(f"⏰ {countdown_text}")
-            token = st.session_state.get("access_token", "")
-            st.link_button("🖼️ 查看现场凭证", f"{API_BASE}/evidence/{anomaly['evidence_photo']}?access_token={token}")
-        review_col, reason_col, handler_col = st.columns([1, 1.2, 1])
-        with review_col:
-            review_status = st.selectbox(
-                "复核状态",
-                ["待复核", "已确认异常", "已退回现场", "已整改", "已闭环"],
-                key="review_status",
-            )
-        with reason_col:
-            review_reason = st.selectbox(
-                "异常原因",
-                ["现场盘盈", "现场盘亏", "资源表错误", "现场条码缺失", "贴错条码", "设备更换未同步", "现场录入错误", "其他"],
-                key="review_reason",
-            )
-        with handler_col:
-            review_handler = st.text_input("处理人", value=anomaly.get("review_handler") or "", key="review_handler")
 
-        result_col, note_col, button_col = st.columns([1.2, 2, 1])
-        with result_col:
-            review_result = st.selectbox(
-                "处理结论",
-                ["待处理", "需更新资源表", "需现场整改", "退回重新盘点", "已确认属实", "已关闭"],
-                key="review_result",
-            )
-        with note_col:
-            review_note = st.text_input("处理说明", value=anomaly.get("review_note") or "", key="review_note")
-        with button_col:
-            st.write("")
-            can_save_review = review_status != "已闭环" or (review_note.strip() and review_handler.strip() and review_result != "待处理")
-            if st.button("保存复核", width="stretch", disabled=not can_save_review):
-                result = api_post(
-                    f"/records/{anomaly['id']}/review",
-                    json={
-                        "status": review_status,
-                        "note": review_note.strip(),
-                        "reason": review_reason,
-                        "handler": review_handler.strip(),
-                        "result": review_result,
-                    },
-                )
-                if result:
-                    clear_cache()
-                    st.success(result["message"])
-                    st.rerun()
+def render_ai_page() -> None:
+    ai_status = render_ai_workbench_top()
+    summary = api_get("/summary") or []
+    if not summary:
+        st.info("暂无可分析的资产盘点数据。")
+        return
+
+    field_col, keyword_col, button_col = st.columns([1, 2.4, 0.8])
+    with field_col:
+        ai_field_label = st.selectbox(
+            "查询字段",
+            list(REPORT_QUERY_FIELDS.keys()),
+            key="ai_query_field",
+        )
+    with keyword_col:
+        ai_query_input = st.text_input(
+            "查询内容",
+            placeholder="全部查询无需输入" if ai_field_label == "全部查询" else f"请输入{ai_field_label}",
+            key="ai_query_input",
+            disabled=ai_field_label == "全部查询",
+        )
+    with button_col:
+        st.markdown('<div class="button-bottom-align-spacer"></div>', unsafe_allow_html=True)
+        run_ai_query = st.button("查询", type="primary", width="stretch", key="ai_query_btn")
+
+    if run_ai_query:
+        query_field = REPORT_QUERY_FIELDS[ai_field_label]
+        query_value = "" if query_field == "__all__" else ai_query_input.strip()
+        if query_field != "__all__" and not query_value:
+            st.warning("请输入查询内容后再查询。")
+            st.session_state["ai_query_has_run"] = False
+            st.session_state["ai_query_result_ids"] = []
+            st.session_state["ai_selected_ids"] = []
+        else:
+            matched_tasks = [
+                task for task in summary
+                if match_report_task_by_field(task, query_field, query_value)
+            ]
+            st.session_state["ai_query_has_run"] = True
+            st.session_state["ai_query_field_label"] = ai_field_label
+            st.session_state["ai_query_result_value"] = "全部" if query_field == "__all__" else query_value
+            st.session_state["ai_query_result_ids"] = [task["id"] for task in matched_tasks]
+            st.session_state["ai_selected_ids"] = []
+
+    if not st.session_state.get("ai_query_has_run"):
+        st.info("请先选择字段并输入内容查询需要 AI 分析的任务。")
+        return
+
+    result_ids = set(st.session_state.get("ai_query_result_ids", []))
+    ai_candidates = [task for task in summary if task["id"] in result_ids]
+    field_label = st.session_state.get("ai_query_field_label", ai_field_label)
+    value_text = st.session_state.get("ai_query_result_value", "")
+    if not ai_candidates:
+        st.warning(f"没有查到“{field_label} = {value_text}”相关任务。")
+        return
+
+    shown_ai_candidates = ai_candidates[:120]
+    st.success(f"查询到 {len(ai_candidates)} 个可分析任务。")
+    ai_grid = render_header_filter_grid(
+        report_result_rows(shown_ai_candidates),
+        key=f"ai_result_grid_{field_label}_{value_text}",
+        height=min(280, 48 + 42 * max(len(shown_ai_candidates), 1)),
+        hidden_columns=["_task_id"],
+        enable_selection=True,
+        show_filters=False,
+        selection_mode="multiple",
+    )
+    selected_rows = get_grid_selected_rows(ai_grid)
+    if selected_rows:
+        st.session_state["ai_selected_ids"] = [
+            int(row["_task_id"])
+            for row in selected_rows
+            if row.get("_task_id") is not None
+        ]
+
+    selected_ids = st.session_state.get("ai_selected_ids", [])
+    selected_tasks = [task for task in shown_ai_candidates if task["id"] in set(selected_ids)]
+    selected_records = [
+        record
+        for task in selected_tasks
+        for record in task.get("records") or []
+    ]
+    inventory_records = [record for record in selected_records if (record.get("record_type") or "normal") != "surplus"]
+    scanned = sum(1 for record in inventory_records if record.get("match_status") != "未扫")
+    pending = sum(1 for record in inventory_records if record.get("match_status") == "未扫")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("已选任务", len(selected_tasks))
+    c2.metric("设备总数", len(inventory_records))
+    c3.metric("已盘", scanned)
+    c4.metric("未盘", pending)
+
+    action_col, tip_col = st.columns([0.9, 2.4])
+    with action_col:
+        run_analysis = st.button(
+            "生成 AI 分析",
+            type="primary",
+            width="stretch",
+            disabled=not selected_tasks or not ai_status.get("available"),
+        )
+    with tip_col:
+        st.markdown(
+            '<div class="user-list-actions">AI 只读分析数据，输出整改建议清单；真实机房、设备、条码会在本地脱敏后再发送。</div>',
+            unsafe_allow_html=True,
+        )
+        if not ai_status.get("enabled"):
+            st.warning("AI 模型分析已关闭，开启后才能生成新的分析。")
+        elif not ai_status.get("configured"):
+            st.warning("AI 模型未配置，请先在后端环境变量中配置 DEEPSEEK_API_KEY 或 INVENTORY_AI_AGENT_URL。")
+
+    if run_analysis:
+        with st.spinner("正在脱敏并调用 AI 模型分析..."):
+            result = api_post("/ai/analyze", json={"task_ids": selected_ids})
+        if result:
+            st.session_state["ai_last_result"] = result
+            clear_cache()
+            if result.get("status") == "success":
+                st.success("AI 分析完成，结果已保存。")
+            else:
+                st.error(f"AI 分析失败，失败记录已保存：{result.get('error_message') or '-'}")
+
+    last_result = st.session_state.get("ai_last_result")
+    if last_result:
+        report_file, report_filename = build_ai_analysis_report_export(last_result)
+        st.download_button(
+            "📥 下载 AI 分析报告",
+            data=report_file,
+            file_name=report_filename,
+            width="stretch",
+            key="download_ai_analysis_report",
+        )
 
 
 def render_users_page() -> None:
@@ -2103,7 +2217,7 @@ def render_users_page() -> None:
     c5.metric("管理员", admins)
     c6.metric("跨片区", multi_area)
 
-    render_section("账号列表", "👥")
+    render_section("账号列表", "👥", "总览账号，维护请到下方查询")
     user_rows = [
         {
             "_user_id": user["id"],
@@ -2125,27 +2239,13 @@ def render_users_page() -> None:
         enable_selection=False,
     )
 
-    list_tip_col, new_account_col = st.columns([3, 1])
-    with list_tip_col:
-        st.markdown(
-            '<div class="user-list-actions">这里用于快速总览所有账号；如需维护某个账号，请在下方按字段查询后编辑。</div>',
-            unsafe_allow_html=True,
-        )
+    _, new_account_col = st.columns([3, 1])
     with new_account_col:
         if st.button("➕ 新建空白账号", width="stretch"):
             st.session_state["create_user_dialog_version"] = st.session_state.get("create_user_dialog_version", 0) + 1
             render_create_user_dialog(st.session_state["create_user_dialog_version"])
 
-    render_section("账号维护", "🛠️")
-    st.markdown(
-        """
-<div class="user-guide-card">
-    <div class="user-guide-title">维护方式</div>
-    <p>先选择查询字段，再输入对应内容，点击查询后显示相关账号。勾选账号后点击“编辑选中账号”，会弹出编辑卡片；保存修改和删除账号都在卡片中完成。</p>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
+    render_section("账号维护", "🛠️", "查询并勾选账号后编辑")
 
     field_col, keyword_col, button_col = st.columns([1, 2.4, 0.8])
     with field_col:
@@ -2279,14 +2379,14 @@ def require_admin_login() -> None:
     <div class="login-badge">📡 传输网管维护 · 内部试用</div>
     <h1 class="login-title">机房资产<br>盘点管理端</h1>
     <p class="login-desc">
-        面向机房现场盘点、账号分配、任务跟踪和异常闭环。管理员在 PC 端统一维护任务，
+        面向机房现场盘点、账号分配、任务跟踪和 AI 分析。管理员在 PC 端统一维护任务，
         现场人员通过小程序领取和提交盘点结果。
     </p>
     <div class="login-points">
-        <div class="login-point">账号启停</div>
-        <div class="login-point">片区授权</div>
-        <div class="login-point">任务看板</div>
-        <div class="login-point">异常闭环</div>
+        <div class="login-point"><span class="login-point-icon">👤</span><span>账号启停</span></div>
+        <div class="login-point"><span class="login-point-icon">⌖</span><span>片区授权</span></div>
+        <div class="login-point"><span class="login-point-icon">☷</span><span>任务看板</span></div>
+        <div class="login-point"><span class="login-point-icon">◎</span><span>AI 分析</span></div>
     </div>
 </div>
 """,
@@ -2303,7 +2403,7 @@ def require_admin_login() -> None:
         <div style="color:#62758d;font-size:0.9rem;margin-top:0.2rem;">PC 管理后台安全入口</div>
     </div>
 </div>
-<div class="login-card-sub">请输入管理员账号密码。登录成功后，15 分钟内刷新页面不会要求重新输入。</div>
+<div class="login-card-sub">请输入管理员账号和密码。</div>
 <div class="login-mini-badges">
     <span class="login-mini-badge">15 分钟免重复登录</span>
     <span class="login-mini-badge">内部试用环境</span>
@@ -2315,14 +2415,6 @@ def require_admin_login() -> None:
                 username = st.text_input("管理员账号", value="admin_001", placeholder="请输入管理员账号")
                 password = st.text_input("密码", type="password", placeholder="请输入密码")
                 submitted = st.form_submit_button("登录", type="primary", width="stretch")
-            st.markdown(
-                """
-<div class="login-security-note">
-    🔐 安全提示：免登录只对当前浏览器窗口短时有效。点击左侧“退出登录”会立即清除登录状态。
-</div>
-""",
-                unsafe_allow_html=True,
-            )
     st.markdown("</div>", unsafe_allow_html=True)
 
     if submitted:
@@ -2346,6 +2438,8 @@ if current_page == PAGE_UPLOAD:
     render_upload_page()
 elif current_page == PAGE_TASKS:
     render_tasks_page()
+elif current_page == PAGE_AI:
+    render_ai_page()
 elif current_page == PAGE_USERS:
     render_users_page()
 else:

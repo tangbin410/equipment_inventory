@@ -111,7 +111,7 @@ def evidence_photo_is_valid_for_type(record: dict[str, Any], evidence_type: str)
 
 
 def add_evidence_countdown(record: dict[str, Any]) -> dict[str, Any]:
-    """给现场凭证照片补充 30 天倒计时信息，供 PC 异常复核提醒使用。"""
+    """给现场凭证照片补充 30 天倒计时信息。"""
     photo_path = record.get("evidence_photo") or ""
     record["evidence_photo_valid"] = False
     record["evidence_photo_uploaded_at"] = ""
@@ -237,19 +237,13 @@ def add_compare_status(record: dict[str, Any]) -> dict[str, Any]:
     return record
 
 
-def add_task_closure_status(task: dict[str, Any]) -> dict[str, Any]:
-    """给任务补充现场完成和管理闭环状态，不改变原有 status 含义。"""
+def add_task_field_status(task: dict[str, Any]) -> dict[str, Any]:
+    """给任务补充现场阶段，不改变原有 status 含义。"""
     status = task.get("status")
-    review_pending = int(task.get("review_pending") or 0)
     if status != "done":
         task["field_status"] = "现场未完成"
-        task["closure_status"] = "现场未完成"
-    elif review_pending > 0:
-        task["field_status"] = "现场已完成"
-        task["closure_status"] = "待闭环"
     else:
         task["field_status"] = "现场已完成"
-        task["closure_status"] = "已闭环"
     return task
 
 
@@ -273,18 +267,93 @@ def normalize_existing_scan_match_status(conn: sqlite3.Connection) -> None:
             continue
         conn.execute(
             """UPDATE scan_records
-               SET match_status = ?,
-                   review_status = CASE
-                       WHEN ? = '一致' THEN COALESCE(review_status, '')
-                       WHEN COALESCE(review_status, '') = '' THEN '待复核'
-                       ELSE review_status
-                   END
+               SET match_status = ?
                WHERE id = ?""",
-            (overall_status, overall_status, row["id"]),
+            (overall_status, row["id"]),
         )
         affected_task_ids.add(row["task_id"])
     for task_id in affected_task_ids:
         refresh_task_status(conn, task_id)
+
+
+def drop_review_columns(conn: sqlite3.Connection) -> None:
+    """从旧库 scan_records 中移除历史人工处理字段。"""
+    review_columns = {
+        "review_status",
+        "review_note",
+        "review_reason",
+        "review_handler",
+        "review_result",
+        "reviewed_at",
+    }
+    existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(scan_records)")}
+    if not review_columns & existing_columns:
+        return
+
+    conn.execute("DROP INDEX IF EXISTS idx_scan_records_review")
+    conn.execute("""
+        CREATE TABLE scan_records_new (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id           INTEGER NOT NULL REFERENCES tasks(id),
+            device_name       TEXT NOT NULL,
+            device_extra      TEXT DEFAULT '{}',
+            expected_model    TEXT NOT NULL,
+            expected_barcode  TEXT DEFAULT '',
+            asset_barcodes    TEXT DEFAULT '',
+            asset_no_barcode  INTEGER DEFAULT 0,
+            asset_evidence_photo TEXT DEFAULT '',
+            cabinet_barcodes  TEXT DEFAULT '',
+            cabinet_no_barcode INTEGER DEFAULT 0,
+            cabinet_evidence_photo TEXT DEFAULT '',
+            evidence_photo    TEXT DEFAULT '',
+            rack_no           TEXT DEFAULT '',
+            actual_model      TEXT DEFAULT '',
+            notes             TEXT DEFAULT '',
+            record_type       TEXT DEFAULT 'normal',
+            field_status      TEXT DEFAULT '正常',
+            missing_reason    TEXT DEFAULT '',
+            created_by        INTEGER,
+            client_request_id TEXT DEFAULT '',
+            match_status      TEXT DEFAULT '未扫'
+                              CHECK(match_status IN ('一致', '不一致', '未扫')),
+            scanned_at        TEXT
+        )
+    """)
+    target_columns = [
+        "id",
+        "task_id",
+        "device_name",
+        "device_extra",
+        "expected_model",
+        "expected_barcode",
+        "asset_barcodes",
+        "asset_no_barcode",
+        "asset_evidence_photo",
+        "cabinet_barcodes",
+        "cabinet_no_barcode",
+        "cabinet_evidence_photo",
+        "evidence_photo",
+        "rack_no",
+        "actual_model",
+        "notes",
+        "record_type",
+        "field_status",
+        "missing_reason",
+        "created_by",
+        "client_request_id",
+        "match_status",
+        "scanned_at",
+    ]
+    copy_columns = [column for column in target_columns if column in existing_columns]
+    column_sql = ", ".join(copy_columns)
+    select_sql = ", ".join(
+        "CASE WHEN match_status IN ('一致', '不一致', '未扫') THEN match_status ELSE '未扫' END AS match_status"
+        if column == "match_status" else column
+        for column in copy_columns
+    )
+    conn.execute(f"INSERT INTO scan_records_new ({column_sql}) SELECT {select_sql} FROM scan_records")
+    conn.execute("DROP TABLE scan_records")
+    conn.execute("ALTER TABLE scan_records_new RENAME TO scan_records")
 
 
 def init_db() -> None:
@@ -367,6 +436,28 @@ def init_db() -> None:
             UNIQUE(user_id, action, request_id)
         );
 
+        CREATE TABLE IF NOT EXISTS ai_analysis_results (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_ids_json TEXT NOT NULL,
+            analysis_scope TEXT DEFAULT '',
+            model_provider TEXT DEFAULT 'deepseek',
+            model_name  TEXT DEFAULT '',
+            prompt_version TEXT DEFAULT '',
+            input_summary TEXT DEFAULT '',
+            desensitized_payload TEXT DEFAULT '',
+            analysis_result TEXT DEFAULT '',
+            status      TEXT NOT NULL DEFAULT 'success',
+            error_message TEXT DEFAULT '',
+            created_by  INTEGER,
+            created_at  TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS system_settings (
+            key         TEXT PRIMARY KEY,
+            value       TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        );
+
     """)
     # 兼容已经投入使用的数据库，按列增量升级，不清空历史数据。
     task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
@@ -405,12 +496,6 @@ def init_db() -> None:
         "evidence_photo": "ALTER TABLE scan_records ADD COLUMN evidence_photo TEXT DEFAULT ''",
         "asset_evidence_photo": "ALTER TABLE scan_records ADD COLUMN asset_evidence_photo TEXT DEFAULT ''",
         "cabinet_evidence_photo": "ALTER TABLE scan_records ADD COLUMN cabinet_evidence_photo TEXT DEFAULT ''",
-        "review_status": "ALTER TABLE scan_records ADD COLUMN review_status TEXT DEFAULT '待复核'",
-        "review_note": "ALTER TABLE scan_records ADD COLUMN review_note TEXT DEFAULT ''",
-        "review_reason": "ALTER TABLE scan_records ADD COLUMN review_reason TEXT DEFAULT ''",
-        "review_handler": "ALTER TABLE scan_records ADD COLUMN review_handler TEXT DEFAULT ''",
-        "review_result": "ALTER TABLE scan_records ADD COLUMN review_result TEXT DEFAULT ''",
-        "reviewed_at": "ALTER TABLE scan_records ADD COLUMN reviewed_at TEXT",
         "rack_no": "ALTER TABLE scan_records ADD COLUMN rack_no TEXT DEFAULT ''",
         "record_type": "ALTER TABLE scan_records ADD COLUMN record_type TEXT DEFAULT 'normal'",
         "field_status": "ALTER TABLE scan_records ADD COLUMN field_status TEXT DEFAULT '正常'",
@@ -421,6 +506,7 @@ def init_db() -> None:
     for column, statement in record_migrations.items():
         if column not in record_columns:
             conn.execute(statement)
+    drop_review_columns(conn)
     conn.executescript("""
         CREATE TRIGGER IF NOT EXISTS audit_logs_no_update
         BEFORE UPDATE ON audit_logs
@@ -440,8 +526,6 @@ def init_db() -> None:
             ON tasks(claimed_by);
         CREATE INDEX IF NOT EXISTS idx_scan_records_task_status
             ON scan_records(task_id, match_status, record_type);
-        CREATE INDEX IF NOT EXISTS idx_scan_records_review
-            ON scan_records(task_id, review_status);
         CREATE INDEX IF NOT EXISTS idx_scan_records_created_by
             ON scan_records(created_by);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_records_client_request
@@ -455,7 +539,14 @@ def init_db() -> None:
             ON audit_logs(target_type, target_id);
         CREATE INDEX IF NOT EXISTS idx_idempotency_lookup
             ON idempotency_keys(user_id, action, request_id);
+        CREATE INDEX IF NOT EXISTS idx_ai_analysis_created
+            ON ai_analysis_results(created_at DESC);
     """)
+    conn.execute(
+        """INSERT OR IGNORE INTO system_settings (key, value, updated_at)
+           VALUES ('ai_enabled', '1', ?)""",
+        (datetime.now().isoformat(),),
+    )
     conn.execute("""
         UPDATE tasks
         SET assigned_at = created_at
@@ -577,6 +668,74 @@ def get_audit_logs(limit: int = 200) -> list[dict[str, Any]]:
                 item["detail"] = {}
             result.append(item)
         return result
+    finally:
+        conn.close()
+
+
+def save_ai_analysis_result(
+    task_ids: list[int],
+    analysis_scope: str,
+    model_provider: str,
+    model_name: str,
+    prompt_version: str,
+    input_summary: str,
+    desensitized_payload: str,
+    analysis_result: str,
+    status: str,
+    error_message: str,
+    created_by: int | None,
+) -> int:
+    """保存一次 AI 分析结果。"""
+    conn = get_conn()
+    try:
+        cur = conn.execute(
+            """INSERT INTO ai_analysis_results
+               (task_ids_json, analysis_scope, model_provider, model_name, prompt_version,
+                input_summary, desensitized_payload, analysis_result, status, error_message,
+                created_by, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                json.dumps(task_ids, ensure_ascii=False),
+                analysis_scope,
+                model_provider,
+                model_name,
+                prompt_version,
+                input_summary,
+                desensitized_payload,
+                analysis_result,
+                status,
+                error_message,
+                created_by,
+                datetime.now().isoformat(),
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_system_setting(key: str, default: str = "") -> str:
+    """读取系统配置。"""
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT value FROM system_settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+    finally:
+        conn.close()
+
+
+def set_system_setting(key: str, value: str) -> None:
+    """写入系统配置。"""
+    conn = get_conn()
+    try:
+        conn.execute(
+            """INSERT INTO system_settings (key, value, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+            (key, value, datetime.now().isoformat()),
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -880,11 +1039,6 @@ def delete_task(task_id: int, reason: str) -> bool:
         conn.close()
 
 
-def get_tasks_by_user(user_id: int) -> list[dict[str, Any]]:
-    """查询某人已领取的任务列表（含每个任务的设备统计）。"""
-    return get_claimed_tasks(user_id)
-
-
 def _task_stat_select(where_sql: str) -> str:
     """任务列表通用查询片段，避免多处统计口径不一致。"""
     return f"""
@@ -896,9 +1050,7 @@ def _task_stat_select(where_sql: str) -> str:
                 claimed_user.name AS claimed_name,
                 SUM(CASE WHEN sr.id IS NOT NULL AND COALESCE(sr.record_type, 'normal') != 'surplus' THEN 1 ELSE 0 END) AS total,
                 SUM(CASE WHEN sr.id IS NOT NULL AND COALESCE(sr.record_type, 'normal') != 'surplus' AND sr.match_status != '未扫' THEN 1 ELSE 0 END) AS scanned,
-                SUM(CASE WHEN sr.match_status = '不一致' THEN 1 ELSE 0 END) AS mismatch,
-                SUM(CASE WHEN sr.id IS NOT NULL AND (COALESCE(sr.record_type, 'normal') IN ('surplus', 'missing') OR sr.match_status = '不一致') THEN 1 ELSE 0 END) AS anomaly_count,
-                SUM(CASE WHEN sr.id IS NOT NULL AND (COALESCE(sr.record_type, 'normal') IN ('surplus', 'missing') OR sr.match_status = '不一致') AND COALESCE(sr.review_status, '待复核') != '已闭环' THEN 1 ELSE 0 END) AS review_pending
+                SUM(CASE WHEN sr.match_status = '不一致' THEN 1 ELSE 0 END) AS mismatch
             FROM tasks t
             LEFT JOIN scan_records sr ON sr.task_id = t.id
             LEFT JOIN users assigned_user ON assigned_user.id = t.assigned_to
@@ -930,7 +1082,7 @@ def get_area_tasks(user_id: int) -> list[dict[str, Any]]:
             _task_stat_select(where_sql) + " ORDER BY CASE t.status WHEN 'pending' THEN 0 WHEN 'doing' THEN 1 ELSE 2 END, t.area_name, t.created_at DESC",
             params,
         ).fetchall()
-        return [add_task_closure_status(dict_from_row(r)) for r in rows]
+        return [add_task_field_status(dict_from_row(r)) for r in rows]
     finally:
         conn.close()
 
@@ -943,7 +1095,7 @@ def get_claimed_tasks(user_id: int) -> list[dict[str, Any]]:
             _task_stat_select("t.claimed_by = ?") + " ORDER BY t.claimed_at DESC, t.created_at DESC",
             (user_id,),
         ).fetchall()
-        return [add_task_closure_status(dict_from_row(r)) for r in rows]
+        return [add_task_field_status(dict_from_row(r)) for r in rows]
     finally:
         conn.close()
 
@@ -1044,7 +1196,7 @@ def get_task_by_id(task_id: int) -> dict[str, Any] | None:
             _task_stat_select("t.id = ?"),
             (task_id,),
         ).fetchone()
-        return add_task_closure_status(dict_from_row(row)) if row else None
+        return add_task_field_status(dict_from_row(row)) if row else None
     finally:
         conn.close()
 
@@ -1056,7 +1208,7 @@ def get_all_tasks() -> list[dict[str, Any]]:
         rows = conn.execute(
             _task_stat_select("1 = 1") + " ORDER BY t.created_at DESC"
         ).fetchall()
-        return [add_task_closure_status(dict_from_row(r)) for r in rows]
+        return [add_task_field_status(dict_from_row(r)) for r in rows]
     finally:
         conn.close()
 
@@ -1135,61 +1287,16 @@ def save_evidence_photo(record_id: int, photo_path: str, evidence_type: str = "g
         conn.close()
 
 
-def review_record(
-    record_id: int,
-    status: str,
-    note: str,
-    reason: str = "",
-    handler: str = "",
-    result: str = "",
-) -> bool:
-    """管理员复核异常记录。"""
-    conn = get_conn()
-    try:
-        record = conn.execute(
-            "SELECT task_id FROM scan_records WHERE id = ? AND match_status != '未扫'",
-            (record_id,),
-        ).fetchone()
-        if record is None:
-            return False
-        cur = conn.execute(
-            """UPDATE scan_records
-               SET review_status = ?, review_note = ?, review_reason = ?,
-                   review_handler = ?, review_result = ?, reviewed_at = ?
-               WHERE id = ? AND match_status != '未扫'""",
-            (
-                status,
-                note.strip(),
-                reason.strip(),
-                handler.strip(),
-                result.strip(),
-                datetime.now().isoformat(),
-                record_id,
-            ),
-        )
-        if cur.rowcount > 0:
-            refresh_task_closure(conn, record["task_id"])
-        conn.commit()
-        return cur.rowcount > 0
-    finally:
-        conn.close()
-
-
 def refresh_task_closure(conn: sqlite3.Connection, task_id: int, task_items: list[sqlite3.Row] | None = None) -> None:
-    """刷新管理闭环时间；只有现场完成且异常全部闭环后才写 closed_at。"""
+    """刷新现场完成时间。"""
     if task_items is None:
         task_items = conn.execute(
-            "SELECT match_status, record_type, review_status FROM scan_records WHERE task_id = ?",
+            "SELECT match_status, record_type FROM scan_records WHERE task_id = ?",
             (task_id,),
         ).fetchall()
     normal_items = [r for r in task_items if (r["record_type"] or "normal") != "surplus"]
     all_normal_done = bool(normal_items) and all(r["match_status"] != "未扫" for r in normal_items)
-    pending_review = [
-        r for r in task_items
-        if ((r["record_type"] or "normal") in {"surplus", "missing"} or r["match_status"] == "不一致")
-        and (r["review_status"] or "待复核") != "已闭环"
-    ]
-    if all_normal_done and not pending_review:
+    if all_normal_done:
         conn.execute(
             "UPDATE tasks SET closed_at = COALESCE(closed_at, ?) WHERE id = ?",
             (datetime.now().isoformat(), task_id),
@@ -1201,7 +1308,7 @@ def refresh_task_closure(conn: sqlite3.Connection, task_id: int, task_items: lis
 def refresh_task_status(conn: sqlite3.Connection, task_id: int) -> None:
     """按现有记录刷新任务现场状态；盘盈不影响原清单是否全部完成。"""
     task_items = conn.execute(
-        "SELECT match_status, record_type, review_status FROM scan_records WHERE task_id = ?",
+        "SELECT match_status, record_type FROM scan_records WHERE task_id = ?",
         (task_id,),
     ).fetchall()
     normal_items = [r for r in task_items if (r["record_type"] or "normal") != "surplus"]
@@ -1246,13 +1353,7 @@ def mark_record_missing(record_id: int, reason: str, notes: str = "") -> dict[st
                 missing_reason = ?,
                 notes = ?,
                 match_status = '不一致',
-                scanned_at = ?,
-                review_status = '待复核',
-                review_note = '',
-                review_reason = '',
-                review_handler = '',
-                review_result = '',
-                reviewed_at = NULL
+                scanned_at = ?
             WHERE id = ?
         """, (
             final_reason,
@@ -1305,8 +1406,8 @@ def create_surplus_record(
                     task_id, device_name, expected_model, expected_barcode,
                     asset_barcodes, asset_no_barcode, cabinet_barcodes, cabinet_no_barcode,
                     rack_no, actual_model, notes, record_type, field_status,
-                    match_status, scanned_at, created_by, review_status, client_request_id
-                ) VALUES (?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, 'surplus', '盘盈', '不一致', ?, ?, '待复核', ?)
+                    match_status, scanned_at, created_by, client_request_id
+                ) VALUES (?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, 'surplus', '盘盈', '不一致', ?, ?, ?)
             """, (
                 task_id,
                 device_name.strip(),
@@ -1393,13 +1494,7 @@ def submit_scan(
                 field_status = '正常',
                 missing_reason = '',
                 match_status = ?,
-                scanned_at = ?,
-                review_status = ?,
-                review_note = '',
-                review_reason = '',
-                review_handler = '',
-                review_result = '',
-                reviewed_at = NULL
+                scanned_at = ?
             WHERE id = ?
         """, (
             asset_barcodes,
@@ -1411,7 +1506,6 @@ def submit_scan(
             notes,
             match_status,
             datetime.now().isoformat(),
-            "" if match_status == "一致" else "待复核",
             record_id,
         ))
         conn.commit()
