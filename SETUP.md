@@ -24,7 +24,7 @@ cd equipment_inventory
 pip install -r requirements.txt
 ```
 
-需要安装：fastapi, uvicorn, openpyxl, streamlit, python-multipart, pydantic, requests
+需要安装：fastapi, uvicorn, openpyxl, python-multipart, pydantic, requests；PC 后台还需要 Node.js/npm。
 
 ## 第二步：启动后端
 
@@ -52,10 +52,10 @@ Uvicorn running on http://0.0.0.0:8000
 
 ```bash
 cd equipment_inventory
-streamlit run pc_admin/admin.py
+start_admin_vue.bat
 ```
 
-浏览器自动打开 PC 后台页面。
+浏览器打开 `http://127.0.0.1:5173`。
 
 ## 第四步：PC后台操作流程
 
@@ -201,7 +201,7 @@ A: 确保 Excel 文件保存为 UTF-8 编码。
 | 文件 | 用途 | 启动方式 |
 |------|------|---------|
 | `backend/main.py` | FastAPI 后端 | `python -m uvicorn backend.main:app` |
-| `pc_admin/admin.py` | PC后台管理 | `streamlit run pc_admin/admin.py` |
+| `admin_web/` | Vue PC后台管理 | `start_admin_vue.bat` |
 | `miniprogram/` | 微信小程序 | 用微信开发者工具打开 |
 | `backend/database.py` | 数据库操作 | 自动调用，无需手动运行 |
 | `test_api.py` | 接口测试 | `python test_api.py` |

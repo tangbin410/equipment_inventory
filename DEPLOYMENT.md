@@ -11,7 +11,7 @@
 - 1 台 Linux 轻量云服务器，Ubuntu 22.04 LTS。
 - 1 核 2G 起步，少量机房功能试用足够；照片较多时磁盘建议 40G 以上。
 - 安全组只开放 `22`、`80`、`443`。
-- 不要直接开放 `8000` 和 `8501`，它们只给本机 Nginx 反代访问。
+- 不要直接开放 `8000`，它只给本机 Nginx 反代访问。
 
 ## 2. 域名规划
 
@@ -34,7 +34,7 @@ sudo mkdir -p /opt/equipment_inventory
 sudo chown -R inventory:inventory /opt/equipment_inventory
 ```
 
-把本项目上传到 `/opt/equipment_inventory`。如果使用 git，可在服务器上拉取代码；如果手工上传，保证目录内有 `backend/`、`pc_admin/`、`miniprogram/`、`requirements.txt`。
+把本项目上传到 `/opt/equipment_inventory`。如果使用 git，可在服务器上拉取代码；如果手工上传，保证目录内有 `backend/`、`admin_web/`、`miniprogram/`、`requirements.txt`。
 
 初始化 Python 环境：
 
@@ -42,6 +42,14 @@ sudo chown -R inventory:inventory /opt/equipment_inventory
 cd /opt/equipment_inventory
 sudo -u inventory python3 -m venv .venv
 sudo -u inventory .venv/bin/pip install -r requirements.txt
+```
+
+构建 Vue PC 后台：
+
+```bash
+cd /opt/equipment_inventory/admin_web
+sudo -u inventory npm install
+sudo -u inventory npm run build
 ```
 
 ## 4. 生产环境变量
@@ -73,12 +81,9 @@ WECHAT_SECRET=你的小程序AppSecret
 
 ```bash
 sudo cp deploy/systemd/equipment-inventory-api.service /etc/systemd/system/
-sudo cp deploy/systemd/equipment-inventory-admin.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now equipment-inventory-api
-sudo systemctl enable --now equipment-inventory-admin
 sudo systemctl status equipment-inventory-api
-sudo systemctl status equipment-inventory-admin
 ```
 
 本机验证：
@@ -182,7 +187,7 @@ uploadFile 合法域名：https://api.inventory.example.com
 - `https://admin.inventory.example.com` 能打开后台登录页。
 - 管理员密码不是默认密码。
 - 微信后台已配置 request/uploadFile 合法域名。
-- 服务器安全组未开放 `8000`、`8501`。
+- 服务器安全组未开放 `8000`。
 - `data/backups/` 已能自动生成 SQLite 备份。
 - 只导入 1 到 3 个机房先试跑。
 

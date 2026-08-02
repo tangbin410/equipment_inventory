@@ -44,7 +44,7 @@ Page({
     const user = app.globalData.userInfo || {};
     this.setData({
       userName: user.name || "",
-      areaName: user.area_name || "默认片区",
+      areaName: user.area_name || "汇聚及核心",
     });
     this.loadTasks();
   },
@@ -57,7 +57,7 @@ Page({
     if (!app.isLoggedIn()) return;
     this.setData({ loading: true });
     try {
-      const rawTasks = await getAreaTasks(app.globalData.userInfo.user_id);
+      const rawTasks = await getAreaTasks();
       const tasks = rawTasks.map(enhanceTask);
       this.setData({
         allTasks: tasks,
@@ -91,7 +91,7 @@ Page({
     const taskId = e.currentTarget.dataset.id;
     wx.showLoading({ title: "领取中" });
     try {
-      const result = await claimTaskApi(taskId, app.globalData.userInfo.user_id);
+      const result = await claimTaskApi(taskId);
       wx.hideLoading();
       wx.showToast({ title: result.message || "领取成功", icon: "success" });
       setTimeout(() => {

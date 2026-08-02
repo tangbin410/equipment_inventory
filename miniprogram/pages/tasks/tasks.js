@@ -38,7 +38,7 @@ Page({
     }
     this.setData({
       userName: app.globalData.userInfo.name,
-      areaName: app.globalData.userInfo.area_name || "默认片区",
+      areaName: app.globalData.userInfo.area_name || "汇聚及核心",
     });
   },
 
@@ -47,7 +47,7 @@ Page({
     if (!app.isLoggedIn()) return;
     this.setData({ loading: true });
     try {
-      const tasks = await getMyTasks(app.globalData.userInfo.user_id);
+      const tasks = await getMyTasks();
       const total = tasks.length;
       const pending = 0;
       const doing = tasks.filter((t) => t.status === "doing").length;
@@ -123,7 +123,7 @@ Page({
         if (!res.confirm) return;
         wx.showLoading({ title: "释放中" });
         try {
-          const result = await releaseTaskApi(taskId, app.globalData.userInfo.user_id, "现场人员主动释放");
+          const result = await releaseTaskApi(taskId, "现场人员主动释放");
           wx.hideLoading();
           wx.showToast({ title: result.message || "已释放", icon: "success" });
           this.loadTasks();

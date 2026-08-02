@@ -11,6 +11,28 @@
     <text class="hero-desc">先领取同片区机房任务，再进入我的任务开展扫码盘点。</text>
   </view>
 
+  <view class="profile-card" wx:if="{{showProfileCard}}">
+    <view class="profile-head">
+      <text class="profile-title">完善现场人员资料</text>
+      <text class="profile-desc">姓名由本人填写，手机号需微信授权，同步后后台可查看。</text>
+    </view>
+    <input
+      class="profile-input"
+      value="{{profileName}}"
+      placeholder="请输入真实姓名"
+      bindinput="onProfileNameInput"
+    />
+    <button
+      class="profile-btn"
+      open-type="getPhoneNumber"
+      bindgetphonenumber="handleGetPhoneNumber"
+      loading="{{profileLoading}}"
+      disabled="{{profileLoading}}"
+    >
+      授权手机号并同步
+    </button>
+  </view>
+
   <view class="action-card" bindtap="goClaim">
     <view class="action-icon blue">领</view>
     <view class="action-main">
@@ -25,6 +47,15 @@
     <view class="action-main">
       <text class="action-title">我的任务</text>
       <text class="action-desc">继续扫码盘点，或释放当前领取任务</text>
+    </view>
+    <text class="arrow">›</text>
+  </view>
+
+  <view class="action-card" bindtap="goAdjustments">
+    <view class="action-icon cyan">改</view>
+    <view class="action-main">
+      <text class="action-title">整改任务</text>
+      <text class="action-desc">查看管理员下发的资产整改闭环任务</text>
     </view>
     <text class="arrow">›</text>
   </view>

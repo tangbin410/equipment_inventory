@@ -8,6 +8,9 @@ venv/
 .playwright-cli/
 output/
 
+admin_web/node_modules/
+admin_web/dist/
+
 data/inventory.db
 data/backups/
 data/evidence/

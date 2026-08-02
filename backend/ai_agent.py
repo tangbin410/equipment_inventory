@@ -9,6 +9,7 @@ import json
 import os
 import re
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,8 @@ def _load_local_env() -> None:
 
 _load_local_env()
 REQUEST_TIMEOUT = int(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "60"))
+CHAT_HISTORY_LIMIT = 8
+CHAT_MESSAGE_LIMIT = 1200
 
 SENSITIVE_PATTERNS = [
     (re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)"), "[手机号]"),
@@ -84,7 +87,7 @@ def build_inventory_rows(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "任务ID": task.get("id"),
                 "任务名称": task.get("task_name") or "",
                 "机房名称": task.get("room_name") or "",
-                "片区": task.get("area_name") or "默认片区",
+                "片区": task.get("area_name") or "汇聚及核心",
                 "领取人": task.get("assigned_name") or "-",
                 "任务状态": task.get("status") or "",
                 "任务创建时间": task.get("created_at") or "",
@@ -200,6 +203,18 @@ def _external_agent_url() -> str:
     return _clean_env_value(os.getenv("INVENTORY_AI_AGENT_URL", ""))
 
 
+def _external_agent_chat_url() -> str:
+    url = _external_agent_url()
+    if not url:
+        return ""
+    return re.sub(r"/analyze/?$", "/chat", url.rstrip("/")) if url.rstrip("/").endswith("/analyze") else f"{url.rstrip('/')}/chat"
+
+
+def _agent_headers() -> dict[str, str]:
+    token = _clean_env_value(os.getenv("INVENTORY_AGENT_TOKEN", ""))
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def _clean_env_value(value: str) -> str:
     return str(value or "").strip().strip("\"'")
 
@@ -274,12 +289,96 @@ def _call_deepseek(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return _parse_analysis_items(content)
 
 
-def _call_external_agent(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    response = requests.post(_external_agent_url(), json=payload, timeout=REQUEST_TIMEOUT)
+def _call_external_agent(payload: dict[str, Any]) -> dict[str, Any]:
+    response = requests.post(_external_agent_url(), json=payload, headers=_agent_headers(), timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     data = response.json()
     items = data.get("analysis_items") if isinstance(data, dict) else data
-    return items if isinstance(items, list) else []
+    return {
+        "analysis_items": items if isinstance(items, list) else [],
+        "model_name": _clean_env_value(data.get("model_name", "")) if isinstance(data, dict) else "",
+        "context_meta": data.get("context_meta", {}) if isinstance(data, dict) else {},
+        "tool_manifest": data.get("tool_manifest", []) if isinstance(data, dict) else [],
+    }
+
+
+def _clean_chat_text(value: str, limit: int = CHAT_MESSAGE_LIMIT) -> str:
+    text = _mask_free_text(str(value or "").strip())
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text[:limit]
+
+
+def _normalize_chat_history(history: list[dict[str, Any]]) -> list[dict[str, str]]:
+    result = []
+    for item in history[-CHAT_HISTORY_LIMIT:]:
+        role = str(item.get("role") or "").strip()
+        if role not in {"user", "assistant"}:
+            continue
+        content = _clean_chat_text(str(item.get("content") or ""))
+        if content:
+            result.append({"role": role, "content": content})
+    return result
+
+
+def _chat_prompt(message: str, history: list[dict[str, str]], payload: dict[str, Any]) -> list[dict[str, str]]:
+    model_name = _clean_env_value(os.getenv("DEEPSEEK_MODEL", "")) or "未配置模型名称"
+    now_text = datetime.now().strftime("%Y年%m月%d日 %H:%M:%S")
+    system = (
+        "你是运营商传输网管资产盘点本地 agent 的对话助手。"
+        f"当前本地 agent 直连 DeepSeek，配置的 LLM 模型名称是：{model_name}。"
+        f"当前本地系统时间是：{now_text}。"
+        "你可以支持日常聊天、回答自身模型、agent功能、操作流程、盘点规则解释，以及当前管理员选定范围内的脱敏盘点上下文问题。"
+        f"当管理员询问你是什么模型或LLM时，必须用第一人称回答：我是模型 {model_name}，由本地 agent 受控调用。"
+        "当管理员询问今天日期、现在时间、几月几号时，直接依据当前本地系统时间回答。"
+        "不要编造机房、设备、条码、人员或任务；不能直接读取本地文件、查询数据库或修改业务数据。"
+        "如果判断依据不足，要向管理员提出需要确认的问题。"
+        "涉及整改、下发、闭环时，只能给出建议或待确认事项，不能声称已经执行。"
+    )
+    context = {
+        "input_summary": payload.get("input_summary") or "",
+        "rows": payload.get("rows") or [],
+    }
+    messages = [{"role": "system", "content": system}]
+    messages.extend(history)
+    messages.append({
+        "role": "user",
+        "content": (
+            f"管理员问题：{message}\n\n"
+            f"脱敏盘点上下文：{json.dumps(context, ensure_ascii=False)}\n\n"
+            "请用简洁中文回答。若需要管理员确认，请明确列出确认项。"
+        ),
+    })
+    return messages
+
+
+def _restore_sensitive_text(text: str, sensitive_maps: dict[str, dict[str, str]]) -> str:
+    restored = str(text or "")
+    reverse_map = {
+        masked: original
+        for field_map in sensitive_maps.values()
+        for masked, original in field_map.items()
+    }
+    for masked, original in sorted(reverse_map.items(), key=lambda item: len(item[0]), reverse=True):
+        restored = restored.replace(masked, original)
+    return restored
+
+
+def _call_external_agent_chat(message: str, history: list[dict[str, str]], payload: dict[str, Any]) -> dict[str, Any]:
+    response = requests.post(
+        _external_agent_chat_url(),
+        json={"message": message, "history": history, "context": payload},
+        headers=_agent_headers(),
+        timeout=REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+    data = response.json()
+    return {
+        "answer": str(data.get("answer") or "") if isinstance(data, dict) else "",
+        "model_name": _clean_env_value(data.get("model_name", "")) if isinstance(data, dict) else "",
+        "context_meta": data.get("context_meta", {}) if isinstance(data, dict) else {},
+        "tool_manifest": data.get("tool_manifest", []) if isinstance(data, dict) else [],
+    }
 
 
 def check_model_available() -> dict[str, Any]:
@@ -290,10 +389,13 @@ def check_model_available() -> dict[str, Any]:
             response = requests.post(
                 external_agent_url,
                 json={"type": "health_check", "message": "ping"},
+                headers=_agent_headers(),
                 timeout=min(REQUEST_TIMEOUT, 20),
             )
             response.raise_for_status()
-            return {"ok": True, "message": "本地 agent 服务可用"}
+            data = response.json()
+            model_name = data.get("model_name", "") if isinstance(data, dict) else ""
+            return {"ok": True, "message": "本地 agent 服务可用", "model_name": _clean_env_value(model_name)}
         content = _post_deepseek_chat(
             [
                 {"role": "system", "content": "你是模型连通性检测助手。"},
@@ -338,14 +440,61 @@ def analyze_inventory(tasks: list[dict[str, Any]]) -> dict[str, Any]:
         "rows": masked_rows,
     }
     external_agent_url = _external_agent_url()
-    items = _call_external_agent(payload) if external_agent_url else _call_deepseek(payload)
+    context_meta: dict[str, Any] = {}
+    tool_manifest: list[dict[str, Any]] = []
+    if external_agent_url:
+        agent_result = _call_external_agent(payload)
+        items = agent_result["analysis_items"]
+        model_name = agent_result["model_name"] or _clean_env_value(os.getenv("DEEPSEEK_MODEL", ""))
+        context_meta = agent_result.get("context_meta") or {}
+        tool_manifest = agent_result.get("tool_manifest") or []
+    else:
+        items = _call_deepseek(payload)
+        model_name = _clean_env_value(os.getenv("DEEPSEEK_MODEL", ""))
     restored_items = _restore_sensitive_values(items, sensitive_maps)
     return {
         "model_provider": "local-agent" if external_agent_url else "deepseek",
-        "model_name": external_agent_url if external_agent_url else os.getenv("DEEPSEEK_MODEL", "").strip(),
+        "model_name": model_name,
         "prompt_version": PROMPT_VERSION,
         "input_summary": payload["input_summary"],
         "desensitized_payload": json.dumps(payload, ensure_ascii=False),
         "sensitive_maps": sensitive_maps,
+        "context_meta": context_meta,
+        "tool_manifest": tool_manifest,
         "analysis_items": restored_items,
+    }
+
+
+def chat_inventory(message: str, tasks: list[dict[str, Any]], history: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """面向管理员的只读对话：后端取数并脱敏，模型只能看脱敏上下文。"""
+    rows = build_inventory_rows(tasks)
+    masked_rows, sensitive_maps = desensitize_rows(rows)
+    safe_message = _clean_chat_text(message)
+    if not safe_message:
+        raise ValueError("请输入需要咨询 AI agent 的问题")
+    normalized_history = _normalize_chat_history(history or [])
+    payload = {
+        "prompt_version": PROMPT_VERSION,
+        "input_summary": input_summary(rows) if rows else "当前未选择任务，未附带资产盘点上下文",
+        "rows": masked_rows,
+    }
+    external_agent_url = _external_agent_url()
+    context_meta: dict[str, Any] = {}
+    tool_manifest: list[dict[str, Any]] = []
+    if external_agent_url:
+        agent_result = _call_external_agent_chat(safe_message, normalized_history, payload)
+        answer = agent_result["answer"]
+        model_name = agent_result["model_name"] or _clean_env_value(os.getenv("DEEPSEEK_MODEL", ""))
+        context_meta = agent_result.get("context_meta") or {}
+        tool_manifest = agent_result.get("tool_manifest") or []
+    else:
+        answer = _post_deepseek_chat(_chat_prompt(safe_message, normalized_history, payload), temperature=0.2)
+        model_name = _clean_env_value(os.getenv("DEEPSEEK_MODEL", ""))
+    return {
+        "answer": _restore_sensitive_text(answer, sensitive_maps),
+        "model_provider": "local-agent" if external_agent_url else "deepseek",
+        "model_name": model_name,
+        "input_summary": payload["input_summary"],
+        "context_meta": context_meta,
+        "tool_manifest": tool_manifest,
     }

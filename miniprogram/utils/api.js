@@ -49,15 +49,19 @@ function request(method, path, data = {}) {
 
 // 用户相关
 function login(code) { return request("POST", "/login", { code }); }
-function getWorkers() { return request("GET", "/workers"); }
+function bindProfile(name, code) { return request("POST", "/me/profile", { name, code }); }
 
 // 任务相关
-function getAreaTasks(userId) { return request("GET", "/tasks/area?user_id=" + userId); }
-function getMyTasks(userId) { return request("GET", "/tasks/my?user_id=" + userId); }
-function getTasks(userId) { return getMyTasks(userId); }
+function getAreaTasks() { return request("GET", "/tasks/area"); }
+function getMyTasks() { return request("GET", "/tasks/my"); }
+function getTasks() { return getMyTasks(); }
 function getTaskItems(taskId) { return request("GET", "/tasks/" + taskId + "/items"); }
-function claimTask(taskId, userId) { return request("POST", "/tasks/" + taskId + "/claim", { user_id: userId }); }
-function releaseTask(taskId, userId, reason = "") { return request("POST", "/tasks/" + taskId + "/release", { user_id: userId, reason }); }
+function claimTask(taskId) { return request("POST", "/tasks/" + taskId + "/claim"); }
+function releaseTask(taskId, reason = "") { return request("POST", "/tasks/" + taskId + "/release", { reason }); }
+function getMyAdjustmentTasks() { return request("GET", "/adjustments/my"); }
+function completeAdjustmentTask(adjustmentId, completionNote = "") {
+  return request("POST", "/adjustments/" + adjustmentId + "/complete", { completion_note: completionNote });
+}
 
 // 盘点操作
 function submitScan(data) { return request("POST", "/scan", data); }
@@ -93,25 +97,19 @@ function uploadEvidencePhoto(recordId, filePath, evidenceType = "general") {
   });
 }
 
-// 报告
-function getReport(taskId) { return request("GET", "/report/" + taskId); }
-function getExportUrl(taskId) {
-  return app.globalData.apiBase + "/export/" + taskId;
-}
-
 module.exports = {
   login,
-  getWorkers,
+  bindProfile,
   getTasks,
   getAreaTasks,
   getMyTasks,
   getTaskItems,
   claimTask,
   releaseTask,
+  getMyAdjustmentTasks,
+  completeAdjustmentTask,
   submitScan,
   submitMissing,
   submitSurplus,
   uploadEvidencePhoto,
-  getReport,
-  getExportUrl,
 };

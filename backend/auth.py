@@ -17,8 +17,14 @@ TOKEN_TTL_SECONDS = int(os.getenv("INVENTORY_TOKEN_TTL_SECONDS", "28800"))
 def _secret() -> bytes:
     value = os.getenv("INVENTORY_SECRET_KEY", "")
     if not value:
-        value = "inventory-local-development-key-change-in-production"
+        raise RuntimeError("未配置 INVENTORY_SECRET_KEY，请在 .env 中配置至少32位随机字符串")
+    if len(value) < 32:
+        raise RuntimeError("INVENTORY_SECRET_KEY 长度不足，请配置至少32位随机字符串")
     return value.encode("utf-8")
+
+
+def require_secret_configured() -> None:
+    _secret()
 
 
 def hash_password(password: str, salt: str | None = None) -> str:

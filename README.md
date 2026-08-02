@@ -1,6 +1,6 @@
 # 机房资产盘点系统
 
-基于 **FastAPI + Streamlit + 微信小程序** 的机房资产盘点系统。
+基于 **FastAPI + Vue3 + Element Plus + 微信小程序** 的机房资产盘点系统。
 
 管理员在PC后台上传待盘点清单、指派任务、查看盘点结果；
 现场人员通过微信小程序扫码盘点。
@@ -14,8 +14,7 @@ equipment_inventory/
 │   ├── database.py        # SQLite 数据库操作
 │   ├── main.py            # API 路由入口
 │   └── models.py          # Pydantic 数据模型
-├── pc_admin/
-│   └── admin.py           # Streamlit PC后台管理
+├── admin_web/             # Vue3 PC后台
 ├── data/                  # 数据库文件存放
 ├── requirements.txt
 └── README.md
@@ -28,6 +27,8 @@ equipment_inventory/
 ```bash
 cd equipment_inventory
 pip install -r requirements.txt
+cd admin_web
+npm install
 ```
 
 ### 2. 启动后端
@@ -43,28 +44,27 @@ python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 
 ```bash
 cd equipment_inventory
-streamlit run pc_admin/admin.py
+start_admin_vue.bat
 ```
 
-打开浏览器访问显示的地址（默认 http://localhost:8501）。
+打开浏览器访问显示的地址（默认 http://127.0.0.1:5173）。
 
-## PC后台使用说明
+## Vue PC后台使用说明
 
 ### 上传清单
 - 选择 Excel 文件（需包含：网元名称、设备型号、资产标签号）
-- 输入机房名称
-- 选择现场人员
-- 点击"创建盘点任务"
+- 下载模板、选择 Excel 文件、预检清单
+- 点击“导入并生成待盘点机房”
 
 ### 任务看板
 - 查看所有任务进度
-- 可按状态筛选（待处理/进行中/已完成）
-- 点击展开查看详情
+- 查看任务统计图、任务进度和超时任务
+- 支持查询并作废任务
 
-### 盘点报告
-- 选择任务查看核验结果
-- 汇总展示：设备总数、一致数、不一致数、未扫数
-- 可导出 Excel 报告
+### 资产盘点数据
+- 查询并选择任务
+- 汇总展示：设备总数、已盘、未盘、进度
+- 可导出任务清单与现场盘点合并后的原始数据
 
 ## API 接口
 
@@ -89,7 +89,7 @@ streamlit run pc_admin/admin.py
 ## 技术栈
 
 - 后端：Python + FastAPI + SQLite
-- PC后台：Streamlit
+- PC后台：Vue3 + Element Plus
 - 小程序：微信原生
 - Excel：openpyxl
 ## 微信小程序
@@ -108,6 +108,12 @@ streamlit run pc_admin/admin.py
 2. 在 `app.js` 中修改 `apiBase` 为你的后端地址（默认 `http://localhost:8000/api`）
 3. 模拟器中点击"微信一键登录"或选择测试账号
 4. 开发测试阶段，后端代码用 `POST /api/login` 传入 `worker_001` / `worker_002` 模拟登录
+
+### 小程序姓名和手机号同步
+
+- 现场人员登录后，可在小程序首页填写真实姓名，并点击“授权手机号并同步”。
+- 姓名由现场人员手工填写；手机号通过微信 `getPhoneNumber` 授权后，由后端调用微信接口换取并写入账号资料。
+- 后端需配置 `WECHAT_APPID` 和 `WECHAT_SECRET`，可写入项目根目录 `.env`，`start_backend.bat` 会自动读取。
 
 - 小程序：微信原生开发（18个文件，约31KB）
 - 小程序：微信原生开发

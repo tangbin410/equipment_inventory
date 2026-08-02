@@ -20,6 +20,10 @@ EVIDENCE_RETENTION_DAYS = 30
 DB_TIMEOUT_SECONDS = float(os.getenv("INVENTORY_SQLITE_TIMEOUT_SECONDS", "30"))
 DB_BUSY_TIMEOUT_MS = int(DB_TIMEOUT_SECONDS * 1000)
 DB_BACKUP_KEEP = int(os.getenv("INVENTORY_BACKUP_KEEP", "10"))
+USER_AREA_CORE = "汇聚及核心"
+USER_AREA_CHOICES = ("汇聚及核心", "南区", "北区", "西区")
+USER_AREA_SET = set(USER_AREA_CHOICES)
+USER_AREA_LEGACY_CORE = {"", "全市", "默认片区", "全部片区", "全片区", "*"}
 EVIDENCE_TYPE_COLUMNS = {
     "general": "evidence_photo",
     "asset": "asset_evidence_photo",
@@ -65,19 +69,39 @@ def split_codes(value: str) -> set[str]:
     return {normalize_barcode(code) for code in (value or "").split(",") if normalize_barcode(code)}
 
 
+def normalize_user_area_name(value: str | None, *, strict: bool = True) -> str:
+    """账号负责片区统一收敛到：汇聚及核心、南区、北区、西区。"""
+    raw_value = (value or "").strip()
+    if raw_value in USER_AREA_LEGACY_CORE:
+        if strict:
+            raise ValueError("负责片区只能是：汇聚及核心、南区、北区、西区")
+        return USER_AREA_CORE
+    if raw_value in USER_AREA_SET:
+        return raw_value
+
+    parts = [part.strip() for part in re.split(r"[,，、/;；\s]+", raw_value) if part.strip()]
+    part_set = set(parts)
+    if {"南区", "北区", "西区"}.issubset(part_set):
+        if strict:
+            raise ValueError("负责片区只能是：汇聚及核心、南区、北区、西区，且不允许跨片区")
+        return USER_AREA_CORE
+    if len(part_set) == 1 and next(iter(part_set)) in USER_AREA_SET:
+        return next(iter(part_set))
+    if strict:
+        raise ValueError("负责片区只能是：汇聚及核心、南区、北区、西区")
+    return USER_AREA_CORE
+
+
 def split_area_names(value: str) -> list[str]:
-    """把账号可负责片区拆成列表，支持：北区,南区,西区 / 北区、南区、西区。"""
-    raw_value = (value or "默认片区").strip()
-    if raw_value in {"全部片区", "全片区", "*"}:
-        return ["全部片区"]
-    parts = re.split(r"[,，、/;；\s]+", raw_value)
-    return [part.strip() for part in parts if part.strip()]
+    """账号片区权限列表；账号不允许跨片区。"""
+    return [normalize_user_area_name(value, strict=False)]
 
 
 def user_can_access_area(user_area_name: str, task_area_name: str) -> bool:
     """判断现场账号是否可以查看/领取某个片区的任务。"""
-    areas = split_area_names(user_area_name)
-    return "全部片区" in areas or (task_area_name or "默认片区") in areas
+    user_area = normalize_user_area_name(user_area_name, strict=False)
+    task_area = normalize_user_area_name(task_area_name, strict=False)
+    return user_area == task_area
 
 
 def evidence_photo_path(photo_path: str) -> Path | None:
@@ -367,7 +391,7 @@ def init_db() -> None:
             wx_openid   TEXT UNIQUE,
             name        TEXT NOT NULL,
             role        TEXT NOT NULL CHECK(role IN ('admin', 'worker')),
-            area_name   TEXT DEFAULT '默认片区',
+            area_name   TEXT DEFAULT '汇聚及核心',
             phone       TEXT DEFAULT '',
             employee_no TEXT DEFAULT '',
             is_active   INTEGER NOT NULL DEFAULT 1
@@ -377,7 +401,7 @@ def init_db() -> None:
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             task_name   TEXT NOT NULL,
             room_name   TEXT NOT NULL,
-            area_name   TEXT DEFAULT '默认片区',
+            area_name   TEXT DEFAULT '汇聚及核心',
             assigned_to INTEGER REFERENCES users(id),
             claimed_by  INTEGER REFERENCES users(id),
             status      TEXT NOT NULL DEFAULT 'pending'
@@ -445,11 +469,39 @@ def init_db() -> None:
             prompt_version TEXT DEFAULT '',
             input_summary TEXT DEFAULT '',
             desensitized_payload TEXT DEFAULT '',
+            context_meta TEXT DEFAULT '',
             analysis_result TEXT DEFAULT '',
             status      TEXT NOT NULL DEFAULT 'success',
             error_message TEXT DEFAULT '',
             created_by  INTEGER,
             created_at  TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS ai_adjustment_tasks (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            analysis_id INTEGER NOT NULL REFERENCES ai_analysis_results(id),
+            source_item_index INTEGER NOT NULL DEFAULT 0,
+            source_task_ids_json TEXT DEFAULT '[]',
+            problem_type TEXT DEFAULT '',
+            room_name   TEXT DEFAULT '',
+            device_name TEXT DEFAULT '',
+            area_name   TEXT DEFAULT '汇聚及核心',
+            risk_level  TEXT DEFAULT '',
+            basis       TEXT DEFAULT '',
+            suggestion  TEXT DEFAULT '',
+            priority    TEXT DEFAULT '',
+            status      TEXT NOT NULL DEFAULT 'pending_review'
+                        CHECK(status IN ('pending_review', 'dispatched', 'done', 'rejected')),
+            assigned_to INTEGER REFERENCES users(id),
+            created_by  INTEGER,
+            reviewed_by INTEGER,
+            review_note TEXT DEFAULT '',
+            completed_by INTEGER,
+            completion_note TEXT DEFAULT '',
+            created_at  TEXT NOT NULL,
+            reviewed_at TEXT,
+            dispatched_at TEXT,
+            completed_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS system_settings (
@@ -462,7 +514,7 @@ def init_db() -> None:
     # 兼容已经投入使用的数据库，按列增量升级，不清空历史数据。
     task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
     migrations = {
-        "area_name": "ALTER TABLE tasks ADD COLUMN area_name TEXT DEFAULT '默认片区'",
+        "area_name": "ALTER TABLE tasks ADD COLUMN area_name TEXT DEFAULT '汇聚及核心'",
         "assigned_at": "ALTER TABLE tasks ADD COLUMN assigned_at TEXT",
         "completed_at": "ALTER TABLE tasks ADD COLUMN completed_at TEXT",
         "claimed_by": "ALTER TABLE tasks ADD COLUMN claimed_by INTEGER",
@@ -480,7 +532,7 @@ def init_db() -> None:
             conn.execute(statement)
     user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
     user_migrations = {
-        "area_name": "ALTER TABLE users ADD COLUMN area_name TEXT DEFAULT '默认片区'",
+        "area_name": "ALTER TABLE users ADD COLUMN area_name TEXT DEFAULT '汇聚及核心'",
         "phone": "ALTER TABLE users ADD COLUMN phone TEXT DEFAULT ''",
         "employee_no": "ALTER TABLE users ADD COLUMN employee_no TEXT DEFAULT ''",
         "is_active": "ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1",
@@ -505,6 +557,13 @@ def init_db() -> None:
     }
     for column, statement in record_migrations.items():
         if column not in record_columns:
+            conn.execute(statement)
+    analysis_columns = {row["name"] for row in conn.execute("PRAGMA table_info(ai_analysis_results)")}
+    analysis_migrations = {
+        "context_meta": "ALTER TABLE ai_analysis_results ADD COLUMN context_meta TEXT DEFAULT ''",
+    }
+    for column, statement in analysis_migrations.items():
+        if column not in analysis_columns:
             conn.execute(statement)
     drop_review_columns(conn)
     conn.executescript("""
@@ -541,6 +600,10 @@ def init_db() -> None:
             ON idempotency_keys(user_id, action, request_id);
         CREATE INDEX IF NOT EXISTS idx_ai_analysis_created
             ON ai_analysis_results(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_ai_adjustment_status
+            ON ai_adjustment_tasks(status, area_name, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_ai_adjustment_assignee
+            ON ai_adjustment_tasks(assigned_to, status, created_at DESC);
     """)
     conn.execute(
         """INSERT OR IGNORE INTO system_settings (key, value, updated_at)
@@ -554,14 +617,22 @@ def init_db() -> None:
     """)
     conn.execute("""
         UPDATE tasks
-        SET area_name = '默认片区'
+        SET area_name = '汇聚及核心'
         WHERE area_name IS NULL OR area_name = ''
     """)
+    for row in conn.execute("SELECT id, area_name FROM tasks").fetchall():
+        normalized_area = normalize_user_area_name(row["area_name"], strict=False)
+        if normalized_area != row["area_name"]:
+            conn.execute("UPDATE tasks SET area_name = ? WHERE id = ?", (normalized_area, row["id"]))
     conn.execute("""
         UPDATE users
-        SET area_name = '默认片区'
-        WHERE role = 'worker' AND (area_name IS NULL OR area_name = '')
+        SET area_name = '汇聚及核心'
+        WHERE area_name IS NULL OR area_name = ''
     """)
+    for row in conn.execute("SELECT id, area_name FROM users").fetchall():
+        normalized_area = normalize_user_area_name(row["area_name"], strict=False)
+        if normalized_area != row["area_name"]:
+            conn.execute("UPDATE users SET area_name = ? WHERE id = ?", (normalized_area, row["id"]))
     conn.execute("""
         UPDATE tasks
         SET claimed_by = assigned_to,
@@ -680,6 +751,7 @@ def save_ai_analysis_result(
     prompt_version: str,
     input_summary: str,
     desensitized_payload: str,
+    context_meta: str,
     analysis_result: str,
     status: str,
     error_message: str,
@@ -691,9 +763,9 @@ def save_ai_analysis_result(
         cur = conn.execute(
             """INSERT INTO ai_analysis_results
                (task_ids_json, analysis_scope, model_provider, model_name, prompt_version,
-                input_summary, desensitized_payload, analysis_result, status, error_message,
+                input_summary, desensitized_payload, context_meta, analysis_result, status, error_message,
                 created_by, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 json.dumps(task_ids, ensure_ascii=False),
                 analysis_scope,
@@ -702,6 +774,7 @@ def save_ai_analysis_result(
                 prompt_version,
                 input_summary,
                 desensitized_payload,
+                context_meta,
                 analysis_result,
                 status,
                 error_message,
@@ -711,6 +784,274 @@ def save_ai_analysis_result(
         )
         conn.commit()
         return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_ai_analysis_result(result_id: int) -> dict[str, Any] | None:
+    """按 ID 读取一次 AI 分析结果。"""
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT * FROM ai_analysis_results WHERE id = ?", (result_id,)).fetchone()
+        return dict_from_row(row)
+    finally:
+        conn.close()
+
+
+def get_latest_ai_analysis_result() -> dict[str, Any] | None:
+    """读取最近一次 AI 分析结果。"""
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT * FROM ai_analysis_results ORDER BY created_at DESC, id DESC LIMIT 1").fetchone()
+        return dict_from_row(row)
+    finally:
+        conn.close()
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _derive_adjustment_area(room_name: str, tasks: list[dict[str, Any]]) -> str:
+    room_text = _text(room_name)
+    for task in tasks:
+        task_room = _text(task.get("room_name"))
+        if task_room and (task_room in room_text or room_text in task_room):
+            return normalize_user_area_name(task.get("area_name"), strict=False)
+    return normalize_user_area_name(tasks[0].get("area_name"), strict=False) if tasks else USER_AREA_CORE
+
+
+def _adjustment_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    item = dict_from_row(row)
+    if item is None:
+        return None
+    try:
+        item["source_task_ids"] = json.loads(item.pop("source_task_ids_json") or "[]")
+    except json.JSONDecodeError:
+        item["source_task_ids"] = []
+    return item
+
+
+def create_ai_adjustment_drafts(
+    analysis_id: int,
+    task_ids: list[int],
+    analysis_items: list[dict[str, Any]],
+    source_tasks: list[dict[str, Any]],
+    created_by: int | None,
+) -> list[dict[str, Any]]:
+    """把 AI 分析清单转成待管理员审核的整改草稿。"""
+    conn = get_conn()
+    try:
+        rows = []
+        now = datetime.now().isoformat()
+        source_task_ids_json = json.dumps(task_ids, ensure_ascii=False)
+        for index, item in enumerate(analysis_items):
+            problem_type = _text(item.get("问题类型"))
+            suggestion = _text(item.get("整改建议"))
+            if not problem_type and not suggestion:
+                continue
+            room_name = _text(item.get("涉及机房"))
+            rows.append((
+                analysis_id,
+                index,
+                source_task_ids_json,
+                problem_type,
+                room_name,
+                _text(item.get("涉及设备")),
+                _derive_adjustment_area(room_name, source_tasks),
+                _text(item.get("风险等级")),
+                _text(item.get("判断依据")),
+                suggestion,
+                _text(item.get("优先级")),
+                created_by,
+                now,
+            ))
+        if not rows:
+            return []
+        conn.executemany(
+            """INSERT INTO ai_adjustment_tasks
+               (analysis_id, source_item_index, source_task_ids_json, problem_type, room_name,
+                device_name, area_name, risk_level, basis, suggestion, priority, created_by, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        conn.commit()
+        task_rows = conn.execute(
+            """SELECT a.*, assignee.name AS assigned_name, reviewer.name AS reviewed_name, closer.name AS completed_name
+               FROM ai_adjustment_tasks a
+               LEFT JOIN users assignee ON assignee.id = a.assigned_to
+               LEFT JOIN users reviewer ON reviewer.id = a.reviewed_by
+               LEFT JOIN users closer ON closer.id = a.completed_by
+               WHERE a.analysis_id = ?
+               ORDER BY a.id""",
+            (analysis_id,),
+        ).fetchall()
+        return [_adjustment_from_row(row) for row in task_rows if row is not None]
+    finally:
+        conn.close()
+
+
+def list_ai_adjustment_tasks(status: str = "") -> list[dict[str, Any]]:
+    """管理员查询 AI 整改草稿和闭环状态。"""
+    allowed_status = {"pending_review", "dispatched", "done", "rejected"}
+    where_sql = "1 = 1"
+    params: tuple[Any, ...] = ()
+    if status:
+        if status not in allowed_status:
+            raise ValueError("整改任务状态无效")
+        where_sql = "a.status = ?"
+        params = (status,)
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            f"""SELECT a.*, assignee.name AS assigned_name, reviewer.name AS reviewed_name, closer.name AS completed_name
+                FROM ai_adjustment_tasks a
+                LEFT JOIN users assignee ON assignee.id = a.assigned_to
+                LEFT JOIN users reviewer ON reviewer.id = a.reviewed_by
+                LEFT JOIN users closer ON closer.id = a.completed_by
+                WHERE {where_sql}
+                ORDER BY
+                  CASE a.status WHEN 'pending_review' THEN 0 WHEN 'dispatched' THEN 1 WHEN 'done' THEN 2 ELSE 3 END,
+                  a.created_at DESC, a.id DESC""",
+            params,
+        ).fetchall()
+        return [_adjustment_from_row(row) for row in rows if row is not None]
+    finally:
+        conn.close()
+
+
+def dispatch_ai_adjustment_task(
+    adjustment_id: int,
+    assigned_to: int,
+    reviewed_by: int,
+    review_note: str = "",
+) -> dict[str, Any] | None:
+    """管理员审核通过后，下发 AI 整改任务给现场人员。"""
+    conn = get_conn()
+    try:
+        adjustment = conn.execute(
+            "SELECT * FROM ai_adjustment_tasks WHERE id = ?",
+            (adjustment_id,),
+        ).fetchone()
+        if adjustment is None:
+            return None
+        if adjustment["status"] != "pending_review":
+            raise ValueError("只有待审核整改草稿可以下发")
+
+        worker = conn.execute(
+            """SELECT id, area_name FROM users
+               WHERE id = ? AND role = 'worker' AND is_active = 1 AND COALESCE(is_deleted, 0) = 0""",
+            (assigned_to,),
+        ).fetchone()
+        if worker is None:
+            raise ValueError("请选择有效的现场人员")
+        if not user_can_access_area(worker["area_name"], adjustment["area_name"]):
+            raise ValueError("现场人员片区与整改任务片区不一致")
+
+        now = datetime.now().isoformat()
+        conn.execute(
+            """UPDATE ai_adjustment_tasks
+               SET status = 'dispatched', assigned_to = ?, reviewed_by = ?, review_note = ?,
+                   reviewed_at = ?, dispatched_at = ?
+               WHERE id = ?""",
+            (assigned_to, reviewed_by, review_note.strip(), now, now, adjustment_id),
+        )
+        conn.commit()
+        row = conn.execute(
+            """SELECT a.*, assignee.name AS assigned_name, reviewer.name AS reviewed_name, closer.name AS completed_name
+               FROM ai_adjustment_tasks a
+               LEFT JOIN users assignee ON assignee.id = a.assigned_to
+               LEFT JOIN users reviewer ON reviewer.id = a.reviewed_by
+               LEFT JOIN users closer ON closer.id = a.completed_by
+               WHERE a.id = ?""",
+            (adjustment_id,),
+        ).fetchone()
+        return _adjustment_from_row(row)
+    finally:
+        conn.close()
+
+
+def reject_ai_adjustment_task(adjustment_id: int, reviewed_by: int, review_note: str = "") -> dict[str, Any] | None:
+    """管理员驳回 AI 整改草稿。"""
+    conn = get_conn()
+    try:
+        adjustment = conn.execute("SELECT status FROM ai_adjustment_tasks WHERE id = ?", (adjustment_id,)).fetchone()
+        if adjustment is None:
+            return None
+        if adjustment["status"] != "pending_review":
+            raise ValueError("只有待审核整改草稿可以驳回")
+        conn.execute(
+            """UPDATE ai_adjustment_tasks
+               SET status = 'rejected', reviewed_by = ?, review_note = ?, reviewed_at = ?
+               WHERE id = ?""",
+            (reviewed_by, review_note.strip(), datetime.now().isoformat(), adjustment_id),
+        )
+        conn.commit()
+        row = conn.execute(
+            """SELECT a.*, assignee.name AS assigned_name, reviewer.name AS reviewed_name, closer.name AS completed_name
+               FROM ai_adjustment_tasks a
+               LEFT JOIN users assignee ON assignee.id = a.assigned_to
+               LEFT JOIN users reviewer ON reviewer.id = a.reviewed_by
+               LEFT JOIN users closer ON closer.id = a.completed_by
+               WHERE a.id = ?""",
+            (adjustment_id,),
+        ).fetchone()
+        return _adjustment_from_row(row)
+    finally:
+        conn.close()
+
+
+def get_my_adjustment_tasks(user_id: int) -> list[dict[str, Any]]:
+    """现场人员查询自己收到的资产整改任务。"""
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """SELECT a.*, assignee.name AS assigned_name, reviewer.name AS reviewed_name, closer.name AS completed_name
+               FROM ai_adjustment_tasks a
+               LEFT JOIN users assignee ON assignee.id = a.assigned_to
+               LEFT JOIN users reviewer ON reviewer.id = a.reviewed_by
+               LEFT JOIN users closer ON closer.id = a.completed_by
+               WHERE a.assigned_to = ? AND a.status IN ('dispatched', 'done')
+               ORDER BY CASE a.status WHEN 'dispatched' THEN 0 ELSE 1 END, a.dispatched_at DESC, a.id DESC""",
+            (user_id,),
+        ).fetchall()
+        return [_adjustment_from_row(row) for row in rows if row is not None]
+    finally:
+        conn.close()
+
+
+def complete_ai_adjustment_task(adjustment_id: int, user_id: int, completion_note: str = "") -> dict[str, Any] | None:
+    """现场人员确认整改完成，进入闭环完成状态。"""
+    conn = get_conn()
+    try:
+        adjustment = conn.execute(
+            "SELECT status, assigned_to FROM ai_adjustment_tasks WHERE id = ?",
+            (adjustment_id,),
+        ).fetchone()
+        if adjustment is None:
+            return None
+        if adjustment["assigned_to"] != user_id:
+            raise ValueError("只能处理下发给自己的整改任务")
+        if adjustment["status"] != "dispatched":
+            raise ValueError("只有已下发的整改任务可以确认完成")
+        now = datetime.now().isoformat()
+        conn.execute(
+            """UPDATE ai_adjustment_tasks
+               SET status = 'done', completed_by = ?, completion_note = ?, completed_at = ?
+               WHERE id = ?""",
+            (user_id, completion_note.strip(), now, adjustment_id),
+        )
+        conn.commit()
+        row = conn.execute(
+            """SELECT a.*, assignee.name AS assigned_name, reviewer.name AS reviewed_name, closer.name AS completed_name
+               FROM ai_adjustment_tasks a
+               LEFT JOIN users assignee ON assignee.id = a.assigned_to
+               LEFT JOIN users reviewer ON reviewer.id = a.reviewed_by
+               LEFT JOIN users closer ON closer.id = a.completed_by
+               WHERE a.id = ?""",
+            (adjustment_id,),
+        ).fetchone()
+        return _adjustment_from_row(row)
     finally:
         conn.close()
 
@@ -812,12 +1153,13 @@ def create_user(
     wx_openid: str,
     name: str,
     role: str,
-    area_name: str = "默认片区",
+    area_name: str = USER_AREA_CORE,
     phone: str = "",
     employee_no: str = "",
     is_active: int = 1,
 ) -> dict[str, Any]:
     """创建或更新用户，供默认账号初始化和 PC 账号管理共用。"""
+    normalized_area = normalize_user_area_name(area_name)
     conn = get_conn()
     try:
         cur = conn.execute(
@@ -828,7 +1170,7 @@ def create_user(
                 wx_openid.strip(),
                 name.strip(),
                 role.strip(),
-                area_name.strip() or "默认片区",
+                normalized_area,
                 phone.strip(),
                 employee_no.strip(),
                 1 if is_active else 0,
@@ -845,7 +1187,7 @@ def create_user(
             (
                 name.strip(),
                 role.strip(),
-                area_name.strip() or "默认片区",
+                normalized_area,
                 phone.strip(),
                 employee_no.strip(),
                 1 if is_active else 0,
@@ -903,8 +1245,9 @@ def get_workers() -> list[dict[str, Any]]:
 # 任务相关
 # ──────────────────────────────────────────────
 
-def create_task(task_name: str, room_name: str, assigned_to: int | None, area_name: str = "默认片区") -> int:
+def create_task(task_name: str, room_name: str, assigned_to: int | None, area_name: str = USER_AREA_CORE) -> int:
     """创建盘点任务，返回新任务ID"""
+    normalized_area = normalize_user_area_name(area_name)
     conn = get_conn()
     try:
         now = datetime.now().isoformat()
@@ -916,7 +1259,7 @@ def create_task(task_name: str, room_name: str, assigned_to: int | None, area_na
             (
                 task_name,
                 room_name,
-                area_name or "默认片区",
+                normalized_area,
                 assigned_to,
                 assigned_to,
                 status,
@@ -941,8 +1284,8 @@ def update_user(user_id: int, data: dict[str, Any]) -> dict[str, Any] | None:
     for text_field in ["wx_openid", "name", "role", "area_name", "phone", "employee_no"]:
         if text_field in update_data and update_data[text_field] is not None:
             update_data[text_field] = str(update_data[text_field]).strip()
-    if "area_name" in update_data and not update_data["area_name"]:
-        update_data["area_name"] = "默认片区"
+    if "area_name" in update_data:
+        update_data["area_name"] = normalize_user_area_name(update_data["area_name"])
     if "is_active" in update_data:
         update_data["is_active"] = 1 if update_data["is_active"] else 0
 
@@ -1071,13 +1414,9 @@ def get_area_tasks(user_id: int) -> list[dict[str, Any]]:
         if user is None:
             return []
         user_areas = split_area_names(user["area_name"])
-        if "全部片区" in user_areas:
-            where_sql = "1 = 1"
-            params = ()
-        else:
-            placeholders = ",".join("?" for _ in user_areas)
-            where_sql = f"t.area_name IN ({placeholders})"
-            params = tuple(user_areas)
+        placeholders = ",".join("?" for _ in user_areas)
+        where_sql = f"t.area_name IN ({placeholders})"
+        params = tuple(user_areas)
         rows = conn.execute(
             _task_stat_select(where_sql) + " ORDER BY CASE t.status WHEN 'pending' THEN 0 WHEN 'doing' THEN 1 ELSE 2 END, t.area_name, t.created_at DESC",
             params,
@@ -1115,13 +1454,9 @@ def claim_task(task_id: int, user_id: int) -> tuple[bool, str]:
 
         now = datetime.now().isoformat()
         user_areas = split_area_names(user["area_name"])
-        if "全部片区" in user_areas:
-            area_limit_sql = "1 = 1"
-            params = (user_id, user_id, now, now, task_id)
-        else:
-            placeholders = ",".join("?" for _ in user_areas)
-            area_limit_sql = f"area_name IN ({placeholders})"
-            params = (user_id, user_id, now, now, task_id, *user_areas)
+        placeholders = ",".join("?" for _ in user_areas)
+        area_limit_sql = f"area_name IN ({placeholders})"
+        params = (user_id, user_id, now, now, task_id, *user_areas)
         cur = conn.execute(
             f"""UPDATE tasks
                SET claimed_by = ?, assigned_to = ?, claimed_at = ?, assigned_at = ?,

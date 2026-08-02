@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import io
+import hashlib
+import hmac
 import json
 import os
+import time
 from collections import Counter
 from pathlib import Path
-from urllib.parse import quote, urlencode
-from urllib.request import urlopen
+from urllib.parse import quote, urlencode, urlparse, urlunparse
+from urllib.request import Request, urlopen
 from uuid import uuid4
 
 import openpyxl
@@ -16,25 +19,32 @@ from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Q
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
-from .ai_agent import analyze_inventory, build_inventory_rows, check_model_available
+from .ai_agent import analyze_inventory, build_inventory_rows, chat_inventory, check_model_available
 from .database import (
     assign_task,
     batch_assign_tasks,
     batch_create_records,
     cleanup_expired_evidence_photos,
+    complete_ai_adjustment_task,
     create_audit_log,
+    create_ai_adjustment_drafts,
     create_surplus_record,
     create_task,
     create_user,
     delete_user,
     delete_task,
+    dispatch_ai_adjustment_task,
     claim_task,
     get_all_tasks,
     get_area_tasks,
     get_audit_logs,
+    get_ai_analysis_result,
     get_claimed_tasks,
+    get_latest_ai_analysis_result,
     get_conn,
     get_idempotent_result,
+    list_ai_adjustment_tasks,
+    get_my_adjustment_tasks,
     get_report,
     get_system_setting,
     get_record_by_id,
@@ -45,10 +55,14 @@ from .database import (
     get_user_for_auth,
     get_users,
     get_workers,
+    USER_AREA_CHOICES,
+    USER_AREA_CORE,
     evidence_photo_is_valid,
     evidence_photo_path,
     init_db,
     mark_record_missing,
+    normalize_user_area_name,
+    reject_ai_adjustment_task,
     release_task,
     save_evidence_photo,
     save_ai_analysis_result,
@@ -61,22 +75,36 @@ from .database import (
     add_task_field_status,
 )
 from .models import (
+    AdjustmentCompleteRequest,
+    AIAdjustmentDispatchRequest,
+    AIAdjustmentRejectRequest,
+    AIChatRequest,
     AIAnalysisRequest,
     AdminLoginRequest,
     LoginRequest,
     MissingSubmitRequest,
+    ProfileBindRequest,
     ScanResponse,
     ScanSubmitRequest,
     SurplusSubmitRequest,
     UserCreateRequest,
-    UploadResponse,
     UserUpdateRequest,
     UserOut,
 )
-from .auth import create_access_token, decode_access_token, hash_password, verify_password
+from .auth import create_access_token, decode_access_token, hash_password, require_secret_configured, verify_password
 
 app = FastAPI(title="机房资产盘点系统", version="1.0.0")
 EVIDENCE_DIR = Path(__file__).resolve().parent.parent / "data" / "evidence"
+MAX_EXCEL_BYTES = int(os.getenv("INVENTORY_MAX_EXCEL_MB", "20")) * 1024 * 1024
+MAX_PHOTO_BYTES = int(os.getenv("INVENTORY_MAX_PHOTO_MB", "10")) * 1024 * 1024
+EVIDENCE_URL_TTL_SECONDS = int(os.getenv("INVENTORY_EVIDENCE_URL_TTL_SECONDS", "600"))
+_WECHAT_ACCESS_TOKEN_CACHE: dict[str, str | int] = {"token": "", "expires_at": 0}
+
+
+def _cors_origins() -> list[str]:
+    raw = os.getenv("INVENTORY_CORS_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173")
+    origins = [item.strip() for item in raw.split(",") if item.strip()]
+    return origins or ["http://127.0.0.1:5173"]
 
 
 def expired_evidence_response() -> HTMLResponse:
@@ -91,9 +119,30 @@ def expired_evidence_response() -> HTMLResponse:
         status_code=410,
     )
 
+
+def _evidence_signature(filename: str, expires: int) -> str:
+    secret = os.getenv("INVENTORY_SECRET_KEY", "")
+    message = f"{filename}:{expires}".encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def _evidence_url(filename: str) -> str:
+    if not filename:
+        return ""
+    expires = int(time.time()) + EVIDENCE_URL_TTL_SECONDS
+    query = urlencode({"expires": str(expires), "signature": _evidence_signature(filename, expires)})
+    return f"/api/evidence/{quote(filename, safe='/')}?{query}"
+
+
+def _attach_evidence_urls(record: dict) -> dict:
+    for column in ("evidence_photo", "asset_evidence_photo", "cabinet_evidence_photo"):
+        value = record.get(column) or ""
+        record[f"{column}_url"] = _evidence_url(value) if value else ""
+    return record
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -103,19 +152,20 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     """启动时初始化数据库，并创建默认用户。"""
+    require_secret_configured()
     init_db()
     cleanup_expired_evidence_photos()
-    admin = create_user("admin_001", "管理员", "admin", "默认片区")
+    admin = create_user("admin_001", "管理员", "admin", USER_AREA_CORE)
     configured_password = os.getenv("INVENTORY_ADMIN_PASSWORD", "")
     if configured_password:
         set_password_hash(admin["id"], hash_password(configured_password))
     elif not admin.get("password_hash"):
-        set_password_hash(admin["id"], hash_password("admin_001"))
+        raise RuntimeError("首次启动缺少 INVENTORY_ADMIN_PASSWORD，无法创建管理员密码")
     create_user("worker_001", "张三", "worker", "北区")
     create_user("worker_002", "李四", "worker", "南区")
     create_user("worker_003", "王五", "worker", "西区")
     create_user("worker_004", "赵六", "worker", "南区")
-    create_user("worker_005", "周班长", "worker", "北区,南区,西区")
+    create_user("worker_005", "周班长", "worker", USER_AREA_CORE)
 
 
 def current_user(authorization: str = Header("")) -> dict:
@@ -174,7 +224,21 @@ def _load_workbook(file_content: bytes):
     try:
         return openpyxl.load_workbook(io.BytesIO(file_content), data_only=True)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Excel 文件读取失败：{exc}") from exc
+        raise HTTPException(status_code=400, detail="Excel 文件读取失败，请确认上传的是有效 .xlsx 文件") from exc
+
+
+async def _read_excel_upload(file: UploadFile) -> bytes:
+    """读取上传的 Excel，并做基础安全校验。"""
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix != ".xlsx":
+        raise HTTPException(status_code=400, detail="仅支持 .xlsx 格式的 Excel 文件")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Excel 文件不能为空")
+    if len(content) > MAX_EXCEL_BYTES:
+        max_mb = MAX_EXCEL_BYTES // 1024 // 1024
+        raise HTTPException(status_code=400, detail=f"Excel 文件不能超过 {max_mb}MB")
+    return content
 
 
 def _build_col_map(ws) -> dict[str, int]:
@@ -212,7 +276,18 @@ def _find_col(col_map: dict[str, int], candidates: tuple[str, ...]) -> str | Non
     return None
 
 
-def _parse_excel_devices(ws, fixed_room_name: str | None = None, fixed_area_name: str = "默认片区") -> dict[str, list[dict]]:
+def _normalize_import_area_name(value: str | None, row_no: int | str = "") -> str:
+    area_name = str(value or "").strip()
+    if area_name in USER_AREA_CHOICES:
+        return area_name
+    location = f"第 {row_no} 行" if row_no else "当前表单"
+    raise HTTPException(
+        status_code=400,
+        detail=f"{location}机房所在片区不合法：{area_name or '空'}。只允许：{'、'.join(USER_AREA_CHOICES)}",
+    )
+
+
+def _parse_excel_devices(ws, fixed_room_name: str | None = None, fixed_area_name: str = USER_AREA_CORE) -> dict[str, list[dict]]:
     """解析设备清单，并按机房名称分组。"""
     col_map = _build_col_map(ws)
     room_col = _find_room_col(col_map)
@@ -252,10 +327,10 @@ def _parse_excel_devices(ws, fixed_room_name: str | None = None, fixed_area_name
             room_name = str(raw_room_name).strip() if raw_room_name else ""
         if not room_name:
             continue
-        area_name = fixed_area_name or "默认片区"
+        area_name = _normalize_import_area_name(fixed_area_name)
         if fixed_room_name is None and area_col is not None:
             raw_area_name = row[col_map[area_col]]
-            area_name = str(raw_area_name).strip() if raw_area_name else ""
+            area_name = _normalize_import_area_name(raw_area_name, row_no)
 
         raw_model = row[col_map[model_col]]
         raw_barcode = row[col_map[barcode_col]]
@@ -393,6 +468,69 @@ def _validate_user_payload(wx_openid: str | None, name: str | None, role: str | 
         raise HTTPException(status_code=400, detail="角色只能是 admin 或 worker")
     if area_name is not None and not area_name.strip():
         raise HTTPException(status_code=400, detail="负责片区不能为空")
+    if area_name is not None:
+        try:
+            normalize_user_area_name(area_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _wechat_config() -> tuple[str, str]:
+    appid = os.getenv("WECHAT_APPID", "").strip()
+    secret = os.getenv("WECHAT_SECRET", "").strip()
+    if not appid or not secret:
+        raise HTTPException(status_code=503, detail="服务器未配置 WECHAT_APPID/WECHAT_SECRET，无法获取手机号")
+    return appid, secret
+
+
+def _get_wechat_access_token() -> str:
+    appid, secret = _wechat_config()
+    now = int(time.time())
+    cached_token = str(_WECHAT_ACCESS_TOKEN_CACHE.get("token") or "")
+    cached_expires_at = int(_WECHAT_ACCESS_TOKEN_CACHE.get("expires_at") or 0)
+    if cached_token and cached_expires_at > now + 60:
+        return cached_token
+
+    url = "https://api.weixin.qq.com/cgi-bin/token?" + urlencode({
+        "grant_type": "client_credential",
+        "appid": appid,
+        "secret": secret,
+    })
+    try:
+        result = json.loads(urlopen(url, timeout=8).read())
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="微信 access_token 获取失败") from exc
+    token = result.get("access_token", "")
+    if not token:
+        message = result.get("errmsg") or "微信 access_token 返回异常"
+        raise HTTPException(status_code=502, detail=f"微信 access_token 获取失败：{message}")
+    expires_in = int(result.get("expires_in") or 7200)
+    _WECHAT_ACCESS_TOKEN_CACHE["token"] = token
+    _WECHAT_ACCESS_TOKEN_CACHE["expires_at"] = now + max(expires_in - 120, 300)
+    return token
+
+
+def _get_phone_number_from_wechat(phone_code: str) -> str:
+    code = phone_code.strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="手机号授权凭证不能为空")
+    access_token = _get_wechat_access_token()
+    url = "https://api.weixin.qq.com/wxa/business/getuserphonenumber?" + urlencode({"access_token": access_token})
+    payload = json.dumps({"code": code}).encode("utf-8")
+    try:
+        req = Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+        result = json.loads(urlopen(req, timeout=8).read())
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="微信手机号接口暂不可用") from exc
+
+    if int(result.get("errcode") or 0) != 0:
+        message = result.get("errmsg") or "微信手机号接口返回错误"
+        raise HTTPException(status_code=502, detail=f"微信手机号获取失败：{message}")
+    phone_info = result.get("phone_info") or {}
+    phone_number = str(phone_info.get("phoneNumber") or phone_info.get("purePhoneNumber") or "").strip()
+    if not phone_number:
+        raise HTTPException(status_code=502, detail="微信手机号接口未返回手机号")
+    return phone_number
 
 
 @app.get("/api/workers", response_model=list[UserOut])
@@ -479,7 +617,7 @@ def api_login(req: LoginRequest):
     code = req.code.strip()
     if not code:
         raise HTTPException(status_code=400, detail="登录凭证不能为空")
-    if os.getenv("INVENTORY_DEV_LOGIN", "1") == "1" and code.startswith("worker_"):
+    if os.getenv("INVENTORY_DEV_LOGIN", "0") == "1" and code.startswith("worker_"):
         openid = code
     else:
         appid = os.getenv("WECHAT_APPID", "")
@@ -497,7 +635,7 @@ def api_login(req: LoginRequest):
     user = get_user_by_openid(openid)
     if not user:
         if os.getenv("INVENTORY_ALLOW_LOGIN_REQUESTS", "0") == "1":
-            user = create_user(openid, "待绑定用户", "worker", "默认片区", is_active=0)
+            user = create_user(openid, "待绑定用户", "worker", USER_AREA_CORE, is_active=0)
             _audit(None, "worker.login_request", "user", user["id"], {"wx_openid": openid})
             raise HTTPException(status_code=403, detail="账号待管理员启用，请联系管理员")
         raise HTTPException(status_code=401, detail="登录失败，用户不存在")
@@ -506,46 +644,34 @@ def api_login(req: LoginRequest):
     _audit(user, "worker.login", "user", user["id"])
     return {
         "user_id": user["id"], "name": user["name"], "role": user["role"],
-        "area_name": user["area_name"] or "默认片区", "access_token": create_access_token(user),
+        "area_name": user["area_name"] or USER_AREA_CORE, "phone": user.get("phone") or "",
+        "access_token": create_access_token(user),
     }
 
 
-@app.post("/api/upload", response_model=UploadResponse)
-async def api_upload(
-    file: UploadFile = File(...),
-    room_name: str = Form(...),
-    task_name: str = Form(""),
-    assigned_to: int | None = Form(None),
-    area_name: str = Form("默认片区"),
-    force_import: bool = Form(False),
-    actor: dict = Depends(admin_user),
-):
-    """上传单个机房清单，保留给旧页面或外部调用。"""
-    wb = _load_workbook(await file.read())
-    rooms = _parse_excel_devices(wb.active, fixed_room_name=room_name, fixed_area_name=area_name)
-    preview = _preview_rooms(rooms)
-    if not preview["valid"] and not force_import:
-        raise HTTPException(status_code=400, detail="清单预检未通过，请先处理空资产条码、重复网元、重复标签或空设备型号")
-    devices = rooms[room_name]
-
-    final_task_name = task_name if task_name else f"{room_name}-盘点"
-    task_id = create_task(final_task_name, room_name, assigned_to, area_name)
-    count = batch_create_records(task_id, devices)
-    error_count = sum(1 for row in preview.get("issue_rows", []) if row.get("级别") == "错误")
-    _audit(
-        actor,
-        "task.import",
-        "task",
-        task_id,
-        {"room_name": room_name, "area_name": area_name, "device_count": count, "force_import": force_import, "error_count": error_count},
-    )
-    message_prefix = "已按管理员确认继续导入；" if force_import and error_count else ""
-    return UploadResponse(
-        task_id=task_id,
-        task_name=final_task_name,
-        device_count=count,
-        message=f"{message_prefix}成功导入 {count} 台设备，任务已创建。",
-    )
+@app.post("/api/me/profile")
+def api_bind_profile(req: ProfileBindRequest, user: dict = Depends(current_user)):
+    """小程序提交姓名并授权手机号后，服务端换取手机号并更新当前账号资料。"""
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="姓名不能为空")
+    phone = _get_phone_number_from_wechat(req.code)
+    updated_user = update_user(user["id"], {"name": name, "phone": phone})
+    if updated_user is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    _audit(user, "worker.profile.bind", "user", user["id"], {"name_updated": True, "phone_bound": True})
+    return {
+        "success": True,
+        "message": "手机号已更新",
+        "user": {
+            "user_id": updated_user["id"],
+            "name": updated_user["name"],
+            "role": updated_user["role"],
+            "area_name": updated_user["area_name"] or USER_AREA_CORE,
+            "phone": updated_user.get("phone") or "",
+            "access_token": create_access_token(updated_user),
+        },
+    }
 
 
 @app.post("/api/upload_rooms")
@@ -555,7 +681,7 @@ async def api_upload_rooms(
     actor: dict = Depends(admin_user),
 ):
     """上传包含多个机房的清单，按机房自动生成片区待领取任务。"""
-    wb = _load_workbook(await file.read())
+    wb = _load_workbook(await _read_excel_upload(file))
     rooms = _parse_excel_devices(wb.active)
     preview = _preview_rooms(rooms)
     if not preview["valid"] and not force_import:
@@ -565,7 +691,7 @@ async def api_upload_rooms(
     total_devices = 0
     error_count = sum(1 for row in preview.get("issue_rows", []) if row.get("级别") == "错误")
     for room_name, devices in rooms.items():
-        area_name = (devices[0].get("_area_name") or "默认片区").strip() if devices else "默认片区"
+        area_name = (devices[0].get("_area_name") or USER_AREA_CORE).strip() if devices else USER_AREA_CORE
         task_name = f"{room_name}-盘点"
         task_id = create_task(task_name, room_name, None, area_name)
         count = batch_create_records(task_id, devices)
@@ -597,7 +723,7 @@ async def api_upload_rooms(
 @app.post("/api/upload_rooms/preview")
 async def api_preview_upload_rooms(file: UploadFile = File(...), _: dict = Depends(admin_user)):
     """预检多机房清单，不写入数据库。"""
-    wb = _load_workbook(await file.read())
+    wb = _load_workbook(await _read_excel_upload(file))
     return _preview_rooms(_parse_excel_devices(wb.active))
 
 
@@ -608,7 +734,7 @@ def api_upload_template(_: dict = Depends(admin_user)):
     ws = wb.active
     ws.title = "盘点任务清单"
     ws.append(["机房名称", "机房所在片区", "网元名称", "设备型号", "资产标签号", "网元类型", "设备类别", "所属机房业务级别", "生命周期状态", "维护专业"])
-    ws.append(["示例机房", "东区", "NE-001", "OptiX PTN 980B", "ASSET-001", "传输网元", "传输设备", "重要", "在网", "传输"])
+    ws.append(["示例机房", USER_AREA_CORE, "NE-001", "OptiX PTN 980B", "ASSET-001", "传输网元", "传输设备", "重要", "在网", "传输"])
     output = io.BytesIO()
     wb.save(output)
     return Response(
@@ -619,27 +745,25 @@ def api_upload_template(_: dict = Depends(admin_user)):
 
 
 @app.get("/api/tasks")
-def api_tasks(user_id: int | None = None, _: dict = Depends(admin_user)):
-    """查询任务列表。传 user_id 时兼容旧版小程序：只查该现场人员已领取任务。"""
-    if user_id:
-        return get_claimed_tasks(user_id)
+def api_tasks(_: dict = Depends(admin_user)):
+    """查询任务列表。"""
     return get_all_tasks()
 
 
 @app.get("/api/tasks/area")
-def api_area_tasks(user_id: int | None = None, user: dict = Depends(current_user)):
+def api_area_tasks(user: dict = Depends(current_user)):
     """小程序领任务页：查询当前用户所在片区的任务池。"""
     return get_area_tasks(user["id"])
 
 
 @app.get("/api/tasks/my")
-def api_my_tasks(user_id: int | None = None, user: dict = Depends(current_user)):
+def api_my_tasks(user: dict = Depends(current_user)):
     """小程序我的任务页：查询当前用户已经领取的任务。"""
     return get_claimed_tasks(user["id"])
 
 
 @app.post("/api/tasks/{task_id}/claim")
-def api_claim_task(task_id: int, user_id: int | None = Body(None, embed=True), user: dict = Depends(current_user)):
+def api_claim_task(task_id: int, user: dict = Depends(current_user)):
     """现场人员领取所在片区的待领取任务。"""
     if user["role"] != "worker":
         raise HTTPException(status_code=403, detail="仅现场人员可领取任务")
@@ -653,7 +777,6 @@ def api_claim_task(task_id: int, user_id: int | None = Body(None, embed=True), u
 @app.post("/api/tasks/{task_id}/release")
 def api_release_task(
     task_id: int,
-    user_id: int | None = Body(None, embed=True),
     reason: str = Body("", embed=True),
     user: dict = Depends(current_user),
 ):
@@ -699,7 +822,7 @@ def api_delete_task(task_id: int, reason: str = "管理员作废", actor: dict =
 def api_task_items(task_id: int, user: dict = Depends(current_user)):
     """查询某个任务下的设备清单。"""
     task = _require_task_access(user, task_id)
-    return {"task": task, "items": get_task_items(task_id)}
+    return {"task": task, "items": [_attach_evidence_urls(item) for item in get_task_items(task_id)]}
 
 
 @app.post("/api/scan", response_model=ScanResponse)
@@ -830,9 +953,12 @@ async def api_upload_evidence(
     suffix = Path(file.filename or "photo.jpg").suffix.lower()
     if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
         raise HTTPException(status_code=400, detail="仅支持 JPG、PNG 或 WebP 图片")
+    if file.content_type and file.content_type not in {"image/jpeg", "image/png", "image/webp", "application/octet-stream"}:
+        raise HTTPException(status_code=400, detail="照片文件类型无效")
     content = await file.read()
-    if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="照片不能超过 10MB")
+    if len(content) > MAX_PHOTO_BYTES:
+        max_mb = MAX_PHOTO_BYTES // 1024 // 1024
+        raise HTTPException(status_code=400, detail=f"照片不能超过 {max_mb}MB")
     evidence_dir = EVIDENCE_DIR / f"task_{record['task_id']}" / f"record_{record_id}"
     evidence_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{record_id}_{evidence_type}_{uuid4().hex}{suffix}"
@@ -847,16 +973,13 @@ async def api_upload_evidence(
 
 
 @app.get("/api/evidence/{filename:path}")
-def api_evidence(filename: str, access_token: str = Query("")):
+def api_evidence(filename: str, expires: int = Query(0), signature: str = Query("")):
     """查看现场照片凭证。"""
-    payload = decode_access_token(access_token)
-    user = get_user_for_auth(int(payload["sub"])) if payload else None
-    if not user:
-        raise HTTPException(status_code=401, detail="登录已失效，请重新登录")
-    match = __import__("re").search(r"(?:^|/)record_(\d+)(?:/|$)|(?:^|/)(\d+)_", filename)
-    if not match:
-        raise HTTPException(status_code=400, detail="照片路径不合法")
-    _require_record_access(user, int(match.group(1) or match.group(2)))
+    if expires < int(time.time()):
+        raise HTTPException(status_code=401, detail="照片访问链接已过期")
+    expected = _evidence_signature(filename, expires)
+    if not signature or not hmac.compare_digest(signature, expected):
+        raise HTTPException(status_code=401, detail="照片访问签名无效")
     cleanup_expired_evidence_photos()
     path = evidence_photo_path(filename)
     if path is None:
@@ -878,7 +1001,7 @@ def api_report(task_id: int, user: dict = Depends(current_user)):
     """获取单个任务盘点报告。"""
     cleanup_expired_evidence_photos()
     task = _require_task_access(user, task_id)
-    records = get_report(task_id)
+    records = [_attach_evidence_urls(record) for record in get_report(task_id)]
     inventory_records = [r for r in records if (r.get("record_type") or "normal") != "surplus"]
     return {
         "task": task,
@@ -973,7 +1096,7 @@ def api_summary(_: dict = Depends(admin_user)):
                     "id": task_id,
                     "task_name": data["task_name"],
                     "room_name": data["room_name"],
-                    "area_name": data["area_name"] or "默认片区",
+                    "area_name": data["area_name"] or USER_AREA_CORE,
                     "status": data["status"],
                     "created_at": data["created_at"],
                     "assigned_at": data["assigned_at"],
@@ -1006,7 +1129,7 @@ def api_summary(_: dict = Depends(admin_user)):
                     "created_by": data["created_by"],
                     "evidence_photo": data["evidence_photo"],
                 })
-                tasks_map[task_id]["records"].append(record)
+                tasks_map[task_id]["records"].append(_attach_evidence_urls(record))
                 if record["scanned_at"]:
                     current_last = tasks_map[task_id]["last_scanned_at"]
                     tasks_map[task_id]["last_scanned_at"] = max(current_last, record["scanned_at"])
@@ -1054,6 +1177,8 @@ def api_ai_analyze(payload: AIAnalysisRequest, actor: dict = Depends(admin_user)
             "prompt_version": "",
             "input_summary": "",
             "desensitized_payload": "",
+            "context_meta": {},
+            "tool_manifest": [],
             "analysis_items": [],
         }
         analysis_result = "[]"
@@ -1068,12 +1193,27 @@ def api_ai_analyze(payload: AIAnalysisRequest, actor: dict = Depends(admin_user)
         prompt_version=result["prompt_version"],
         input_summary=result["input_summary"],
         desensitized_payload=result["desensitized_payload"],
+        context_meta=json.dumps(result.get("context_meta") or {}, ensure_ascii=False),
         analysis_result=analysis_result,
         status=status,
         error_message=error_message,
         created_by=actor.get("id"),
     )
-    _audit(actor, "ai.analyze", "ai_analysis", analysis_id, {"task_ids": task_ids, "status": status})
+    adjustment_drafts = []
+    if status == "success":
+        adjustment_drafts = create_ai_adjustment_drafts(
+            analysis_id=analysis_id,
+            task_ids=task_ids,
+            analysis_items=result["analysis_items"],
+            source_tasks=tasks,
+            created_by=actor.get("id"),
+        )
+    _audit(actor, "ai.analyze", "ai_analysis", analysis_id, {
+        "task_ids": task_ids,
+        "status": status,
+        "context_meta": result.get("context_meta") or {},
+        "adjustment_draft_count": len(adjustment_drafts),
+    })
     return {
         "id": analysis_id,
         "status": status,
@@ -1082,7 +1222,186 @@ def api_ai_analyze(payload: AIAnalysisRequest, actor: dict = Depends(admin_user)
         "input_summary": result["input_summary"],
         "model_provider": result["model_provider"],
         "model_name": result["model_name"],
+        "context_meta": result.get("context_meta") or {},
+        "tool_manifest": result.get("tool_manifest") or [],
+        "adjustment_drafts": adjustment_drafts,
     }
+
+
+@app.post("/api/ai/chat")
+def api_ai_chat(payload: AIChatRequest, actor: dict = Depends(admin_user)):
+    """管理员与本地 agent 对话；后端受控取数并脱敏后再发送。"""
+    ai_status = _ai_status_payload()
+    if not ai_status["enabled"]:
+        raise HTTPException(status_code=400, detail="AI 模型分析已关闭")
+    if not ai_status["available"]:
+        raise HTTPException(status_code=400, detail="AI 模型未配置，请先配置 DeepSeek API Key 或本地 agent 服务")
+
+    task_ids = sorted({int(task_id) for task_id in payload.task_ids if int(task_id) > 0})
+    tasks = []
+    for task_id in task_ids:
+        task = _get_task_or_404(task_id)
+        task["records"] = get_report(task_id)
+        tasks.append(task)
+
+    try:
+        result = chat_inventory(
+            message=payload.message,
+            tasks=tasks,
+            history=[item.dict() for item in payload.history],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    _audit(actor, "ai.chat", "ai_chat", None, {
+        "task_ids": task_ids,
+        "context_meta": result.get("context_meta") or {},
+    })
+    return result
+
+
+AI_REPORT_HEADERS = ["序号", "问题类型", "风险等级", "涉及片区", "涉及机房", "涉及设备", "判断依据", "整改建议", "优先级"]
+
+
+def _load_ai_analysis_items(result: dict) -> list[dict]:
+    try:
+        items = json.loads(result.get("analysis_result") or "[]")
+    except json.JSONDecodeError:
+        return []
+    return items if isinstance(items, list) else []
+
+
+def _item_value(item: dict, *keys: str) -> str:
+    for key in keys:
+        value = item.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _append_ai_report_sheets(wb: openpyxl.Workbook, result: dict) -> None:
+    info = wb.active
+    info.title = "AI分析概览"
+    info.append(["字段", "内容"])
+    info.append(["分析ID", result.get("id")])
+    info.append(["分析范围", result.get("analysis_scope")])
+    info.append(["模型来源", result.get("model_provider")])
+    info.append(["模型名称", result.get("model_name")])
+    info.append(["Prompt版本", result.get("prompt_version")])
+    info.append(["状态", result.get("status")])
+    info.append(["错误原因", result.get("error_message")])
+    info.append(["生成时间", result.get("created_at")])
+    info.append(["输入摘要", result.get("input_summary")])
+
+    items_sheet = wb.create_sheet("整改清单")
+    items_sheet.append(AI_REPORT_HEADERS)
+    for index, item in enumerate(_load_ai_analysis_items(result), start=1):
+        items_sheet.append([
+            index,
+            _item_value(item, "问题类型", "problem_type"),
+            _item_value(item, "风险等级", "risk_level"),
+            _item_value(item, "涉及片区", "area_name"),
+            _item_value(item, "涉及机房", "room_name"),
+            _item_value(item, "涉及设备", "device_name"),
+            _item_value(item, "判断依据", "basis"),
+            _item_value(item, "整改建议", "suggestion"),
+            _item_value(item, "优先级", "priority"),
+        ])
+
+
+def _ai_report_response(result: dict | None) -> Response:
+    if not result:
+        raise HTTPException(status_code=404, detail="暂无 AI 分析报告")
+    wb = openpyxl.Workbook()
+    _append_ai_report_sheets(wb, result)
+    return _excel_response(wb, f"AI分析报告_{result.get('id')}.xlsx")
+
+
+@app.get("/api/ai/results/latest/download")
+def api_download_latest_ai_result(_: dict = Depends(admin_user)):
+    """下载最近一次数据库内保存的 AI 分析报告。"""
+    return _ai_report_response(get_latest_ai_analysis_result())
+
+
+@app.get("/api/ai/results/{result_id}/download")
+def api_download_ai_result(result_id: int, _: dict = Depends(admin_user)):
+    """下载指定 AI 分析报告。"""
+    return _ai_report_response(get_ai_analysis_result(result_id))
+
+
+@app.get("/api/ai/adjustments")
+def api_ai_adjustments(status: str = "", _: dict = Depends(admin_user)):
+    """管理员查询 AI 整改草稿、已下发任务和闭环状态。"""
+    try:
+        return list_ai_adjustment_tasks(status)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/ai/adjustments/{adjustment_id}/dispatch")
+def api_dispatch_ai_adjustment(
+    adjustment_id: int,
+    payload: AIAdjustmentDispatchRequest,
+    actor: dict = Depends(admin_user),
+):
+    """管理员审核通过后，将 AI 整改任务下发给现场人员。"""
+    try:
+        item = dispatch_ai_adjustment_task(adjustment_id, payload.assigned_to, actor["id"], payload.review_note)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="整改任务不存在")
+    _audit(actor, "ai.adjustment.dispatch", "ai_adjustment_task", adjustment_id, {
+        "assigned_to": payload.assigned_to,
+        "review_note": payload.review_note,
+    })
+    return {"success": True, "message": "整改任务已下发", "item": item}
+
+
+@app.post("/api/ai/adjustments/{adjustment_id}/reject")
+def api_reject_ai_adjustment(
+    adjustment_id: int,
+    payload: AIAdjustmentRejectRequest,
+    actor: dict = Depends(admin_user),
+):
+    """管理员驳回 AI 整改草稿。"""
+    try:
+        item = reject_ai_adjustment_task(adjustment_id, actor["id"], payload.review_note)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="整改任务不存在")
+    _audit(actor, "ai.adjustment.reject", "ai_adjustment_task", adjustment_id, {"review_note": payload.review_note})
+    return {"success": True, "message": "整改草稿已驳回", "item": item}
+
+
+@app.get("/api/adjustments/my")
+def api_my_adjustments(user: dict = Depends(current_user)):
+    """现场人员查询管理员下发给自己的资产整改任务。"""
+    if user["role"] != "worker":
+        raise HTTPException(status_code=403, detail="仅现场人员可查看整改任务")
+    return get_my_adjustment_tasks(user["id"])
+
+
+@app.post("/api/adjustments/{adjustment_id}/complete")
+def api_complete_adjustment(
+    adjustment_id: int,
+    payload: AdjustmentCompleteRequest,
+    user: dict = Depends(current_user),
+):
+    """现场人员确认整改完成，形成异常资产闭环记录。"""
+    if user["role"] != "worker":
+        raise HTTPException(status_code=403, detail="仅现场人员可处理整改任务")
+    try:
+        item = complete_ai_adjustment_task(adjustment_id, user["id"], payload.completion_note)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="整改任务不存在")
+    _audit(user, "ai.adjustment.complete", "ai_adjustment_task", adjustment_id, {
+        "completion_note": payload.completion_note,
+    })
+    return {"success": True, "message": "整改任务已完成", "item": item}
 
 
 def _ai_status_payload() -> dict:
@@ -1091,7 +1410,7 @@ def _ai_status_payload() -> dict:
     api_key_configured = bool(api_key) and len(api_key) >= 10 and not _has_control_chars(api_key)
     enabled = get_system_setting("ai_enabled", "1") == "1"
     model = _clean_env_setting(os.getenv("DEEPSEEK_MODEL", ""))
-    model_name = external_agent_url if external_agent_url else model
+    model_name = model or _local_agent_model_name(external_agent_url)
     configured = bool(external_agent_url or (api_key_configured and model_name))
     model_provider = "local-agent" if external_agent_url else "deepseek"
     return {
@@ -1104,6 +1423,22 @@ def _ai_status_payload() -> dict:
         "base_url": _clean_env_setting(os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")),
         "external_agent_url": external_agent_url,
     }
+
+
+def _local_agent_model_name(external_agent_url: str) -> str:
+    if not external_agent_url:
+        return ""
+    parsed = urlparse(external_agent_url)
+    path = parsed.path.rstrip("/")
+    health_path = f"{path[:-8]}/health" if path.endswith("/analyze") else f"{path}/health"
+    health_url = urlunparse(parsed._replace(path=health_path, query="", fragment=""))
+    try:
+        data = json.loads(urlopen(health_url, timeout=2).read())
+    except Exception:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    return _clean_env_setting(data.get("model_name", ""))
 
 
 def _clean_env_setting(value: str) -> str:
@@ -1135,7 +1470,10 @@ def api_ai_check(_: dict = Depends(admin_user)):
                 missing.append("DEEPSEEK_MODEL")
         return {"ok": False, "message": f"模型配置不完整：缺少 {', '.join(missing) or '模型配置'}", "status": ai_status}
     result = check_model_available()
-    return {**result, "status": _ai_status_payload()}
+    status = _ai_status_payload()
+    if result.get("model_name"):
+        status["model_name"] = result["model_name"]
+    return {**result, "status": status}
 
 
 @app.patch("/api/ai/status")
@@ -1156,4 +1494,4 @@ def health():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("backend.main:app", host="127.0.0.1", port=8000, reload=True)

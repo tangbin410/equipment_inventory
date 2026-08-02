@@ -32,14 +32,14 @@ http://localhost:8000/docs
 
 停止方式：在启动窗口中按 `Ctrl + C`，或直接关闭窗口。
 
-### 2. start_admin.bat
+### 2. start_admin_vue.bat
 
-用途：启动 PC 后台管理页面。
+用途：启动 Vue3 + Element Plus PC 后台。
 
 默认访问地址：
 
 ```text
-http://localhost:8501
+http://127.0.0.1:5173
 ```
 
 主要功能：
@@ -50,7 +50,10 @@ http://localhost:8501
 - 使用 AI 模型分析
 - 账号管理
 
-日常使用：需要打开 PC 后台时启动。
+说明：
+
+- 这是当前唯一的 PC 后台入口。
+- 启动前建议先启动 `start_backend.bat`。
 
 停止方式：在启动窗口中按 `Ctrl + C`，或直接关闭窗口。
 
@@ -183,7 +186,7 @@ trial 体验版/真实微信登录模式
 
 ```text
 1. start_backend.bat
-2. start_admin.bat
+2. start_admin_vue.bat
 ```
 
 ### 使用 PC 后台 + AI 模型分析
@@ -191,7 +194,7 @@ trial 体验版/真实微信登录模式
 ```text
 1. start_local_agent.bat
 2. start_backend.bat
-3. start_admin.bat
+3. start_admin_vue.bat
 ```
 
 ### 微信开发者工具调试小程序
@@ -220,7 +223,7 @@ trial 体验版/真实微信登录模式
 常见窗口：
 
 - 后端窗口：`start_backend.bat`
-- PC 后台窗口：`start_admin.bat`
+- PC 后台窗口：`start_admin_vue.bat`
 - 本地 agent 窗口：`start_local_agent.bat`
 
 ### 方法二：在窗口里按 Ctrl + C
@@ -242,7 +245,7 @@ Y
 查看当前监听端口：
 
 ```powershell
-Get-NetTCPConnection -LocalPort 8000,8501,9000 -State Listen
+Get-NetTCPConnection -LocalPort 8000,5173,9000 -State Listen
 ```
 
 按进程 ID 停止：
@@ -254,7 +257,7 @@ Stop-Process -Id 进程ID -Force
 一次停止三个服务：
 
 ```powershell
-Get-NetTCPConnection -LocalPort 8000,8501,9000 -State Listen -ErrorAction SilentlyContinue |
+Get-NetTCPConnection -LocalPort 8000,5173,9000 -State Listen -ErrorAction SilentlyContinue |
 ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
 ```
 
@@ -262,7 +265,7 @@ ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
 
 ```text
 8000  后端 FastAPI
-8501  PC 后台 Streamlit
+5173  PC 后台 Vue3
 9000  本地 AI agent
 ```
 
@@ -274,4 +277,3 @@ ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
 - 修改 `.env` 后，需要重启后端。
 - 使用 AI 分析前，先确认本地 agent 和后端都已启动。
 - 如果 AI 页面显示模型不可用，优先检查 `start_local_agent.bat` 是否已启动，再点击“检测模型是否可用”。
-

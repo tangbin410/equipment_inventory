@@ -14,10 +14,10 @@
 PC 管理后台建议只在你的电脑本机访问：
 
 ```text
-http://127.0.0.1:8501
+http://127.0.0.1:5173
 ```
 
-不要把 `8501` 发布到公网。
+不要把 PC 管理后台发布到公网。
 
 ## 1. 域名接入 Cloudflare DNS
 
@@ -106,13 +106,13 @@ https://api.equip-inventory.xyz/health
 另开一个 PowerShell：
 
 ```powershell
-streamlit run pc_admin/admin.py --server.address 127.0.0.1 --server.port 8501
+start_admin_vue.bat
 ```
 
 你自己打开：
 
 ```text
-http://127.0.0.1:8501
+http://127.0.0.1:5173
 ```
 
 后台不通过 Tunnel 发布，避免现场人员或外部人员看到管理入口。
@@ -183,7 +183,7 @@ uploadFile 合法域名：https://api.equip-inventory.xyz
 - 关闭测试登录：`INVENTORY_DEV_LOGIN=0`
 - 使用微信真实登录。
 - 管理员密码不能使用默认值。
-- 不发布 `8501` 管理后台。
+- 不发布 PC 管理后台。
 - 只给内部现场人员发体验版。
 
 如果后续要长期使用，建议迁移到轻量云服务器或单位专网/VPN。

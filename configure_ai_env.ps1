@@ -57,16 +57,51 @@ if ((Has-ControlChar $baseUrl) -or -not ($baseUrl.StartsWith("http://") -or $bas
     exit 1
 }
 
-$lines = @(
-    "# Local secrets for equipment_inventory. Do not commit this file.",
-    "DEEPSEEK_API_KEY=$apiKey",
-    "DEEPSEEK_MODEL=$model",
-    "DEEPSEEK_BASE_URL=$baseUrl"
-)
+function Set-EnvLine($lines, $name, $value) {
+    $found = $false
+    $updated = foreach ($line in $lines) {
+        if ($line -match "^\s*#?\s*$name\s*=") {
+            $found = $true
+            "$name=$value"
+        } else {
+            $line
+        }
+    }
+    if (-not $found) {
+        $updated += "$name=$value"
+    }
+    return $updated
+}
 
-Set-Content -LiteralPath ".env" -Value $lines -Encoding ASCII
+function New-RandomToken($length) {
+    $chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".ToCharArray()
+    return -join (1..$length | ForEach-Object { $chars | Get-Random })
+}
+
+$envPath = ".env"
+$lines = @("# Local secrets for equipment_inventory. Do not commit this file.")
+if (Test-Path -LiteralPath $envPath) {
+    $lines = Get-Content -LiteralPath $envPath
+}
+
+$lines = Set-EnvLine $lines "DEEPSEEK_API_KEY" $apiKey
+$lines = Set-EnvLine $lines "DEEPSEEK_MODEL" $model
+$lines = Set-EnvLine $lines "DEEPSEEK_BASE_URL" $baseUrl
+
+if (-not ($lines -match "^\s*INVENTORY_SECRET_KEY\s*=")) {
+    $lines += "INVENTORY_SECRET_KEY=$(New-RandomToken 48)"
+}
+if (-not ($lines -match "^\s*INVENTORY_DEV_LOGIN\s*=")) {
+    $lines += "INVENTORY_DEV_LOGIN=0"
+}
+if (-not ($lines -match "^\s*INVENTORY_CORS_ORIGINS\s*=")) {
+    $lines += "INVENTORY_CORS_ORIGINS=http://127.0.0.1:5173,http://localhost:5173"
+}
+
+Set-Content -LiteralPath $envPath -Value $lines -Encoding ASCII
 
 Write-Host ""
-Write-Host ".env has been written." -ForegroundColor Green
+Write-Host ".env has been updated. Existing security settings were preserved." -ForegroundColor Green
+Write-Host "If this is a fresh database, also set INVENTORY_ADMIN_PASSWORD in .env before starting backend."
 Write-Host "Next: close the backend window, run start_backend.bat again, then click the model check button on the AI analysis page."
 pause

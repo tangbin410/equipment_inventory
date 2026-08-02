@@ -17,6 +17,12 @@ class LoginRequest(BaseModel):
     code: str
 
 
+class ProfileBindRequest(BaseModel):
+    """小程序现场人员资料绑定请求"""
+    code: str = Field(..., description="wx.getPhoneNumber 返回的手机号动态 code")
+    name: str = Field(..., description="现场人员姓名")
+
+
 class AdminLoginRequest(BaseModel):
     username: str
     password: str
@@ -27,7 +33,7 @@ class UserCreateRequest(BaseModel):
     wx_openid: str = Field(..., description="登录编码/微信openid")
     name: str = Field(..., description="姓名")
     role: str = Field("worker", description="角色：admin/worker")
-    area_name: str = Field("默认片区", description="可负责片区，多个片区用逗号分隔")
+    area_name: str = Field("汇聚及核心", description="负责片区：汇聚及核心/南区/北区/西区")
     phone: str = Field("", description="手机号")
     employee_no: str = Field("", description="工号")
     is_active: bool = Field(True, description="是否启用")
@@ -84,6 +90,35 @@ class AIAnalysisRequest(BaseModel):
     task_ids: list[int] = Field(..., description="需要合并分析的任务ID列表")
 
 
+class AIChatMessage(BaseModel):
+    """AI 对话历史消息"""
+    role: str = Field(..., description="user/assistant")
+    content: str = Field(..., description="消息内容")
+
+
+class AIChatRequest(BaseModel):
+    """PC 后台向本地 agent 发起只读对话"""
+    message: str = Field(..., description="管理员问题")
+    task_ids: list[int] = Field(default_factory=list, description="对话关联的任务ID列表")
+    history: list[AIChatMessage] = Field(default_factory=list, description="最近对话历史")
+
+
+class AIAdjustmentDispatchRequest(BaseModel):
+    """管理员审核通过并下发 AI 整改任务"""
+    assigned_to: int = Field(..., description="下发给现场人员ID")
+    review_note: str = Field("", description="管理员审核说明")
+
+
+class AIAdjustmentRejectRequest(BaseModel):
+    """管理员驳回 AI 整改草稿"""
+    review_note: str = Field("", description="驳回说明")
+
+
+class AdjustmentCompleteRequest(BaseModel):
+    """现场人员确认整改完成"""
+    completion_note: str = Field("", description="整改完成说明")
+
+
 # ──────────────────────────────────────────────
 # 响应模型
 # ──────────────────────────────────────────────
@@ -93,17 +128,10 @@ class UserOut(BaseModel):
     wx_openid: str = ""
     name: str
     role: str
-    area_name: str = "默认片区"
+    area_name: str = "汇聚及核心"
     phone: str = ""
     employee_no: str = ""
     is_active: int = 1
-
-
-class UploadResponse(BaseModel):
-    task_id: int
-    task_name: str
-    device_count: int
-    message: str
 
 
 class ScanResponse(BaseModel):

@@ -47,3 +47,10 @@ def request_timeout() -> int:
     load_local_env()
     return int(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "60"))
 
+
+def agent_token() -> str:
+    load_local_env()
+    token = clean_value(os.getenv("INVENTORY_AGENT_TOKEN", ""))
+    if not token or len(token) < 24 or has_control_chars(token):
+        raise RuntimeError("INVENTORY_AGENT_TOKEN is missing or too short")
+    return token

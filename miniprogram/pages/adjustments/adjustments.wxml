@@ -1,0 +1,76 @@
+<view class="page">
+  <view class="user-bar">
+    <view class="user-info">
+      <text class="user-name">{{userName}}</text>
+      <text class="user-role">整改任务 · {{areaName}}</text>
+    </view>
+    <button class="back-btn" bindtap="goBack">返回上级</button>
+  </view>
+
+  <view class="stats-row">
+    <view class="stat-item">
+      <text class="stat-num">{{totalCount}}</text>
+      <text class="stat-label">全部</text>
+    </view>
+    <view class="stat-item">
+      <text class="stat-num warn">{{pendingCount}}</text>
+      <text class="stat-label">待整改</text>
+    </view>
+    <view class="stat-item">
+      <text class="stat-num done">{{doneCount}}</text>
+      <text class="stat-label">已完成</text>
+    </view>
+  </view>
+
+  <view class="section-title">资产整改闭环</view>
+
+  <view wx:if="{{loading}}" class="loading">
+    <text>加载中...</text>
+  </view>
+
+  <view wx:elif="{{empty}}" class="empty">
+    <text>暂无管理员下发的整改任务</text>
+  </view>
+
+  <view wx:else class="task-list">
+    <view class="task-card card" wx:for="{{tasks}}" wx:key="id">
+      <view class="task-header">
+        <view class="task-title-row">
+          <view class="status-dot"></view>
+          <text class="task-name">{{item._problemTitle}}</text>
+        </view>
+        <view class="task-status">
+          <text class="tag {{item._statusCls}}">{{item._statusText}}</text>
+        </view>
+      </view>
+
+      <view class="task-room">📍 {{item._roomText}}</view>
+      <view class="task-meta-row">
+        <text class="task-meta">风险 {{item._riskText}}</text>
+        <text class="task-meta warn">优先级 {{item._priorityText}}</text>
+      </view>
+      <view class="field-block">
+        <text class="field-label">涉及设备</text>
+        <text class="field-text">{{item._deviceText}}</text>
+      </view>
+      <view class="field-block">
+        <text class="field-label">整改建议</text>
+        <text class="field-text">{{item._suggestionText}}</text>
+      </view>
+      <view class="field-block">
+        <text class="field-label">判断依据</text>
+        <text class="field-text">{{item._basisText}}</text>
+      </view>
+
+      <button
+        wx:if="{{item._canComplete}}"
+        class="complete-btn"
+        data-id="{{item.id}}"
+        catchtap="completeTask"
+      >
+        确认整改完成
+      </button>
+      <view wx:else class="done-tip">已反馈管理员，等待后台复核。</view>
+    </view>
+  </view>
+</view>

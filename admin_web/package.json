@@ -1,0 +1,26 @@
+{
+  "name": "equipment-inventory-admin-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 5174"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "axios": "^1.7.9",
+    "element-plus": "^2.9.3",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.8",
+    "typescript": "^5.7.2",
+    "vite": "^7.3.5",
+    "vue-tsc": "^3.3.8"
+  },
+  "overrides": {
+    "esbuild": "^0.28.1"
+  }
+}

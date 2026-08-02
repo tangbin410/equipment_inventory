@@ -1,0 +1,227 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>小程序页面示意截图</title>
+<style>
+  body {
+    margin: 0;
+    padding: 24px;
+    background: #eef5ff;
+    font-family: "Microsoft YaHei", Arial, sans-serif;
+    color: #12263f;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(3, 390px);
+    gap: 24px;
+  }
+  .phone {
+    width: 390px;
+    height: 844px;
+    overflow: hidden;
+    border-radius: 28px;
+    background: #f5f8fc;
+    box-shadow: 0 18px 48px rgba(40, 95, 150, 0.22);
+    border: 10px solid #101827;
+  }
+  .bar {
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #1677ff;
+    color: #fff;
+    font-weight: 800;
+    font-size: 17px;
+  }
+  .page {
+    padding: 18px;
+  }
+  .hero {
+    padding: 22px;
+    border-radius: 18px;
+    background: linear-gradient(135deg, #1677ff, #18c5c8);
+    color: #fff;
+  }
+  .hero h1 {
+    margin: 0 0 8px;
+    font-size: 27px;
+  }
+  .hero p {
+    margin: 0;
+    opacity: 0.88;
+    line-height: 1.55;
+  }
+  .card {
+    margin-top: 14px;
+    padding: 16px;
+    border-radius: 14px;
+    background: #fff;
+    box-shadow: 0 8px 24px rgba(60, 110, 160, 0.08);
+  }
+  .btn {
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 14px;
+    border-radius: 12px;
+    background: #1677ff;
+    color: #fff;
+    font-weight: 800;
+  }
+  .btn.warn { background: #f59e0b; }
+  .btn.green { background: #10b981; }
+  .row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 10px;
+    color: #64748b;
+  }
+  .stat {
+    flex: 1;
+    padding: 12px;
+    border-radius: 12px;
+    background: #edf6ff;
+    text-align: center;
+  }
+  .stat strong {
+    display: block;
+    color: #1267bd;
+    font-size: 24px;
+  }
+  .tabs {
+    display: flex;
+    gap: 8px;
+    margin: 16px 0;
+  }
+  .tab {
+    flex: 1;
+    padding: 10px 0;
+    border-radius: 999px;
+    background: #e8f1fb;
+    color: #45627f;
+    text-align: center;
+    font-size: 14px;
+    font-weight: 700;
+  }
+  .tab.active {
+    background: #1677ff;
+    color: #fff;
+  }
+  .task {
+    border-left: 4px solid #1677ff;
+  }
+  .title {
+    font-size: 18px;
+    font-weight: 850;
+  }
+  .sub {
+    margin-top: 6px;
+    color: #64748b;
+    line-height: 1.5;
+  }
+  .field {
+    margin-top: 12px;
+    padding: 12px;
+    border-radius: 10px;
+    background: #f2f7fc;
+  }
+  .field label {
+    display: block;
+    margin-bottom: 7px;
+    color: #64748b;
+    font-size: 13px;
+  }
+  .pill {
+    display: inline-flex;
+    margin-top: 8px;
+    padding: 5px 10px;
+    border-radius: 999px;
+    background: #e8f8f2;
+    color: #079466;
+    font-size: 13px;
+    font-weight: 800;
+  }
+</style>
+<div class="grid">
+  <section class="phone mini-login">
+    <div class="bar">机房资产盘点</div>
+    <div class="page">
+      <div class="hero">
+        <h1>机房资产盘点系统</h1>
+        <p>现场人员扫码盘点工具</p>
+      </div>
+      <div class="card">
+        <div class="title">微信一键登录</div>
+        <div class="sub">登录后进入工作台，首次使用需补充姓名并授权手机号。</div>
+        <div class="btn">微信一键登录</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="phone mini-home">
+    <div class="bar">工作台</div>
+    <div class="page">
+      <div class="hero">
+        <h1>机房资产盘点</h1>
+        <p>先领取同片区机房任务，再进入我的任务开展扫码盘点。</p>
+      </div>
+      <div class="card">
+        <div class="title">个人资料</div>
+        <div class="field"><label>姓名</label>请输入真实姓名</div>
+        <div class="btn green">授权手机号并同步</div>
+      </div>
+      <div class="card task"><div class="title">领任务</div><div class="sub">查看本片区待领取、盘点中、已完成机房</div></div>
+      <div class="card task"><div class="title">我的任务</div><div class="sub">继续扫码盘点，或释放当前领取任务</div></div>
+      <div class="card task"><div class="title">整改任务</div><div class="sub">查看管理员下发的资产整改闭环任务</div></div>
+    </div>
+  </section>
+
+  <section class="phone mini-claim">
+    <div class="bar">任务池</div>
+    <div class="page">
+      <div class="hero"><h1>北区任务池</h1><p>待领取任务可由同片区任一现场人员领取</p></div>
+      <div class="row"><div class="stat"><strong>6</strong>待领取</div><div class="stat"><strong>3</strong>盘点中</div></div>
+      <div class="tabs"><div class="tab active">待领取</div><div class="tab">盘点中</div><div class="tab">已完成</div></div>
+      <div class="card task"><div class="title">唐家节点一楼机房</div><div class="sub">设备 12 台 · 北区</div><div class="btn">领取任务</div></div>
+      <div class="card task"><div class="title">金景豪苑二楼机房</div><div class="sub">设备 8 台 · 北区</div><div class="btn">领取任务</div></div>
+    </div>
+  </section>
+
+  <section class="phone mini-tasks">
+    <div class="bar">我的任务</div>
+    <div class="page">
+      <div class="row"><div class="stat"><strong>2</strong>盘点中</div><div class="stat"><strong>5</strong>已完成</div></div>
+      <div class="field">搜索机房或任务</div>
+      <div class="card task"><div class="title">恒隆华萃园一楼机房</div><div class="sub">已盘点 8 / 8 台</div><span class="pill">已完成</span><div class="btn">查看结果</div></div>
+      <div class="card task"><div class="title">唐家节点一楼机房</div><div class="sub">已盘点 0 / 12 台</div><span class="pill">盘点中</span><div class="btn">继续盘点</div><div class="btn warn">释放任务</div></div>
+    </div>
+  </section>
+
+  <section class="phone mini-scan">
+    <div class="bar">设备盘点</div>
+    <div class="page">
+      <div class="hero"><h1>唐家节点一楼机房</h1><p>已盘点 0 / 12 台</p></div>
+      <div class="tabs"><div class="tab active">全部</div><div class="tab">未盘点</div><div class="tab">异常</div><div class="tab">盘盈</div></div>
+      <div class="card">
+        <div class="title">102-唐家-PTN7900E</div>
+        <div class="field"><label>清单设备型号</label>OptiX PTN 7900E-12</div>
+        <div class="field"><label>现场资产条码</label>扫码或勾选无条码</div>
+        <div class="field"><label>现场机柜条码</label>扫码或上传凭证照片</div>
+        <div class="btn">确认提交</div>
+        <div class="btn warn">现场未找到该设备</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="phone mini-adjustments">
+    <div class="bar">整改任务</div>
+    <div class="page">
+      <div class="hero"><h1>资产整改闭环</h1><p>处理管理员下发的 AI 整改任务</p></div>
+      <div class="row"><div class="stat"><strong>2</strong>待整改</div><div class="stat"><strong>4</strong>已完成</div></div>
+      <div class="card task"><div class="title">资产条码异常复核</div><div class="sub">涉及机房：恒隆华萃园一楼机房</div><div class="field"><label>整改建议</label>核对现场实物标签，确认后补充闭环说明。</div><div class="btn green">确认整改完成</div></div>
+      <div class="card task"><div class="title">设备型号待核查</div><div class="sub">涉及设备：OLT001-HW-MA5800</div><span class="pill">待整改</span></div>
+    </div>
+  </section>
+</div>

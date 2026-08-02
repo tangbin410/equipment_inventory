@@ -23,9 +23,23 @@ $updated = foreach ($line in $lines) {
 if (-not $found) {
     $updated += "INVENTORY_AI_AGENT_URL=$agentUrl"
 }
+
+$tokenFound = $false
+foreach ($line in $updated) {
+    if ($line -match "^\s*#?\s*INVENTORY_AGENT_TOKEN\s*=") {
+        $tokenFound = $true
+        break
+    }
+}
+if (-not $tokenFound) {
+    $chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".ToCharArray()
+    $token = -join (1..48 | ForEach-Object { $chars | Get-Random })
+    $updated += "INVENTORY_AGENT_TOKEN=$token"
+}
 Set-Content -LiteralPath $envPath -Value $updated -Encoding UTF8
 
 Write-Host "INVENTORY_AI_AGENT_URL has been set to $agentUrl" -ForegroundColor Green
+Write-Host "INVENTORY_AGENT_TOKEN is configured for backend -> local agent calls." -ForegroundColor Green
 Write-Host "Next: start start_local_agent.bat, then restart the backend."
 if (-not $NoPause) {
     pause

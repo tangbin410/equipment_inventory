@@ -4,6 +4,7 @@
     "pages/home/home",
     "pages/claim/claim",
     "pages/tasks/tasks",
+    "pages/adjustments/adjustments",
     "pages/scan/scan"
   ],
   "window": {
