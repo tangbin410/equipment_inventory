@@ -106,7 +106,6 @@ def build_inventory_rows(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "盘点时间": record.get("scanned_at") or "",
                 "盘亏原因": record.get("missing_reason") or "",
                 "现场备注": record.get("notes") or "",
-                "凭证照片状态": "已上传" if record.get("evidence_photo") else "未上传",
             })
     return rows
 
@@ -375,6 +374,8 @@ def _call_external_agent_chat(message: str, history: list[dict[str, str]], paylo
     data = response.json()
     return {
         "answer": str(data.get("answer") or "") if isinstance(data, dict) else "",
+        "status": str(data.get("status") or "completed") if isinstance(data, dict) else "completed",
+        "pending_tool_calls": data.get("pending_tool_calls", []) if isinstance(data, dict) else [],
         "model_name": _clean_env_value(data.get("model_name", "")) if isinstance(data, dict) else "",
         "context_meta": data.get("context_meta", {}) if isinstance(data, dict) else {},
         "tool_manifest": data.get("tool_manifest", []) if isinstance(data, dict) else [],
@@ -465,7 +466,12 @@ def analyze_inventory(tasks: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def chat_inventory(message: str, tasks: list[dict[str, Any]], history: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def chat_inventory(
+    message: str,
+    tasks: list[dict[str, Any]],
+    history: list[dict[str, Any]] | None = None,
+    adjustments: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """面向管理员的只读对话：后端取数并脱敏，模型只能看脱敏上下文。"""
     rows = build_inventory_rows(tasks)
     masked_rows, sensitive_maps = desensitize_rows(rows)
@@ -477,13 +483,18 @@ def chat_inventory(message: str, tasks: list[dict[str, Any]], history: list[dict
         "prompt_version": PROMPT_VERSION,
         "input_summary": input_summary(rows) if rows else "当前未选择任务，未附带资产盘点上下文",
         "rows": masked_rows,
+        "adjustments": adjustments or [],
     }
     external_agent_url = _external_agent_url()
     context_meta: dict[str, Any] = {}
     tool_manifest: list[dict[str, Any]] = []
+    agent_status = "completed"
+    pending_tool_calls: list[dict[str, Any]] = []
     if external_agent_url:
         agent_result = _call_external_agent_chat(safe_message, normalized_history, payload)
         answer = agent_result["answer"]
+        agent_status = agent_result.get("status") or "completed"
+        pending_tool_calls = agent_result.get("pending_tool_calls") or []
         model_name = agent_result["model_name"] or _clean_env_value(os.getenv("DEEPSEEK_MODEL", ""))
         context_meta = agent_result.get("context_meta") or {}
         tool_manifest = agent_result.get("tool_manifest") or []
@@ -492,6 +503,8 @@ def chat_inventory(message: str, tasks: list[dict[str, Any]], history: list[dict
         model_name = _clean_env_value(os.getenv("DEEPSEEK_MODEL", ""))
     return {
         "answer": _restore_sensitive_text(answer, sensitive_maps),
+        "status": agent_status,
+        "pending_tool_calls": pending_tool_calls,
         "model_provider": "local-agent" if external_agent_url else "deepseek",
         "model_name": model_name,
         "input_summary": payload["input_summary"],

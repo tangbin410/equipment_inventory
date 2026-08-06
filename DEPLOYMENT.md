@@ -166,10 +166,8 @@ prodApiBase: "https://api.inventory.example.com/api",
 
 ```text
 request 合法域名：https://api.inventory.example.com
-uploadFile 合法域名：https://api.inventory.example.com
 ```
 
-当前系统上传现场照片走 `wx.uploadFile`，所以 `uploadFile 合法域名` 必须配置。
 
 ## 9. 上传体验版
 
@@ -186,7 +184,7 @@ uploadFile 合法域名：https://api.inventory.example.com
 - `https://api.inventory.example.com/health` 能访问。
 - `https://admin.inventory.example.com` 能打开后台登录页。
 - 管理员密码不是默认密码。
-- 微信后台已配置 request/uploadFile 合法域名。
+- 微信后台已配置 request 合法域名。
 - 服务器安全组未开放 `8000`。
 - `data/backups/` 已能自动生成 SQLite 备份。
 - 只导入 1 到 3 个机房先试跑。

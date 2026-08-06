@@ -223,6 +223,32 @@
   line-height: 1.55;
 }
 
+.reminder-block {
+  margin-top: 12px;
+  padding: 11px 12px;
+  border-left: 4px solid #d94841;
+  border-radius: 8px;
+  background: #fff3f2;
+}
+
+.reminder-title,
+.reminder-note {
+  display: block;
+}
+
+.reminder-title {
+  color: #b42318;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.reminder-note {
+  margin-top: 5px;
+  color: #6f332f;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .complete-btn {
   margin-top: 12px;
   height: 40px;

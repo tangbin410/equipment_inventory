@@ -45,7 +45,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { Component } from "vue";
-import { Cpu, DataAnalysis, List, UploadFilled, User } from "@element-plus/icons-vue";
+import { CircleCheck, Cpu, DataAnalysis, List, PriceTag, UploadFilled, User } from "@element-plus/icons-vue";
 import { clearSession, getSessionUser, getToken } from "./api";
 import type { AdminUser } from "./types";
 import LoginView from "./pages/LoginView.vue";
@@ -53,10 +53,12 @@ import UploadPage from "./pages/UploadPage.vue";
 import TasksPage from "./pages/TasksPage.vue";
 import ReportPage from "./pages/ReportPage.vue";
 import AiPage from "./pages/AiPage.vue";
+import GovernancePage from "./pages/GovernancePage.vue";
 import UsersPage from "./pages/UsersPage.vue";
+import QrAssetsPage from "./pages/QrAssetsPage.vue";
 import AgentChat from "./components/AgentChat.vue";
 
-type PageKey = "upload" | "tasks" | "report" | "ai" | "users";
+type PageKey = "upload" | "tasks" | "report" | "ai" | "governance" | "users" | "qr-assets";
 
 const token = ref(getToken());
 const user = ref<AdminUser | null>(getSessionUser<AdminUser>());
@@ -67,7 +69,9 @@ const menus: Array<{ key: PageKey; icon: Component; label: string }> = [
   { key: "tasks", icon: List, label: "任务看板总览" },
   { key: "report", icon: DataAnalysis, label: "资产盘点数据" },
   { key: "ai", icon: Cpu, label: "AI模型分析" },
+  { key: "governance", icon: CircleCheck, label: "数据整治与闭环" },
   { key: "users", icon: User, label: "小程序账号管理" },
+  { key: "qr-assets", icon: PriceTag, label: "二维码资产" },
 ];
 
 const activeComponent = computed(() => {
@@ -76,7 +80,9 @@ const activeComponent = computed(() => {
     tasks: TasksPage,
     report: ReportPage,
     ai: AiPage,
+    governance: GovernancePage,
     users: UsersPage,
+    "qr-assets": QrAssetsPage,
   };
   return map[currentPage.value];
 });

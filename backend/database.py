@@ -3,20 +3,18 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
+import shutil
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 # 数据库文件放在 data 目录下
 DB_DIR = Path(__file__).resolve().parent.parent / "data"
 DB_PATH = DB_DIR / "inventory.db"
-EVIDENCE_DIR = DB_DIR / "evidence"
 BACKUP_DIR = DB_DIR / "backups"
-EVIDENCE_RETENTION_DAYS = 30
 DB_TIMEOUT_SECONDS = float(os.getenv("INVENTORY_SQLITE_TIMEOUT_SECONDS", "30"))
 DB_BUSY_TIMEOUT_MS = int(DB_TIMEOUT_SECONDS * 1000)
 DB_BACKUP_KEEP = int(os.getenv("INVENTORY_BACKUP_KEEP", "10"))
@@ -24,13 +22,6 @@ USER_AREA_CORE = "汇聚及核心"
 USER_AREA_CHOICES = ("汇聚及核心", "南区", "北区", "西区")
 USER_AREA_SET = set(USER_AREA_CHOICES)
 USER_AREA_LEGACY_CORE = {"", "全市", "默认片区", "全部片区", "全片区", "*"}
-EVIDENCE_TYPE_COLUMNS = {
-    "general": "evidence_photo",
-    "asset": "asset_evidence_photo",
-    "cabinet": "cabinet_evidence_photo",
-}
-
-
 # ──────────────────────────────────────────────
 # 初始化 & 工具函数
 # ──────────────────────────────────────────────
@@ -104,82 +95,6 @@ def user_can_access_area(user_area_name: str, task_area_name: str) -> bool:
     return user_area == task_area
 
 
-def evidence_photo_path(photo_path: str) -> Path | None:
-    """把现场照片相对路径转成安全的绝对路径，防止路径穿越。"""
-    if not photo_path:
-        return None
-    path = (EVIDENCE_DIR / photo_path).resolve()
-    evidence_root = EVIDENCE_DIR.resolve()
-    if evidence_root not in path.parents and path != evidence_root:
-        return None
-    return path
-
-
-def evidence_photo_is_valid(photo_path: str) -> bool:
-    """判断现场照片是否仍在 30 天有效期内。"""
-    path = evidence_photo_path(photo_path)
-    if path is None or not path.exists():
-        return False
-    uploaded_at = datetime.fromtimestamp(path.stat().st_mtime)
-    return datetime.now() - uploaded_at <= timedelta(days=EVIDENCE_RETENTION_DAYS)
-
-
-def evidence_photo_for_type(record: dict[str, Any], evidence_type: str) -> str:
-    """按凭证类型取照片；兼容旧版本单张 evidence_photo。"""
-    column = EVIDENCE_TYPE_COLUMNS.get(evidence_type, "evidence_photo")
-    return record.get(column) or record.get("evidence_photo") or ""
-
-
-def evidence_photo_is_valid_for_type(record: dict[str, Any], evidence_type: str) -> bool:
-    return evidence_photo_is_valid(evidence_photo_for_type(record, evidence_type))
-
-
-def add_evidence_countdown(record: dict[str, Any]) -> dict[str, Any]:
-    """给现场凭证照片补充 30 天倒计时信息。"""
-    photo_path = record.get("evidence_photo") or ""
-    record["evidence_photo_valid"] = False
-    record["evidence_photo_uploaded_at"] = ""
-    record["evidence_photo_expires_at"] = ""
-    record["evidence_photo_days_left"] = None
-    if not photo_path:
-        return record
-
-    path = evidence_photo_path(photo_path)
-    if path is None or not path.exists():
-        return record
-
-    uploaded_at = datetime.fromtimestamp(path.stat().st_mtime)
-    expires_at = uploaded_at + timedelta(days=EVIDENCE_RETENTION_DAYS)
-    seconds_left = (expires_at - datetime.now()).total_seconds()
-    record["evidence_photo_uploaded_at"] = uploaded_at.isoformat(timespec="seconds")
-    record["evidence_photo_expires_at"] = expires_at.isoformat(timespec="seconds")
-    record["evidence_photo_days_left"] = max(0, math.ceil(seconds_left / 86400))
-    record["evidence_photo_valid"] = seconds_left > 0
-    return record
-
-
-def cleanup_expired_evidence_photos() -> int:
-    """删除超过 30 天的现场凭证照片，返回删除数量。"""
-    if not EVIDENCE_DIR.exists():
-        return 0
-    deleted = 0
-    cutoff = datetime.now() - timedelta(days=EVIDENCE_RETENTION_DAYS)
-    for path in EVIDENCE_DIR.rglob("*"):
-        if not path.is_file():
-            continue
-        if datetime.fromtimestamp(path.stat().st_mtime) <= cutoff:
-            path.unlink(missing_ok=True)
-            deleted += 1
-    # 清理空目录，让 evidence 目录保持干净。
-    for path in sorted(EVIDENCE_DIR.rglob("*"), reverse=True):
-        if path.is_dir():
-            try:
-                path.rmdir()
-            except OSError:
-                pass
-    return deleted
-
-
 def backup_database(reason: str = "manual") -> str | None:
     """生成一份 SQLite 在线备份，并按保留数量清理旧备份。"""
     if not DB_PATH.exists():
@@ -230,7 +145,6 @@ def calc_overall_match_status(asset_match_status: str, model_match_status: str) 
 
 def add_compare_status(record: dict[str, Any]) -> dict[str, Any]:
     """给盘点记录补充资产条码和型号的独立比对结果。"""
-    record = add_evidence_countdown(record)
     record_type = record.get("record_type") or "normal"
     if record_type == "surplus":
         record["field_status"] = record.get("field_status") or "盘盈"
@@ -300,19 +214,22 @@ def normalize_existing_scan_match_status(conn: sqlite3.Connection) -> None:
         refresh_task_status(conn, task_id)
 
 
-def drop_review_columns(conn: sqlite3.Connection) -> None:
-    """从旧库 scan_records 中移除历史人工处理字段。"""
-    review_columns = {
+def drop_legacy_scan_record_columns(conn: sqlite3.Connection) -> bool:
+    """从旧库 scan_records 中移除已废弃的审核和现场凭证字段。"""
+    legacy_columns = {
         "review_status",
         "review_note",
         "review_reason",
         "review_handler",
         "review_result",
         "reviewed_at",
+        "evidence_photo",
+        "asset_evidence_photo",
+        "cabinet_evidence_photo",
     }
     existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(scan_records)")}
-    if not review_columns & existing_columns:
-        return
+    if not legacy_columns & existing_columns:
+        return False
 
     conn.execute("DROP INDEX IF EXISTS idx_scan_records_review")
     conn.execute("""
@@ -325,11 +242,8 @@ def drop_review_columns(conn: sqlite3.Connection) -> None:
             expected_barcode  TEXT DEFAULT '',
             asset_barcodes    TEXT DEFAULT '',
             asset_no_barcode  INTEGER DEFAULT 0,
-            asset_evidence_photo TEXT DEFAULT '',
             cabinet_barcodes  TEXT DEFAULT '',
             cabinet_no_barcode INTEGER DEFAULT 0,
-            cabinet_evidence_photo TEXT DEFAULT '',
-            evidence_photo    TEXT DEFAULT '',
             rack_no           TEXT DEFAULT '',
             actual_model      TEXT DEFAULT '',
             notes             TEXT DEFAULT '',
@@ -352,11 +266,8 @@ def drop_review_columns(conn: sqlite3.Connection) -> None:
         "expected_barcode",
         "asset_barcodes",
         "asset_no_barcode",
-        "asset_evidence_photo",
         "cabinet_barcodes",
         "cabinet_no_barcode",
-        "cabinet_evidence_photo",
-        "evidence_photo",
         "rack_no",
         "actual_model",
         "notes",
@@ -378,6 +289,96 @@ def drop_review_columns(conn: sqlite3.Connection) -> None:
     conn.execute(f"INSERT INTO scan_records_new ({column_sql}) SELECT {select_sql} FROM scan_records")
     conn.execute("DROP TABLE scan_records")
     conn.execute("ALTER TABLE scan_records_new RENAME TO scan_records")
+    return True
+
+
+def detach_qr_asset_external_foreign_keys(conn: sqlite3.Connection) -> bool:
+    """Keep the QR module independent from existing users/tasks/device tables."""
+    external_fks = [
+        row for table in ("qr_assets", "qr_asset_bindings")
+        for row in conn.execute(f"PRAGMA foreign_key_list({table})").fetchall()
+        if row["table"] == "users"
+    ]
+    if not external_fks:
+        return False
+
+    conn.executescript("""
+        PRAGMA foreign_keys=OFF;
+        BEGIN;
+        ALTER TABLE qr_asset_bindings RENAME TO qr_asset_bindings_old;
+        ALTER TABLE qr_assets RENAME TO qr_assets_old;
+
+        CREATE TABLE qr_assets (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            token               TEXT NOT NULL UNIQUE,
+            asset_barcode       TEXT NOT NULL UNIQUE,
+            barcode_model       TEXT DEFAULT '',
+            room_name           TEXT NOT NULL,
+            current_device_name TEXT DEFAULT '',
+            current_device_ref  TEXT DEFAULT '',
+            created_by          INTEGER,
+            created_at          TEXT NOT NULL,
+            updated_at          TEXT NOT NULL,
+            is_active           INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE qr_asset_bindings (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            qr_asset_id   INTEGER NOT NULL REFERENCES qr_assets(id),
+            device_name   TEXT NOT NULL,
+            device_ref    TEXT DEFAULT '',
+            room_name     TEXT NOT NULL,
+            bound_at      TEXT NOT NULL,
+            unbound_at    TEXT,
+            changed_by    INTEGER,
+            change_reason TEXT DEFAULT ''
+        );
+
+        INSERT INTO qr_assets
+            SELECT id, token, asset_barcode, barcode_model, room_name,
+                   current_device_name, current_device_ref, created_by,
+                   created_at, updated_at, is_active
+            FROM qr_assets_old;
+        INSERT INTO qr_asset_bindings
+            SELECT id, qr_asset_id, device_name, device_ref, room_name,
+                   bound_at, unbound_at, changed_by, change_reason
+            FROM qr_asset_bindings_old;
+
+        DROP TABLE qr_asset_bindings_old;
+        DROP TABLE qr_assets_old;
+        COMMIT;
+        PRAGMA foreign_keys=ON;
+    """)
+    return True
+
+
+def _backfill_ai_analysis_task_versions(conn: sqlite3.Connection) -> None:
+    """用现有成功报告补登记任务当前完成批次；二次完成晚于报告时不登记。"""
+    analyses = conn.execute(
+        """SELECT id, task_ids_json, created_at
+           FROM ai_analysis_results
+           WHERE status = 'success'
+           ORDER BY created_at DESC, id DESC"""
+    ).fetchall()
+    for analysis in analyses:
+        try:
+            task_ids = [int(value) for value in json.loads(analysis["task_ids_json"] or "[]")]
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        for task_id in task_ids:
+            task = conn.execute(
+                "SELECT status, field_completed_at FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            if not task or task["status"] != "done" or not task["field_completed_at"]:
+                continue
+            if task["field_completed_at"] > analysis["created_at"]:
+                continue
+            conn.execute(
+                """INSERT OR IGNORE INTO ai_analysis_task_versions
+                   (analysis_id, task_id, field_completed_at) VALUES (?, ?, ?)""",
+                (analysis["id"], task_id, task["field_completed_at"]),
+            )
 
 
 def init_db() -> None:
@@ -477,6 +478,13 @@ def init_db() -> None:
             created_at  TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS ai_analysis_task_versions (
+            analysis_id INTEGER NOT NULL REFERENCES ai_analysis_results(id),
+            task_id INTEGER NOT NULL REFERENCES tasks(id),
+            field_completed_at TEXT NOT NULL,
+            PRIMARY KEY(task_id, field_completed_at)
+        );
+
         CREATE TABLE IF NOT EXISTS ai_adjustment_tasks (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             analysis_id INTEGER NOT NULL REFERENCES ai_analysis_results(id),
@@ -501,7 +509,11 @@ def init_db() -> None:
             created_at  TEXT NOT NULL,
             reviewed_at TEXT,
             dispatched_at TEXT,
-            completed_at TEXT
+            completed_at TEXT,
+            reminder_count INTEGER NOT NULL DEFAULT 0,
+            reminded_at TEXT,
+            reminder_note TEXT DEFAULT '',
+            reminded_by INTEGER REFERENCES users(id)
         );
 
         CREATE TABLE IF NOT EXISTS system_settings (
@@ -510,7 +522,34 @@ def init_db() -> None:
             updated_at  TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS qr_assets (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            token               TEXT NOT NULL UNIQUE,
+            asset_barcode       TEXT NOT NULL UNIQUE,
+            barcode_model       TEXT DEFAULT '',
+            room_name           TEXT NOT NULL,
+            current_device_name TEXT DEFAULT '',
+            current_device_ref  TEXT DEFAULT '',
+            created_by          INTEGER,
+            created_at          TEXT NOT NULL,
+            updated_at          TEXT NOT NULL,
+            is_active           INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS qr_asset_bindings (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            qr_asset_id   INTEGER NOT NULL REFERENCES qr_assets(id),
+            device_name   TEXT NOT NULL,
+            device_ref    TEXT DEFAULT '',
+            room_name     TEXT NOT NULL,
+            bound_at      TEXT NOT NULL,
+            unbound_at    TEXT,
+            changed_by    INTEGER,
+            change_reason TEXT DEFAULT ''
+        );
+
     """)
+    detach_qr_asset_external_foreign_keys(conn)
     # 兼容已经投入使用的数据库，按列增量升级，不清空历史数据。
     task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
     migrations = {
@@ -545,9 +584,6 @@ def init_db() -> None:
             conn.execute(statement)
     record_columns = {row["name"] for row in conn.execute("PRAGMA table_info(scan_records)")}
     record_migrations = {
-        "evidence_photo": "ALTER TABLE scan_records ADD COLUMN evidence_photo TEXT DEFAULT ''",
-        "asset_evidence_photo": "ALTER TABLE scan_records ADD COLUMN asset_evidence_photo TEXT DEFAULT ''",
-        "cabinet_evidence_photo": "ALTER TABLE scan_records ADD COLUMN cabinet_evidence_photo TEXT DEFAULT ''",
         "rack_no": "ALTER TABLE scan_records ADD COLUMN rack_no TEXT DEFAULT ''",
         "record_type": "ALTER TABLE scan_records ADD COLUMN record_type TEXT DEFAULT 'normal'",
         "field_status": "ALTER TABLE scan_records ADD COLUMN field_status TEXT DEFAULT '正常'",
@@ -565,7 +601,17 @@ def init_db() -> None:
     for column, statement in analysis_migrations.items():
         if column not in analysis_columns:
             conn.execute(statement)
-    drop_review_columns(conn)
+    adjustment_columns = {row["name"] for row in conn.execute("PRAGMA table_info(ai_adjustment_tasks)")}
+    adjustment_migrations = {
+        "reminder_count": "ALTER TABLE ai_adjustment_tasks ADD COLUMN reminder_count INTEGER NOT NULL DEFAULT 0",
+        "reminded_at": "ALTER TABLE ai_adjustment_tasks ADD COLUMN reminded_at TEXT",
+        "reminder_note": "ALTER TABLE ai_adjustment_tasks ADD COLUMN reminder_note TEXT DEFAULT ''",
+        "reminded_by": "ALTER TABLE ai_adjustment_tasks ADD COLUMN reminded_by INTEGER REFERENCES users(id)",
+    }
+    for column, statement in adjustment_migrations.items():
+        if column not in adjustment_columns:
+            conn.execute(statement)
+    removed_legacy_scan_columns = drop_legacy_scan_record_columns(conn)
     conn.executescript("""
         CREATE TRIGGER IF NOT EXISTS audit_logs_no_update
         BEFORE UPDATE ON audit_logs
@@ -600,10 +646,16 @@ def init_db() -> None:
             ON idempotency_keys(user_id, action, request_id);
         CREATE INDEX IF NOT EXISTS idx_ai_analysis_created
             ON ai_analysis_results(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_ai_analysis_task_versions_analysis
+            ON ai_analysis_task_versions(analysis_id);
         CREATE INDEX IF NOT EXISTS idx_ai_adjustment_status
             ON ai_adjustment_tasks(status, area_name, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_ai_adjustment_assignee
             ON ai_adjustment_tasks(assigned_to, status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_qr_assets_lookup
+            ON qr_assets(is_active, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_qr_asset_bindings_asset
+            ON qr_asset_bindings(qr_asset_id, bound_at DESC);
     """)
     conn.execute(
         """INSERT OR IGNORE INTO system_settings (key, value, updated_at)
@@ -651,9 +703,12 @@ def init_db() -> None:
         SET field_completed_at = completed_at
         WHERE status = 'done' AND field_completed_at IS NULL
     """)
+    _backfill_ai_analysis_task_versions(conn)
     normalize_existing_scan_match_status(conn)
     conn.commit()
     conn.close()
+    if removed_legacy_scan_columns:
+        shutil.rmtree(DB_DIR / "evidence", ignore_errors=True)
 
 
 def get_user_for_auth(user_id: int) -> dict[str, Any] | None:
@@ -756,6 +811,7 @@ def save_ai_analysis_result(
     status: str,
     error_message: str,
     created_by: int | None,
+    task_completion_versions: list[tuple[int, str]] | None = None,
 ) -> int:
     """保存一次 AI 分析结果。"""
     conn = get_conn()
@@ -782,8 +838,39 @@ def save_ai_analysis_result(
                 datetime.now().isoformat(),
             ),
         )
+        if status == "success" and task_completion_versions:
+            try:
+                conn.executemany(
+                    """INSERT INTO ai_analysis_task_versions
+                       (analysis_id, task_id, field_completed_at) VALUES (?, ?, ?)""",
+                    [(cur.lastrowid, task_id, completed_at) for task_id, completed_at in task_completion_versions],
+                )
+            except sqlite3.IntegrityError as exc:
+                conn.rollback()
+                raise ValueError("选中任务的当前现场完成批次已经生成过 AI 报告") from exc
         conn.commit()
         return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def list_analyzed_ai_task_versions(task_completion_versions: list[tuple[int, str]]) -> list[dict[str, Any]]:
+    """查询已经成功生成过报告的任务现场完成批次。"""
+    if not task_completion_versions:
+        return []
+    where_sql = " OR ".join("(v.task_id = ? AND v.field_completed_at = ?)" for _ in task_completion_versions)
+    params = tuple(value for version in task_completion_versions for value in version)
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            f"""SELECT v.task_id, v.field_completed_at, v.analysis_id, r.created_at AS analyzed_at
+                FROM ai_analysis_task_versions v
+                JOIN ai_analysis_results r ON r.id = v.analysis_id
+                WHERE {where_sql}
+                ORDER BY v.task_id""",
+            params,
+        ).fetchall()
+        return [dict_from_row(row) for row in rows if row is not None]
     finally:
         conn.close()
 
@@ -985,6 +1072,44 @@ def reject_ai_adjustment_task(adjustment_id: int, reviewed_by: int, review_note:
                SET status = 'rejected', reviewed_by = ?, review_note = ?, reviewed_at = ?
                WHERE id = ?""",
             (reviewed_by, review_note.strip(), datetime.now().isoformat(), adjustment_id),
+        )
+        conn.commit()
+        row = conn.execute(
+            """SELECT a.*, assignee.name AS assigned_name, reviewer.name AS reviewed_name, closer.name AS completed_name
+               FROM ai_adjustment_tasks a
+               LEFT JOIN users assignee ON assignee.id = a.assigned_to
+               LEFT JOIN users reviewer ON reviewer.id = a.reviewed_by
+               LEFT JOIN users closer ON closer.id = a.completed_by
+               WHERE a.id = ?""",
+            (adjustment_id,),
+        ).fetchone()
+        return _adjustment_from_row(row)
+    finally:
+        conn.close()
+
+
+def remind_ai_adjustment_task(
+    adjustment_id: int,
+    reminded_by: int,
+    reminder_note: str = "",
+) -> dict[str, Any] | None:
+    """记录管理员在系统内发起的催办，不发送外部通知且不改变任务状态。"""
+    conn = get_conn()
+    try:
+        adjustment = conn.execute(
+            "SELECT status FROM ai_adjustment_tasks WHERE id = ?",
+            (adjustment_id,),
+        ).fetchone()
+        if adjustment is None:
+            return None
+        if adjustment["status"] != "dispatched":
+            raise ValueError("只有已下发且未完成的整改任务可以记录催办")
+        conn.execute(
+            """UPDATE ai_adjustment_tasks
+               SET reminder_count = COALESCE(reminder_count, 0) + 1,
+                   reminded_at = ?, reminder_note = ?, reminded_by = ?
+               WHERE id = ?""",
+            (datetime.now().isoformat(), reminder_note.strip(), reminded_by, adjustment_id),
         )
         conn.commit()
         row = conn.execute(
@@ -1599,29 +1724,6 @@ def get_record_by_id(record_id: int) -> dict[str, Any] | None:
         conn.close()
 
 
-def save_evidence_photo(record_id: int, photo_path: str, evidence_type: str = "general") -> bool:
-    """保存无条码现场照片相对路径，支持区分资产/机柜凭证。"""
-    column = EVIDENCE_TYPE_COLUMNS.get(evidence_type)
-    if column is None:
-        raise ValueError("凭证类型无效")
-    conn = get_conn()
-    try:
-        if column == "evidence_photo":
-            cur = conn.execute(
-                "UPDATE scan_records SET evidence_photo = ? WHERE id = ?",
-                (photo_path, record_id),
-            )
-        else:
-            cur = conn.execute(
-                f"UPDATE scan_records SET {column} = ?, evidence_photo = COALESCE(NULLIF(evidence_photo, ''), ?) WHERE id = ?",
-                (photo_path, photo_path, record_id),
-            )
-        conn.commit()
-        return cur.rowcount > 0
-    finally:
-        conn.close()
-
-
 def refresh_task_closure(conn: sqlite3.Connection, task_id: int, task_items: list[sqlite3.Row] | None = None) -> None:
     """刷新现场完成时间。"""
     if task_items is None:
@@ -1798,15 +1900,6 @@ def submit_scan(
 
         if not rack_no.strip():
             raise ValueError("请填写现场机架号")
-
-        if asset_no_barcode and not evidence_photo_for_type(record, "asset"):
-            raise ValueError("资产无条码设备必须上传资产无条码凭证")
-        if asset_no_barcode and not evidence_photo_is_valid_for_type(record, "asset"):
-            raise ValueError("资产无条码凭证已过期，请重新盘查")
-        if cabinet_no_barcode and not evidence_photo_for_type(record, "cabinet"):
-            raise ValueError("机柜无条码设备必须上传机柜无条码凭证")
-        if cabinet_no_barcode and not evidence_photo_is_valid_for_type(record, "cabinet"):
-            raise ValueError("机柜无条码凭证已过期，请重新盘查")
 
         model_match_status = calc_model_match_status(actual_model, record["expected_model"])
         asset_match_status = calc_asset_match_status(

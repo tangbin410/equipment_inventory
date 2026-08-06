@@ -1,5 +1,6 @@
 const app = getApp();
-const { bindProfile } = require("../../utils/api");
+const { bindProfile, getMyAdjustmentTasks } = require("../../utils/api");
+const { getUnreadReminders } = require("../../utils/adjustment-reminders");
 
 Page({
   data: {
@@ -9,6 +10,8 @@ Page({
     profileName: "",
     profileLoading: false,
     showProfileCard: false,
+    adjustmentReminderCount: 0,
+    adjustmentReminderCountText: "",
   },
 
   onShow() {
@@ -26,6 +29,22 @@ Page({
       profileName: userName === "待绑定用户" ? "" : userName,
       showProfileCard: !phone || !userName || userName === "待绑定用户",
     });
+    this.loadAdjustmentReminderCount();
+  },
+
+  async loadAdjustmentReminderCount() {
+    try {
+      const rows = await getMyAdjustmentTasks();
+      const user = app.globalData.userInfo || {};
+      const unreadCount = getUnreadReminders(rows, user.user_id)
+        .reduce((total, entry) => total + entry.unreadCount, 0);
+      this.setData({
+        adjustmentReminderCount: unreadCount,
+        adjustmentReminderCountText: unreadCount > 99 ? "99+" : String(unreadCount),
+      });
+    } catch (err) {
+      // 通用请求层已提示网络错误，首页保留上一次未读数。
+    }
   },
 
   onProfileNameInput(e) {

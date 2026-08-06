@@ -1,5 +1,14 @@
 const app = getApp();
 const { completeAdjustmentTask, getMyAdjustmentTasks } = require("../../utils/api");
+const { getUnreadReminders, markRemindersSeen } = require("../../utils/adjustment-reminders");
+
+function formatReminderTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  const pad = (number) => String(number).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
 
 Page({
   data: {
@@ -39,6 +48,8 @@ Page({
     this.setData({ loading: true });
     try {
       const rows = await getMyAdjustmentTasks();
+      const user = app.globalData.userInfo || {};
+      const unreadReminders = getUnreadReminders(rows, user.user_id);
       const tasks = rows.map((item) => ({
         id: item.id,
         status: item.status,
@@ -52,6 +63,9 @@ Page({
         priority: item.priority,
         assigned_name: item.assigned_name,
         completed_at: item.completed_at,
+        reminder_count: Math.max(Number(item.reminder_count || 0), 0),
+        reminded_at: item.reminded_at || "",
+        reminder_note: item.reminder_note || "",
         _problemTitle: item.problem_type || "资产整改",
         _roomText: (item.room_name || "多机房") + " · " + (item.area_name || ""),
         _deviceText: item.device_name || "多设备",
@@ -62,6 +76,9 @@ Page({
         _statusText: item.status === "done" ? "已完成" : "待整改",
         _statusCls: item.status === "done" ? "tag-success" : "tag-doing",
         _canComplete: item.status === "dispatched",
+        _hasReminder: Number(item.reminder_count || 0) > 0,
+        _reminderSummary: `管理员已催办 ${Math.max(Number(item.reminder_count || 0), 0)} 次 · ${formatReminderTime(item.reminded_at)}`,
+        _reminderNote: item.reminder_note || "请尽快核实并完成整改",
       }));
       this.setData({
         tasks,
@@ -71,6 +88,15 @@ Page({
         empty: tasks.length === 0,
         loading: false,
       });
+      if (unreadReminders.length) {
+        const unreadCount = unreadReminders.reduce((total, entry) => total + entry.unreadCount, 0);
+        const first = unreadReminders[0].item;
+        const content = unreadReminders.length === 1
+          ? `整改任务 #${first.id} 收到管理员催办：${first.reminder_note || "请尽快核实并完成整改"}`
+          : `收到 ${unreadCount} 条新催办，涉及 ${unreadReminders.length} 个整改任务，请及时查看处理。`;
+        wx.showModal({ title: "收到整改催办", content, showCancel: false, confirmText: "知道了" });
+        markRemindersSeen(rows, user.user_id);
+      }
     } catch (err) {
       this.setData({ loading: false, empty: this.data.tasks.length === 0 });
     } finally {

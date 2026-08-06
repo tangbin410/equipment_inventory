@@ -8,8 +8,9 @@ import re
 from typing import Any
 
 
-CONTEXT_POLICY_VERSION = "inventory-context-v1"
+CONTEXT_POLICY_VERSION = "inventory-context-v3"
 MAX_CONTEXT_ROWS = 800
+MAX_ADJUSTMENT_ROWS = 300
 MAX_TEXT_CHARS = 160
 MAX_NOTES_CHARS = 220
 
@@ -36,7 +37,19 @@ ALLOWED_ROW_FIELDS = [
     "盘点时间",
     "盘亏原因",
     "现场备注",
-    "凭证照片状态",
+]
+
+ALLOWED_ADJUSTMENT_FIELDS = [
+    "adjustment_id",
+    "source_task_ids",
+    "status",
+    "risk_level",
+    "priority",
+    "created_at",
+    "dispatched_at",
+    "completed_at",
+    "reminder_count",
+    "reminded_at",
 ]
 
 PROMPT_INJECTION_PATTERNS = [
@@ -86,6 +99,38 @@ def _safe_row(row: dict[str, Any]) -> tuple[dict[str, str], bool, int]:
     return safe, note_sanitized, removed_field_count
 
 
+def _safe_adjustment(item: dict[str, Any]) -> dict[str, Any]:
+    source_ids = item.get("source_task_ids") if isinstance(item.get("source_task_ids"), list) else []
+    try:
+        adjustment_id = max(int(item.get("adjustment_id") or 0), 0)
+    except (TypeError, ValueError):
+        adjustment_id = 0
+    safe_source_ids = []
+    for value in source_ids[:50]:
+        try:
+            source_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if source_id > 0:
+            safe_source_ids.append(source_id)
+    try:
+        reminder_count = max(int(item.get("reminder_count") or 0), 0)
+    except (TypeError, ValueError):
+        reminder_count = 0
+    return {
+        "adjustment_id": adjustment_id,
+        "source_task_ids": safe_source_ids,
+        "status": _text(item.get("status")),
+        "risk_level": _text(item.get("risk_level")),
+        "priority": _text(item.get("priority")),
+        "created_at": _text(item.get("created_at")),
+        "dispatched_at": _text(item.get("dispatched_at")),
+        "completed_at": _text(item.get("completed_at")),
+        "reminder_count": reminder_count,
+        "reminded_at": _text(item.get("reminded_at")),
+    }
+
+
 def _hash_payload(payload: dict[str, Any]) -> str:
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -93,6 +138,7 @@ def _hash_payload(payload: dict[str, Any]) -> str:
 
 def apply_context_policy(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     rows = payload.get("rows") if isinstance(payload.get("rows"), list) else []
+    adjustments = payload.get("adjustments") if isinstance(payload.get("adjustments"), list) else []
     raw_count = len(rows)
     safe_rows: list[dict[str, str]] = []
     invalid_row_count = 0
@@ -112,6 +158,11 @@ def apply_context_policy(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[
         "prompt_version": _text(payload.get("prompt_version")),
         "input_summary": _text(payload.get("input_summary"), 500),
         "rows": safe_rows,
+        "adjustments": [
+            _safe_adjustment(item)
+            for item in adjustments[:MAX_ADJUSTMENT_ROWS]
+            if isinstance(item, dict)
+        ],
     }
     context_meta = {
         "context_policy_version": CONTEXT_POLICY_VERSION,
@@ -125,6 +176,9 @@ def apply_context_policy(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[
         "removed_field_count": removed_field_count,
         "sanitized_note_count": sanitized_note_count,
         "max_context_rows": MAX_CONTEXT_ROWS,
+        "adjustment_row_count": len(adjustments),
+        "sent_adjustment_row_count": len(safe_payload["adjustments"]),
+        "max_adjustment_rows": MAX_ADJUSTMENT_ROWS,
         "max_text_chars": MAX_TEXT_CHARS,
         "max_notes_chars": MAX_NOTES_CHARS,
         "payload_hash": _hash_payload(safe_payload),

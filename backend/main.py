@@ -3,28 +3,41 @@
 from __future__ import annotations
 
 import io
-import hashlib
-import hmac
 import json
 import os
+import re
 import time
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
-from uuid import uuid4
 
 import openpyxl
 from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response
 
 from .ai_agent import analyze_inventory, build_inventory_rows, chat_inventory, check_model_available
+from .asset_qr import (
+    batch_import_qr_assets,
+    create_qr_asset,
+    create_qr_asset_history,
+    delete_qr_asset,
+    delete_qr_asset_history,
+    get_qr_asset,
+    get_qr_asset_by_token,
+    list_qr_assets,
+    render_public_html,
+    render_qr_png,
+    rebind_qr_asset,
+    update_qr_asset,
+    update_qr_asset_history,
+)
 from .database import (
     assign_task,
     batch_assign_tasks,
     batch_create_records,
-    cleanup_expired_evidence_photos,
     complete_ai_adjustment_task,
     create_audit_log,
     create_ai_adjustment_drafts,
@@ -41,6 +54,7 @@ from .database import (
     get_ai_analysis_result,
     get_claimed_tasks,
     get_latest_ai_analysis_result,
+    list_analyzed_ai_task_versions,
     get_conn,
     get_idempotent_result,
     list_ai_adjustment_tasks,
@@ -57,14 +71,12 @@ from .database import (
     get_workers,
     USER_AREA_CHOICES,
     USER_AREA_CORE,
-    evidence_photo_is_valid,
-    evidence_photo_path,
     init_db,
     mark_record_missing,
     normalize_user_area_name,
     reject_ai_adjustment_task,
+    remind_ai_adjustment_task,
     release_task,
-    save_evidence_photo,
     save_ai_analysis_result,
     save_idempotent_result,
     set_system_setting,
@@ -78,6 +90,7 @@ from .models import (
     AdjustmentCompleteRequest,
     AIAdjustmentDispatchRequest,
     AIAdjustmentRejectRequest,
+    AIAdjustmentReminderRequest,
     AIChatRequest,
     AIAnalysisRequest,
     AdminLoginRequest,
@@ -90,14 +103,16 @@ from .models import (
     UserCreateRequest,
     UserUpdateRequest,
     UserOut,
+    QrAssetBindingRequest,
+    QrAssetCreateRequest,
+    QrAssetHistoryCreateRequest,
+    QrAssetHistoryUpdateRequest,
+    QrAssetUpdateRequest,
 )
 from .auth import create_access_token, decode_access_token, hash_password, require_secret_configured, verify_password
 
 app = FastAPI(title="机房资产盘点系统", version="1.0.0")
-EVIDENCE_DIR = Path(__file__).resolve().parent.parent / "data" / "evidence"
 MAX_EXCEL_BYTES = int(os.getenv("INVENTORY_MAX_EXCEL_MB", "20")) * 1024 * 1024
-MAX_PHOTO_BYTES = int(os.getenv("INVENTORY_MAX_PHOTO_MB", "10")) * 1024 * 1024
-EVIDENCE_URL_TTL_SECONDS = int(os.getenv("INVENTORY_EVIDENCE_URL_TTL_SECONDS", "600"))
 _WECHAT_ACCESS_TOKEN_CACHE: dict[str, str | int] = {"token": "", "expires_at": 0}
 
 
@@ -106,39 +121,6 @@ def _cors_origins() -> list[str]:
     origins = [item.strip() for item in raw.split(",") if item.strip()]
     return origins or ["http://127.0.0.1:5173"]
 
-
-def expired_evidence_response() -> HTMLResponse:
-    """照片过期时给浏览器弹出明确提示。"""
-    return HTMLResponse(
-        content="""
-        <!doctype html>
-        <meta charset="utf-8">
-        <script>alert("照片已过期，请重新盘查");</script>
-        <body style="font-family: sans-serif; padding: 24px;">照片已过期，请重新盘查</body>
-        """,
-        status_code=410,
-    )
-
-
-def _evidence_signature(filename: str, expires: int) -> str:
-    secret = os.getenv("INVENTORY_SECRET_KEY", "")
-    message = f"{filename}:{expires}".encode("utf-8")
-    return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
-
-
-def _evidence_url(filename: str) -> str:
-    if not filename:
-        return ""
-    expires = int(time.time()) + EVIDENCE_URL_TTL_SECONDS
-    query = urlencode({"expires": str(expires), "signature": _evidence_signature(filename, expires)})
-    return f"/api/evidence/{quote(filename, safe='/')}?{query}"
-
-
-def _attach_evidence_urls(record: dict) -> dict:
-    for column in ("evidence_photo", "asset_evidence_photo", "cabinet_evidence_photo"):
-        value = record.get(column) or ""
-        record[f"{column}_url"] = _evidence_url(value) if value else ""
-    return record
 
 app.add_middleware(
     CORSMiddleware,
@@ -154,7 +136,6 @@ def on_startup():
     """启动时初始化数据库，并创建默认用户。"""
     require_secret_configured()
     init_db()
-    cleanup_expired_evidence_photos()
     admin = create_user("admin_001", "管理员", "admin", USER_AREA_CORE)
     configured_password = os.getenv("INVENTORY_ADMIN_PASSWORD", "")
     if configured_password:
@@ -217,6 +198,14 @@ def _audit(
     request_id: str = "",
 ) -> None:
     create_audit_log(actor, action, target_type, target_id, detail or {}, request_id)
+
+
+def _public_qr_url(token: str) -> str:
+    """Build the immutable URL encoded in the QR image."""
+    base_url = os.getenv("INVENTORY_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if not base_url:
+        raise HTTPException(status_code=503, detail="请先配置固定的 INVENTORY_PUBLIC_BASE_URL，再下载二维码")
+    return f"{base_url}/qr/{token}"
 
 
 def _load_workbook(file_content: bytes):
@@ -744,6 +733,245 @@ def api_upload_template(_: dict = Depends(admin_user)):
     )
 
 
+# ──────────────────────────────────────────────
+# 固定二维码资产
+# ──────────────────────────────────────────────
+
+@app.get("/api/qr-assets")
+def api_qr_assets(
+    query: str = Query("", max_length=100),
+    limit: int = Query(100, ge=1, le=500),
+    _: dict = Depends(admin_user),
+):
+    """管理员查询二维码资产及其关联历史。"""
+    return list_qr_assets(query, limit)
+
+
+@app.get("/api/qr-assets/import-template")
+def api_qr_asset_import_template(_: dict = Depends(admin_user)):
+    """下载单表批量导入模板。"""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "二维码资产"
+    ws.append(["资产条码", "条码型号", "条码所在机房", "当前绑定传输设备名称", "资产条码历史关联设备记录"])
+    ws.append(["ASSET-001", "资产标签", "核心机房A", "PTN-02", "PTN-00；PTN-01"])
+    ws.append(["ASSET-002", "资产标签", "汇聚机房B", "OTN-01", ""])
+    ws.freeze_panes = "A2"
+    output = io.BytesIO()
+    wb.save(output)
+    return Response(
+        content=output.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''qr_asset_import_template.xlsx"},
+    )
+
+
+@app.post("/api/qr-assets/import")
+async def api_import_qr_assets(file: UploadFile = File(...), actor: dict = Depends(admin_user)):
+    """批量导入二维码资产；历史设备用中文分号、英文分号或换行分隔。"""
+    wb = _load_workbook(await _read_excel_upload(file))
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        raise HTTPException(status_code=400, detail="导入文件没有数据")
+    headers = [str(value or "").strip() for value in rows[0]]
+    required = ["资产条码", "条码型号", "条码所在机房", "当前绑定传输设备名称", "资产条码历史关联设备记录"]
+    missing = [name for name in required if name not in headers]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"导入文件缺少列：{'、'.join(missing)}")
+    indexes = {name: headers.index(name) for name in required}
+    records = []
+    for row in rows[1:]:
+        barcode = str(row[indexes["资产条码"]] or "").strip() if indexes["资产条码"] < len(row) else ""
+        if not barcode and not any(str(value or "").strip() for value in row):
+            continue
+        history_raw = str(row[indexes["资产条码历史关联设备记录"]] or "") if indexes["资产条码历史关联设备记录"] < len(row) else ""
+        history_names = [item.strip() for item in re.split(r"[；;\r\n]+", history_raw) if item.strip()]
+        records.append({
+            "asset_barcode": barcode,
+            "barcode_model": row[indexes["条码型号"]] if indexes["条码型号"] < len(row) else "",
+            "room_name": row[indexes["条码所在机房"]] if indexes["条码所在机房"] < len(row) else "",
+            "current_device_name": row[indexes["当前绑定传输设备名称"]] if indexes["当前绑定传输设备名称"] < len(row) else "",
+            "history_device_names": history_names,
+        })
+    if not records:
+        raise HTTPException(status_code=400, detail="导入文件没有有效资产数据")
+    try:
+        assets = batch_import_qr_assets(records, actor["id"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _audit(actor, "qr_asset.batch_import", "qr_asset", None, {"created": len(assets)})
+    return {"success": True, "created": len(assets), "assets": assets, "message": f"成功导入 {len(assets)} 组资产"}
+
+
+@app.post("/api/qr-assets")
+def api_create_qr_asset(req: QrAssetCreateRequest, actor: dict = Depends(admin_user)):
+    """创建资产并生成永久不变的二维码 token。"""
+    try:
+        asset = create_qr_asset(
+            asset_barcode=req.asset_barcode,
+            barcode_model=req.barcode_model,
+            room_name=req.room_name,
+            current_device_name=req.current_device_name,
+            current_device_ref=req.current_device_ref,
+            created_by=actor["id"],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _audit(actor, "qr_asset.create", "qr_asset", asset["id"], {"asset_barcode": asset["asset_barcode"]})
+    return asset
+
+
+@app.patch("/api/qr-assets/{asset_id}")
+def api_update_qr_asset(asset_id: int, req: QrAssetUpdateRequest, actor: dict = Depends(admin_user)):
+    """修改资产基础字段；token 和二维码图片不变。"""
+    try:
+        asset = update_qr_asset(
+            asset_id=asset_id,
+            asset_barcode=req.asset_barcode,
+            barcode_model=req.barcode_model,
+            room_name=req.room_name,
+            current_device_name=req.current_device_name,
+            current_device_ref=req.current_device_ref,
+            changed_by=actor["id"],
+            change_reason=req.change_reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if asset is None:
+        raise HTTPException(status_code=404, detail="二维码资产不存在")
+    _audit(actor, "qr_asset.update", "qr_asset", asset_id, {"fields": sorted(req.dict(exclude_unset=True).keys())})
+    return asset
+
+
+@app.delete("/api/qr-assets/{asset_id}")
+def api_delete_qr_asset(asset_id: int, actor: dict = Depends(admin_user)):
+    """停用资产组并永久保留固定编码，避免二维码被重复使用。"""
+    if not delete_qr_asset(asset_id):
+        raise HTTPException(status_code=404, detail="二维码资产不存在")
+    _audit(actor, "qr_asset.delete", "qr_asset", asset_id)
+    return {"success": True, "message": "资产组已删除，固定编码不会重新分配"}
+
+
+@app.post("/api/qr-assets/{asset_id}/binding")
+def api_rebind_qr_asset(asset_id: int, req: QrAssetBindingRequest, actor: dict = Depends(admin_user)):
+    """变更当前传输设备，并将原设备封存到不可变历史记录。"""
+    asset = rebind_qr_asset(
+        asset_id=asset_id,
+        device_name=req.device_name,
+        device_ref=req.device_ref,
+        changed_by=actor["id"],
+        change_reason=req.change_reason,
+    )
+    if asset is None:
+        raise HTTPException(status_code=404, detail="二维码资产不存在")
+    _audit(
+        actor,
+        "qr_asset.rebind",
+        "qr_asset",
+        asset_id,
+        {"current_device_name": asset.get("current_device_name", ""), "change_reason": req.change_reason},
+    )
+    return asset
+
+
+@app.post("/api/qr-assets/{asset_id}/history")
+def api_create_qr_asset_history(
+    asset_id: int,
+    req: QrAssetHistoryCreateRequest,
+    actor: dict = Depends(admin_user),
+):
+    try:
+        history = create_qr_asset_history(
+            asset_id=asset_id,
+            device_name=req.device_name,
+            room_name=req.room_name,
+            bound_at=req.bound_at,
+            unbound_at=req.unbound_at,
+            change_reason=req.change_reason,
+            changed_by=actor["id"],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if history is None:
+        raise HTTPException(status_code=404, detail="二维码资产不存在")
+    _audit(actor, "qr_asset.history.create", "qr_asset", asset_id, {"history_id": history["id"]})
+    return history
+
+
+@app.patch("/api/qr-assets/{asset_id}/history/{history_id}")
+def api_update_qr_asset_history(
+    asset_id: int,
+    history_id: int,
+    req: QrAssetHistoryUpdateRequest,
+    actor: dict = Depends(admin_user),
+):
+    try:
+        history = update_qr_asset_history(
+            asset_id=asset_id,
+            history_id=history_id,
+            device_name=req.device_name,
+            room_name=req.room_name,
+            bound_at=req.bound_at,
+            unbound_at=req.unbound_at,
+            change_reason=req.change_reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if history is None:
+        raise HTTPException(status_code=404, detail="历史记录不存在，或该记录为当前关联")
+    _audit(actor, "qr_asset.history.update", "qr_asset", asset_id, {"history_id": history_id})
+    return history
+
+
+@app.delete("/api/qr-assets/{asset_id}/history/{history_id}")
+def api_delete_qr_asset_history(asset_id: int, history_id: int, actor: dict = Depends(admin_user)):
+    if not delete_qr_asset_history(asset_id, history_id):
+        raise HTTPException(status_code=404, detail="历史记录不存在，或该记录为当前关联")
+    _audit(actor, "qr_asset.history.delete", "qr_asset", asset_id, {"history_id": history_id})
+    return {"success": True, "message": "历史记录已删除"}
+
+
+@app.get("/api/qr-assets/{asset_id}/qrcode")
+def api_qr_asset_image(asset_id: int, _: dict = Depends(admin_user)):
+    """返回二维码 PNG；编码内容只包含固定 public URL。"""
+    asset = get_qr_asset(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="二维码资产不存在")
+    try:
+        png = render_qr_png(_public_qr_url(asset["token"]))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return Response(content=png, media_type="image/png", headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
+@app.get("/api/qr-assets/{asset_id}")
+def api_qr_asset(asset_id: int, _: dict = Depends(admin_user)):
+    asset = get_qr_asset(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="二维码资产不存在")
+    return asset
+
+
+@app.get("/api/public/qr/{token}")
+def api_public_qr(token: str, response: Response):
+    """扫码端的轻量 JSON 接口；token 是二维码中的唯一标识。"""
+    asset = get_qr_asset_by_token(token)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="二维码无效或资产已停用")
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return {"asset": asset}
+
+
+@app.get("/qr/{token}", response_class=HTMLResponse)
+def public_qr_page(token: str):
+    """手机浏览器/微信扫码后显示当前信息和历史关联设备。"""
+    asset = get_qr_asset_by_token(token)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="二维码无效或资产已停用")
+    return HTMLResponse(render_public_html(asset), headers={"Cache-Control": "no-store, max-age=0"})
+
+
 @app.get("/api/tasks")
 def api_tasks(_: dict = Depends(admin_user)):
     """查询任务列表。"""
@@ -822,7 +1050,7 @@ def api_delete_task(task_id: int, reason: str = "管理员作废", actor: dict =
 def api_task_items(task_id: int, user: dict = Depends(current_user)):
     """查询某个任务下的设备清单。"""
     task = _require_task_access(user, task_id)
-    return {"task": task, "items": [_attach_evidence_urls(item) for item in get_task_items(task_id)]}
+    return {"task": task, "items": get_task_items(task_id)}
 
 
 @app.post("/api/scan", response_model=ScanResponse)
@@ -938,58 +1166,6 @@ def api_create_surplus(req: SurplusSubmitRequest, user: dict = Depends(current_u
     return response
 
 
-@app.post("/api/records/{record_id}/evidence")
-async def api_upload_evidence(
-    record_id: int,
-    file: UploadFile = File(...),
-    evidence_type: str = Form("general"),
-    user: dict = Depends(current_user),
-):
-    """上传无条码设备的现场照片凭证。"""
-    cleanup_expired_evidence_photos()
-    if evidence_type not in {"general", "asset", "cabinet"}:
-        raise HTTPException(status_code=400, detail="凭证类型无效")
-    record = _require_record_access(user, record_id)
-    suffix = Path(file.filename or "photo.jpg").suffix.lower()
-    if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
-        raise HTTPException(status_code=400, detail="仅支持 JPG、PNG 或 WebP 图片")
-    if file.content_type and file.content_type not in {"image/jpeg", "image/png", "image/webp", "application/octet-stream"}:
-        raise HTTPException(status_code=400, detail="照片文件类型无效")
-    content = await file.read()
-    if len(content) > MAX_PHOTO_BYTES:
-        max_mb = MAX_PHOTO_BYTES // 1024 // 1024
-        raise HTTPException(status_code=400, detail=f"照片不能超过 {max_mb}MB")
-    evidence_dir = EVIDENCE_DIR / f"task_{record['task_id']}" / f"record_{record_id}"
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{record_id}_{evidence_type}_{uuid4().hex}{suffix}"
-    relative_path = f"task_{record['task_id']}/record_{record_id}/{filename}"
-    path = evidence_dir / filename
-    path.write_bytes(content)
-    if not save_evidence_photo(record_id, relative_path, evidence_type):
-        path.unlink(missing_ok=True)
-        raise HTTPException(status_code=404, detail="盘点记录不存在")
-    _audit(user, "record.evidence_upload", "scan_record", record_id, {"filename": relative_path, "evidence_type": evidence_type})
-    return {"success": True, "filename": relative_path}
-
-
-@app.get("/api/evidence/{filename:path}")
-def api_evidence(filename: str, expires: int = Query(0), signature: str = Query("")):
-    """查看现场照片凭证。"""
-    if expires < int(time.time()):
-        raise HTTPException(status_code=401, detail="照片访问链接已过期")
-    expected = _evidence_signature(filename, expires)
-    if not signature or not hmac.compare_digest(signature, expected):
-        raise HTTPException(status_code=401, detail="照片访问签名无效")
-    cleanup_expired_evidence_photos()
-    path = evidence_photo_path(filename)
-    if path is None:
-        raise HTTPException(status_code=400, detail="照片路径不合法")
-    if not evidence_photo_is_valid(filename):
-        path.unlink(missing_ok=True)
-        return expired_evidence_response()
-    return FileResponse(path)
-
-
 @app.get("/api/audit_logs")
 def api_audit_logs(limit: int = 200, _: dict = Depends(admin_user)):
     """查询最近操作审计日志。"""
@@ -999,9 +1175,8 @@ def api_audit_logs(limit: int = 200, _: dict = Depends(admin_user)):
 @app.get("/api/report/{task_id}")
 def api_report(task_id: int, user: dict = Depends(current_user)):
     """获取单个任务盘点报告。"""
-    cleanup_expired_evidence_photos()
     task = _require_task_access(user, task_id)
-    records = [_attach_evidence_urls(record) for record in get_report(task_id)]
+    records = get_report(task_id)
     inventory_records = [r for r in records if (r.get("record_type") or "normal") != "surplus"]
     return {
         "task": task,
@@ -1038,7 +1213,7 @@ INVENTORY_DATA_HEADERS = [
     "任务ID", "任务名称", "机房名称", "片区", "领取人", "任务状态", "任务创建时间",
     "领取时间", "现场完成时间", "设备名称", "清单设备型号", "清单资产条码",
     "现场设备型号", "现场资产条码", "资产无条码", "现场机柜条码", "机柜无条码",
-    "现场机架号", "现场状态", "盘点时间", "盘亏原因", "现场备注", "凭证照片状态",
+    "现场机架号", "现场状态", "盘点时间", "盘亏原因", "现场备注",
 ]
 
 
@@ -1054,7 +1229,6 @@ def _append_inventory_data_sheet(wb: openpyxl.Workbook, tasks: list[dict]) -> No
 @app.get("/api/export/{task_id}")
 def api_export(task_id: int, _: dict = Depends(admin_user)):
     """导出单个任务的资产盘点原始数据。"""
-    cleanup_expired_evidence_photos()
     task = _get_task_or_404(task_id)
     records = get_report(task_id)
     task["records"] = records
@@ -1064,10 +1238,27 @@ def api_export(task_id: int, _: dict = Depends(admin_user)):
     return _excel_response(wb, f"资产盘点数据_{task['room_name']}_{task_id}.xlsx")
 
 
+@app.get("/api/ai/export/inventory")
+def api_ai_export_inventory(task_ids: list[int] = Query(default=[]), actor: dict = Depends(admin_user)):
+    """管理员确认后导出当前选定任务的资产盘点数据。"""
+    selected_ids = sorted({int(task_id) for task_id in task_ids if int(task_id) > 0})
+    if not selected_ids:
+        raise HTTPException(status_code=400, detail="请先选择需要导出的任务")
+    tasks = []
+    for task_id in selected_ids:
+        task = _get_task_or_404(task_id)
+        task["records"] = get_report(task_id)
+        tasks.append(task)
+
+    wb = openpyxl.Workbook()
+    _append_inventory_data_sheet(wb, tasks)
+    _audit(actor, "ai.export_inventory", "ai_export", None, {"task_ids": selected_ids})
+    return _excel_response(wb, f"资产盘点数据_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+
+
 @app.get("/api/summary")
 def api_summary(_: dict = Depends(admin_user)):
     """一次性返回所有任务和盘点记录，供 PC 报告页使用。"""
-    cleanup_expired_evidence_photos()
     conn = get_conn()
     try:
         rows = conn.execute("""
@@ -1078,8 +1269,7 @@ def api_summary(_: dict = Depends(admin_user)):
                    sr.expected_barcode, sr.asset_barcodes, sr.asset_no_barcode,
                    sr.cabinet_barcodes, sr.cabinet_no_barcode, sr.rack_no,
                     sr.actual_model, sr.notes, sr.match_status, sr.scanned_at,
-                    sr.record_type, sr.field_status, sr.missing_reason, sr.created_by,
-                    sr.evidence_photo
+                    sr.record_type, sr.field_status, sr.missing_reason, sr.created_by
             FROM tasks t
             LEFT JOIN users u ON u.id = t.assigned_to
             LEFT JOIN scan_records sr ON sr.task_id = t.id
@@ -1127,9 +1317,8 @@ def api_summary(_: dict = Depends(admin_user)):
                     "field_status": data["field_status"],
                     "missing_reason": data["missing_reason"],
                     "created_by": data["created_by"],
-                    "evidence_photo": data["evidence_photo"],
                 })
-                tasks_map[task_id]["records"].append(_attach_evidence_urls(record))
+                tasks_map[task_id]["records"].append(record)
                 if record["scanned_at"]:
                     current_last = tasks_map[task_id]["last_scanned_at"]
                     tasks_map[task_id]["last_scanned_at"] = max(current_last, record["scanned_at"])
@@ -1164,6 +1353,30 @@ def api_ai_analyze(payload: AIAnalysisRequest, actor: dict = Depends(admin_user)
         task["records"] = get_report(task_id)
         tasks.append(task)
 
+    unfinished_tasks = [
+        task for task in tasks
+        if task.get("status") != "done" or not (task.get("field_completed_at") or task.get("completed_at"))
+    ]
+    if unfinished_tasks:
+        labels = "、".join(f"{task['room_name']}(#{task['id']})" for task in unfinished_tasks[:5])
+        raise HTTPException(status_code=400, detail=f"只能分析现场已完成的任务：{labels} 尚未完成")
+
+    task_completion_versions = [
+        (int(task["id"]), str(task.get("field_completed_at") or task.get("completed_at")))
+        for task in tasks
+    ]
+    analyzed_versions = list_analyzed_ai_task_versions(task_completion_versions)
+    if analyzed_versions:
+        duplicate_ids = {int(item["task_id"]) for item in analyzed_versions}
+        labels = "、".join(
+            f"{task['room_name']}(#{task['id']})"
+            for task in tasks if int(task["id"]) in duplicate_ids
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"{labels} 当前现场完成批次已经生成过报告；重新盘点并产生新的完成时间后才能再次分析",
+        )
+
     analysis_scope = "、".join(f"{task['room_name']}({task['id']})" for task in tasks)
     try:
         result = analyze_inventory(tasks)
@@ -1185,20 +1398,24 @@ def api_ai_analyze(payload: AIAnalysisRequest, actor: dict = Depends(admin_user)
         status = "failed"
         error_message = str(exc)
 
-    analysis_id = save_ai_analysis_result(
-        task_ids=task_ids,
-        analysis_scope=analysis_scope,
-        model_provider=result["model_provider"],
-        model_name=result["model_name"],
-        prompt_version=result["prompt_version"],
-        input_summary=result["input_summary"],
-        desensitized_payload=result["desensitized_payload"],
-        context_meta=json.dumps(result.get("context_meta") or {}, ensure_ascii=False),
-        analysis_result=analysis_result,
-        status=status,
-        error_message=error_message,
-        created_by=actor.get("id"),
-    )
+    try:
+        analysis_id = save_ai_analysis_result(
+            task_ids=task_ids,
+            analysis_scope=analysis_scope,
+            model_provider=result["model_provider"],
+            model_name=result["model_name"],
+            prompt_version=result["prompt_version"],
+            input_summary=result["input_summary"],
+            desensitized_payload=result["desensitized_payload"],
+            context_meta=json.dumps(result.get("context_meta") or {}, ensure_ascii=False),
+            analysis_result=analysis_result,
+            status=status,
+            error_message=error_message,
+            created_by=actor.get("id"),
+            task_completion_versions=task_completion_versions,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     adjustment_drafts = []
     if status == "success":
         adjustment_drafts = create_ai_adjustment_drafts(
@@ -1244,11 +1461,35 @@ def api_ai_chat(payload: AIChatRequest, actor: dict = Depends(admin_user)):
         task["records"] = get_report(task_id)
         tasks.append(task)
 
+    adjustments = list_ai_adjustment_tasks()
+    if task_ids:
+        selected = set(task_ids)
+        adjustments = [
+            item for item in adjustments
+            if selected.intersection(item.get("source_task_ids") or [])
+        ]
+    safe_adjustments = [
+        {
+            "adjustment_id": item.get("id"),
+            "source_task_ids": item.get("source_task_ids") or [],
+            "status": item.get("status") or "",
+            "risk_level": item.get("risk_level") or "",
+            "priority": item.get("priority") or "",
+            "created_at": item.get("created_at") or "",
+            "dispatched_at": item.get("dispatched_at") or "",
+            "completed_at": item.get("completed_at") or "",
+            "reminder_count": item.get("reminder_count") or 0,
+            "reminded_at": item.get("reminded_at") or "",
+        }
+        for item in adjustments
+    ]
+
     try:
         result = chat_inventory(
             message=payload.message,
             tasks=tasks,
             history=[item.dict() for item in payload.history],
+            adjustments=safe_adjustments,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1373,6 +1614,31 @@ def api_reject_ai_adjustment(
         raise HTTPException(status_code=404, detail="整改任务不存在")
     _audit(actor, "ai.adjustment.reject", "ai_adjustment_task", adjustment_id, {"review_note": payload.review_note})
     return {"success": True, "message": "整改草稿已驳回", "item": item}
+
+
+@app.post("/api/ai/adjustments/{adjustment_id}/remind")
+def api_remind_ai_adjustment(
+    adjustment_id: int,
+    payload: AIAdjustmentReminderRequest,
+    actor: dict = Depends(admin_user),
+):
+    """管理员确认后记录系统内催办；不发送外部通知，不改变整改状态。"""
+    try:
+        item = remind_ai_adjustment_task(adjustment_id, actor["id"], payload.reminder_note)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="整改任务不存在")
+    _audit(actor, "ai.adjustment.remind", "ai_adjustment_task", adjustment_id, {
+        "reminder_note": payload.reminder_note,
+        "external_notification_sent": False,
+    })
+    return {
+        "success": True,
+        "message": "已记录系统内催办，未发送微信、短信等外部通知",
+        "external_notification_sent": False,
+        "item": item,
+    }
 
 
 @app.get("/api/adjustments/my")

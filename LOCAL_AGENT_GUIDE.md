@@ -45,22 +45,27 @@
 |---|---|---|---|
 | `inventory.run_rules` | read_only | 已启用 | 预检、定期分析已完成盘点数据 |
 | `inventory.precheck` | read_only | 已启用 | 自动上传机房清单后的预检 |
+| `report.preview_inventory` | read_only | 已启用 | 预览 Excel 导出范围，不创建文件 |
 | `analysis.analyze_completed_rooms` | read_only | 已启用 | 定期分析已完成盘点的机房资产 |
 | `inventory.upload_room_list` | approval_required | 未启用 | 自动上传机房清单 |
 | `inventory.dispatch_room_tasks` | approval_required | 未启用 | 下发机房任务 |
-| `report.export_weekly_inventory` | approval_required | 未启用 | 定期导出本周资产盘点报告 |
-| `adjustment.create_review_draft` | approval_required | 未启用 | 输出整改意见管理员审核 |
-| `adjustment.dispatch_confirmed_task` | approval_required | 未启用 | 审核无误后下发资产整改任务 |
-| `closure.track_adjustment_loop` | approval_required | 未启用 | 跟进异常资产闭环 |
+| `report.export_weekly_inventory` | approval_required | 已启用 | 管理员确认后导出当前选定任务的 Excel |
+| `adjustment.create_review_draft` | approval_required | 已启用 | 管理员确认后生成整改草稿，不直接下发 |
+| `adjustment.dispatch_confirmed_task` | approval_required | 已启用 | 明确草稿 ID 和人员 ID 后，经管理员确认下发 |
+| `closure.track_adjustment_loop` | read_only | 已启用 | 按 7 天阈值汇总整改状态和超时项，不催办、不关闭 |
+| `closure.create_reminder` | approval_required | 已启用 | 明确整改 ID 后，经管理员确认记录系统内催办，不发送外部通知 |
 
 当前第一阶段已由后端审批接口承接整改闭环：AI 分析成功后生成待审核草稿，管理员审核后下发给现场人员，现场人员在小程序确认完成。模型和 DeepSeek 仍不能直接执行写库、下发或闭环动作。
 
+AI 报告只允许选择现场已完成且存在现场完成时间的任务。系统按“任务 ID + 现场完成时间”登记成功报告，同一轮盘点不能重复生成；二次盘点产生新的现场完成时间后，可以再次生成报告。
+
 ## 4. 推荐逐步开放顺序
 
-1. 先完善 `inventory.precheck`，让 agent 能对上传前清单做格式、片区、重复条码预检。
-2. 再开放 `report.export_weekly_inventory` 的管理员确认入口，只允许导出到固定目录或后台下载。
-3. 再做 `adjustment.create_review_draft`，只生成整改草稿，不直接下发。
-4. 管理员审核通过后，再接 `adjustment.dispatch_confirmed_task` 下发到小程序。
-5. 最后接 `closure.track_adjustment_loop`，跟踪整改状态、超时和复核结果。
+1. 已完成 `inventory.precheck` 和 Excel 预览，读取与预检不写业务数据。
+2. 已完成 `report.export_weekly_inventory` 的管理员确认入口，只允许后台鉴权下载。
+3. 已完成 `adjustment.create_review_draft` 的管理员确认入口，只生成整改草稿，不直接下发。
+4. 已完成 `adjustment.dispatch_confirmed_task`，明确草稿和人员后由管理员再次确认下发。
+5. 已完成 `closure.track_adjustment_loop` 的只读跟踪，可查询状态和超时项。
+6. 已完成 `closure.create_reminder` 的管理员确认入口，只记录系统内催办，不发送微信或短信，不改变整改状态。
 
 原则：模型只给建议，所有写入、导出、下发、闭环动作都必须经过后台授权入口。

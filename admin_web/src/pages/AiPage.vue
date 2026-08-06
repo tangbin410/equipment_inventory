@@ -104,7 +104,7 @@
     <section class="selection-panel">
       <div class="selection-stat active">
         <span>候选任务</span>
-        <strong>{{ queried ? candidates.length : summary.length }}</strong>
+        <strong>{{ queried ? candidates.length : completedTasks.length }}</strong>
       </div>
       <div class="selection-stat">
         <span>已选任务</span>
@@ -181,63 +181,6 @@
       </aside>
     </section>
 
-    <section class="adjustment-panel">
-      <div class="adjustment-head">
-        <div>
-          <span>整改审核与下发</span>
-          <strong>AI 输出先进入管理员审核，确认后再下发到现场小程序。</strong>
-        </div>
-        <div class="adjustment-actions">
-          <el-tag type="warning" effect="plain">待审核 {{ pendingAdjustments.length }}</el-tag>
-          <el-tag type="primary" effect="plain">已下发 {{ dispatchedAdjustments.length }}</el-tag>
-          <el-tag type="success" effect="plain">已闭环 {{ doneAdjustments.length }}</el-tag>
-          <el-button size="small" @click="loadAdjustments">刷新</el-button>
-        </div>
-      </div>
-      <div class="table-wrap compact">
-        <el-table border table-layout="auto" :data="adjustments" height="360">
-          <el-table-column label="状态" min-width="96">
-            <template #default="{ row }">
-              <el-tag :type="adjustmentStatusTag(row.status)" effect="plain">{{ adjustmentStatusText(row.status) }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="area_name" label="片区" min-width="100" />
-          <el-table-column prop="room_name" label="涉及机房" min-width="160" show-overflow-tooltip />
-          <el-table-column prop="problem_type" label="问题类型" min-width="150" show-overflow-tooltip />
-          <el-table-column prop="device_name" label="涉及设备" min-width="160" show-overflow-tooltip />
-          <el-table-column prop="risk_level" label="风险" min-width="80" />
-          <el-table-column prop="suggestion" label="整改建议" min-width="260" show-overflow-tooltip />
-          <el-table-column label="现场人员" min-width="170">
-            <template #default="{ row }">
-              <el-select
-                v-if="row.status === 'pending_review'"
-                v-model="selectedAssignees[row.id]"
-                size="small"
-                placeholder="选择人员"
-              >
-                <el-option
-                  v-for="worker in workersForArea(row.area_name)"
-                  :key="worker.id"
-                  :label="worker.name"
-                  :value="worker.id"
-                />
-              </el-select>
-              <span v-else>{{ row.assigned_name || "-" }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" fixed="right" min-width="170">
-            <template #default="{ row }">
-              <template v-if="row.status === 'pending_review'">
-                <el-button size="small" type="primary" @click="dispatchAdjustment(row)">审核下发</el-button>
-                <el-button size="small" text type="danger" @click="rejectAdjustment(row)">驳回</el-button>
-              </template>
-              <span v-else class="muted-action">{{ adjustmentActionText(row) }}</span>
-            </template>
-          </el-table-column>
-        </el-table>
-      </div>
-    </section>
-
     <el-dialog v-model="resultDialogVisible" title="查询结果" width="980px" class="result-dialog">
       <el-empty v-if="!candidates.length" description="没有查到相关任务。" />
       <template v-else>
@@ -266,12 +209,12 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessage } from "element-plus";
 import { Connection, Cpu, Download, MagicStick, Search, SwitchButton } from "@element-plus/icons-vue";
 import { apiGet, apiPatch, apiPost, downloadBlob, getToken } from "../api";
 import { readAiCheckSession, saveAiCheckSession, setAiChatTaskIds } from "../aiSession";
-import type { AIAdjustmentTask, AdminUser, AiAnalysisResult, AiStatus, Task, TaskRecord } from "../types";
-import { downloadAiReport, formatTime, taskStage } from "../utils";
+import type { AiAnalysisResult, AiStatus, Task, TaskRecord } from "../types";
+import { downloadAiReport, taskStage } from "../utils";
 
 const status = ref<AiStatus | null>(null);
 const checkMessage = ref("");
@@ -286,9 +229,6 @@ const candidates = ref<Task[]>([]);
 const selectedTasks = ref<Task[]>([]);
 const lastResult = ref<AiAnalysisResult | null>(null);
 const resultDialogVisible = ref(false);
-const workers = ref<AdminUser[]>([]);
-const adjustments = ref<AIAdjustmentTask[]>([]);
-const selectedAssignees = ref<Record<number, number>>({});
 
 const queryOptions = [
   { label: "全部查询", value: "__all__" },
@@ -298,7 +238,7 @@ const queryOptions = [
   { label: "领取人", value: "assigned_name" },
   { label: "现场状态", value: "field_stage" },
 ];
-const stageOptions = ["待领取", "盘点中", "现场完成"];
+const stageOptions = ["现场完成"];
 
 const queryLabel = computed(() => queryOptions.find((item) => item.value === queryField.value)?.label || "查询内容");
 const areaOptions = ["汇聚及核心", "南区", "北区", "西区"];
@@ -323,9 +263,9 @@ const scannedCount = computed(() => inventoryRecords.value.filter((record: TaskR
 const pendingCount = computed(() => inventoryRecords.value.filter((record: TaskRecord) => record.match_status === "未扫").length);
 const selectedProgressPercent = computed(() => totalCount.value ? Math.round((scannedCount.value / totalCount.value) * 100) : 0);
 const canAnalyze = computed(() => Boolean(selectedTasks.value.length && modelUsable.value && !analyzing.value));
-const pendingAdjustments = computed(() => adjustments.value.filter((item) => item.status === "pending_review"));
-const dispatchedAdjustments = computed(() => adjustments.value.filter((item) => item.status === "dispatched"));
-const doneAdjustments = computed(() => adjustments.value.filter((item) => item.status === "done"));
+const completedTasks = computed(() => summary.value.filter(
+  (task) => task.status === "done" && Boolean(task.field_completed_at || task.completed_at),
+));
 
 function taskValue(task: Task, field: string) {
   if (field === "__all__") return "";
@@ -356,14 +296,6 @@ function restoreModelCheckSession() {
 
 async function loadSummary() {
   summary.value = await apiGet<Task[]>("/summary");
-}
-
-async function loadWorkers() {
-  workers.value = await apiGet<AdminUser[]>("/workers");
-}
-
-async function loadAdjustments() {
-  adjustments.value = await apiGet<AIAdjustmentTask[]>("/ai/adjustments");
 }
 
 async function toggleModel() {
@@ -401,7 +333,7 @@ function runQuery() {
   queried.value = true;
   selectedTasks.value = [];
   if (queryField.value === "__all__") {
-    candidates.value = summary.value;
+    candidates.value = completedTasks.value;
     resultDialogVisible.value = true;
     return;
   }
@@ -412,7 +344,7 @@ function runQuery() {
     resultDialogVisible.value = false;
     return;
   }
-  candidates.value = summary.value.filter((task) => taskValue(task, queryField.value).toLowerCase().includes(needle));
+  candidates.value = completedTasks.value.filter((task) => taskValue(task, queryField.value).toLowerCase().includes(needle));
   resultDialogVisible.value = true;
 }
 
@@ -434,7 +366,6 @@ async function runAnalysis() {
     lastResult.value = result;
     if (result.status === "success") {
       ElMessage.success(`AI 分析完成，生成 ${result.adjustment_drafts?.length || 0} 条待审核整改草稿。`);
-      await loadAdjustments();
     }
     else ElMessage.error(`AI 分析失败：${result.error_message || "-"}`);
   } finally {
@@ -450,59 +381,12 @@ async function downloadLastReport() {
   await downloadBlob("/ai/results/latest/download", "AI分析报告_最近一次.xlsx");
 }
 
-function workersForArea(areaName: string) {
-  return workers.value.filter((worker) => (worker.area_name || "汇聚及核心") === (areaName || "汇聚及核心"));
-}
-
-function adjustmentStatusText(status: string) {
-  return {
-    pending_review: "待审核",
-    dispatched: "已下发",
-    done: "已闭环",
-    rejected: "已驳回",
-  }[status] || status || "-";
-}
-
-function adjustmentStatusTag(status: string) {
-  if (status === "pending_review") return "warning";
-  if (status === "dispatched") return "primary";
-  if (status === "done") return "success";
-  if (status === "rejected") return "info";
-  return "info";
-}
-
-function adjustmentActionText(row: AIAdjustmentTask) {
-  if (row.status === "dispatched") return `已下发 ${formatTime(row.dispatched_at)}`;
-  if (row.status === "done") return `已完成 ${formatTime(row.completed_at)}`;
-  if (row.status === "rejected") return "管理员已驳回";
-  return "-";
-}
-
-async function dispatchAdjustment(row: AIAdjustmentTask) {
-  const assignedTo = selectedAssignees.value[row.id];
-  if (!assignedTo) {
-    ElMessage.warning("请先选择现场人员");
-    return;
-  }
-  await ElMessageBox.confirm(`确认将整改任务下发给 ${workers.value.find((worker) => worker.id === assignedTo)?.name || "现场人员"}？`, "审核下发", { type: "warning" });
-  await apiPost(`/ai/adjustments/${row.id}/dispatch`, { assigned_to: assignedTo, review_note: "管理员审核通过" });
-  ElMessage.success("整改任务已下发");
-  await loadAdjustments();
-}
-
-async function rejectAdjustment(row: AIAdjustmentTask) {
-  await ElMessageBox.confirm(`确认驳回这条整改草稿：${row.problem_type || row.room_name}？`, "驳回整改草稿", { type: "warning" });
-  await apiPost(`/ai/adjustments/${row.id}/reject`, { review_note: "管理员驳回" });
-  ElMessage.success("整改草稿已驳回");
-  await loadAdjustments();
-}
-
 watch(selectedTasks, (tasks) => {
   setAiChatTaskIds(tasks.map((task) => task.id));
 }, { deep: true });
 
 onMounted(async () => {
-  await Promise.all([loadStatus(), loadSummary(), loadWorkers(), loadAdjustments()]);
+  await Promise.all([loadStatus(), loadSummary()]);
 });
 </script>
 
@@ -1201,57 +1085,6 @@ onMounted(async () => {
   grid-template-columns: minmax(0, 1fr) minmax(260px, 300px);
   gap: 16px;
   align-items: start;
-}
-
-.adjustment-panel {
-  min-width: 0;
-  padding: 16px;
-  border: 1px solid rgba(164, 211, 247, 0.62);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: var(--shadow);
-}
-
-.adjustment-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  margin-bottom: 14px;
-}
-
-.adjustment-head div:first-child {
-  display: grid;
-  gap: 4px;
-}
-
-.adjustment-head > div:first-child > span {
-  color: #153654;
-  font-size: 17px;
-  font-weight: 820;
-}
-
-.adjustment-head > div:first-child > strong {
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.adjustment-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.adjustment-actions .el-button {
-  margin-left: 0;
-}
-
-.muted-action {
-  color: var(--muted);
-  font-size: 13px;
 }
 
 .task-workbench,

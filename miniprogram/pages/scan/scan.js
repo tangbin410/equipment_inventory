@@ -1,7 +1,7 @@
 /* 设备盘点页 - 核心逻辑 */
 
 const app = getApp();
-const { getTaskItems, submitScan, submitMissing, submitSurplus, uploadEvidencePhoto } = require("../../utils/api");
+const { getTaskItems, submitScan, submitMissing, submitSurplus } = require("../../utils/api");
 
 Page({
   data: {
@@ -22,9 +22,6 @@ Page({
       cabinetNoBarcode: false,
       rackNo: "",
       notes: "",
-      evidencePhoto: "",
-      assetEvidencePhoto: "",
-      cabinetEvidencePhoto: "",
       _assetText: "",
       _hasAssetBarcode: false,
       _cabinetText: "",
@@ -48,7 +45,7 @@ Page({
 
   /** 每次显示页面时刷新（从提交页返回时更新） */
   onShow() {
-    // wx.scanCode / wx.chooseMedia 返回时也会触发 onShow。
+    // wx.scanCode 返回时也会触发 onShow。
     // 如果这里重新 loadDevices，会导致设备列表整页重绘，滚动位置回到上方。
     if (this.skipNextOnShowReload) {
       this.skipNextOnShowReload = false;
@@ -166,9 +163,6 @@ Page({
       match_status: item.match_status,
       assetMatchStatus: item.asset_match_status || item.match_status,
       modelMatchStatus: item.model_match_status || item.match_status,
-      evidencePhoto: "",
-      assetEvidencePhoto: "",
-      cabinetEvidencePhoto: "",
       ...draft,
     };
     this.fillDeviceDisplay(device);
@@ -268,35 +262,25 @@ Page({
   /** 切换资产"无条码" */
   toggleAssetNoBarcode(e) {
     const id = Number(e.currentTarget.dataset.id);
-    let checked = false;
     this.updateDevice(id, (d) => {
-      checked = !d.assetNoBarcode;
+      const checked = !d.assetNoBarcode;
       return {
         assetNoBarcode: checked,
         assetBarcodes: checked ? [] : d.assetBarcodes,
-        assetEvidencePhoto: checked ? d.assetEvidencePhoto : "",
       };
     });
-    if (checked) {
-      wx.showToast({ title: "已标记无资产条码，请拍现场凭证", icon: "none" });
-    }
   },
 
   /** 切换机柜"无条码" */
   toggleCabinetNoBarcode(e) {
     const id = Number(e.currentTarget.dataset.id);
-    let checked = false;
     this.updateDevice(id, (d) => {
-      checked = !d.cabinetNoBarcode;
+      const checked = !d.cabinetNoBarcode;
       return {
         cabinetNoBarcode: checked,
         cabinetBarcodes: checked ? [] : d.cabinetBarcodes,
-        cabinetEvidencePhoto: checked ? d.cabinetEvidencePhoto : "",
       };
     });
-    if (checked) {
-      wx.showToast({ title: "已标记无机柜条码，请拍现场凭证", icon: "none" });
-    }
   },
 
   /** 设备型号下拉选择 */
@@ -334,21 +318,6 @@ Page({
     this.updateDevice(id, () => ({
       notes: e.detail.value,
     }));
-  },
-
-  async chooseEvidencePhoto(e) {
-    const id = Number(e.currentTarget.dataset.id);
-    const evidenceType = e.currentTarget.dataset.type || "general";
-    const field = evidenceType === "asset" ? "assetEvidencePhoto" : evidenceType === "cabinet" ? "cabinetEvidencePhoto" : "evidencePhoto";
-    const label = evidenceType === "asset" ? "资产无条码凭证" : evidenceType === "cabinet" ? "机柜无条码凭证" : "现场凭证";
-    try {
-      this.skipNextOnShowReload = true;
-      const result = await wx.chooseMedia({ count: 1, mediaType: ["image"], sourceType: ["camera", "album"] });
-      this.updateDevice(id, () => ({ [field]: result.tempFiles[0].tempFilePath }));
-      wx.showToast({ title: `${label}已保存`, icon: "success" });
-    } catch (err) {
-      // 用户取消选择。
-    }
   },
 
   markMissing(e) {
@@ -471,7 +440,6 @@ Page({
     this.updateSurplusForm({
       assetNoBarcode: checked,
       assetBarcodes: checked ? [] : this.data.surplusForm.assetBarcodes,
-      assetEvidencePhoto: checked ? this.data.surplusForm.assetEvidencePhoto : "",
     });
   },
 
@@ -480,22 +448,7 @@ Page({
     this.updateSurplusForm({
       cabinetNoBarcode: checked,
       cabinetBarcodes: checked ? [] : this.data.surplusForm.cabinetBarcodes,
-      cabinetEvidencePhoto: checked ? this.data.surplusForm.cabinetEvidencePhoto : "",
     });
-  },
-
-  async chooseSurplusEvidencePhoto(e) {
-    const evidenceType = e.currentTarget.dataset.type || "general";
-    const field = evidenceType === "asset" ? "assetEvidencePhoto" : evidenceType === "cabinet" ? "cabinetEvidencePhoto" : "evidencePhoto";
-    const label = evidenceType === "asset" ? "资产无条码凭证" : evidenceType === "cabinet" ? "机柜无条码凭证" : "现场凭证";
-    try {
-      this.skipNextOnShowReload = true;
-      const result = await wx.chooseMedia({ count: 1, mediaType: ["image"], sourceType: ["camera", "album"] });
-      this.updateSurplusForm({ [field]: result.tempFiles[0].tempFilePath });
-      wx.showToast({ title: `${label}已保存`, icon: "success" });
-    } catch (err) {
-      // 用户取消选择。
-    }
   },
 
   resetSurplusForm() {
@@ -512,9 +465,6 @@ Page({
         cabinetNoBarcode: false,
         rackNo: "",
         notes: "",
-        evidencePhoto: "",
-        assetEvidencePhoto: "",
-        cabinetEvidencePhoto: "",
         _assetText: "",
         _hasAssetBarcode: false,
         _cabinetText: "",
@@ -541,14 +491,6 @@ Page({
       wx.showToast({ title: "请填写设备所属机架号", icon: "none" });
       return;
     }
-    if (form.assetNoBarcode && !form.assetEvidencePhoto) {
-      wx.showToast({ title: "请上传资产无条码凭证", icon: "none" });
-      return;
-    }
-    if (form.cabinetNoBarcode && !form.cabinetEvidencePhoto) {
-      wx.showToast({ title: "请上传机柜无条码凭证", icon: "none" });
-      return;
-    }
     try {
       const user = app.globalData.userInfo || {};
       const requestKey = `surplus_request_${this.taskId}`;
@@ -565,12 +507,6 @@ Page({
         notes: form.notes,
         created_by: user.user_id || null,
       });
-      if (form.assetNoBarcode && form.assetEvidencePhoto && result.record_id) {
-        await uploadEvidencePhoto(result.record_id, form.assetEvidencePhoto, "asset");
-      }
-      if (form.cabinetNoBarcode && form.cabinetEvidencePhoto && result.record_id) {
-        await uploadEvidencePhoto(result.record_id, form.cabinetEvidencePhoto, "cabinet");
-      }
       const newDevice = this.makeDevice(result.record);
       const allDevices = [newDevice, ...this.data.allDevices];
       const devices = [newDevice, ...this.data.devices].filter((d) => this.deviceMatchesFilter(d));
@@ -626,22 +562,7 @@ Page({
       wx.showToast({ title: "请填写设备所属机架号", icon: "none" });
       return;
     }
-    if (device.assetNoBarcode && !device.assetEvidencePhoto) {
-      wx.showToast({ title: "请上传资产无条码凭证", icon: "none" });
-      return;
-    }
-    if (device.cabinetNoBarcode && !device.cabinetEvidencePhoto) {
-      wx.showToast({ title: "请上传机柜无条码凭证", icon: "none" });
-      return;
-    }
-
     try {
-      if (device.assetNoBarcode && device.assetEvidencePhoto) {
-        await uploadEvidencePhoto(id, device.assetEvidencePhoto, "asset");
-      }
-      if (device.cabinetNoBarcode && device.cabinetEvidencePhoto) {
-        await uploadEvidencePhoto(id, device.cabinetEvidencePhoto, "cabinet");
-      }
       const requestKey = `scan_request_${id}`;
       const result = await submitScan({
         client_request_id: this.ensureRequestId(requestKey, "scan", id),
@@ -708,9 +629,6 @@ Page({
             actualModel: updated.actualModel,
             rackNo: updated.rackNo,
             notes: updated.notes,
-            evidencePhoto: updated.evidencePhoto,
-            assetEvidencePhoto: updated.assetEvidencePhoto,
-            cabinetEvidencePhoto: updated.cabinetEvidencePhoto,
           });
         }
         changedDevice = updated;

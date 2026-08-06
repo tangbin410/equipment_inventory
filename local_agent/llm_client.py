@@ -11,16 +11,33 @@ from .config import deepseek_config, request_timeout
 
 
 def post_deepseek_chat(messages: list[dict[str, str]], temperature: float = 0.2) -> str:
+    data = post_deepseek_chat_response(messages, temperature=temperature)
+    return data["choices"][0]["message"]["content"]
+
+
+def post_deepseek_chat_response(
+    messages: list[dict[str, Any]],
+    temperature: float = 0.2,
+    tools: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Call the OpenAI-compatible endpoint and preserve tool call metadata."""
     api_key, model, base_url = deepseek_config()
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
     response = requests.post(
         f"{base_url.rstrip('/')}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={"model": model, "messages": messages, "temperature": temperature},
+        json=payload,
         timeout=request_timeout(),
     )
     response.raise_for_status()
-    data = response.json()
-    return data["choices"][0]["message"]["content"]
+    return response.json()
 
 
 def http_error_detail(exc: Exception) -> str:
@@ -46,4 +63,3 @@ def http_error_detail(exc: Exception) -> str:
         if detail:
             return f"{status}: {detail}"
     return f"{status}: {text[:500]}"
-

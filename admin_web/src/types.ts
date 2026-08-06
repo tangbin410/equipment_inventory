@@ -30,12 +30,38 @@ export interface TaskRecord {
   field_status?: string;
   missing_reason?: string;
   notes?: string;
-  evidence_photo?: string;
-  evidence_photo_url?: string;
-  asset_evidence_photo?: string;
-  asset_evidence_photo_url?: string;
-  cabinet_evidence_photo?: string;
-  cabinet_evidence_photo_url?: string;
+}
+
+export interface QrAssetBinding {
+  id?: number;
+  device_name: string;
+  device_ref?: string;
+  room_name?: string;
+  bound_at?: string;
+  unbound_at?: string | null;
+  changed_by?: number | null;
+  changed_by_name?: string;
+  change_reason?: string;
+}
+
+export interface QrAsset {
+  id: number;
+  token: string;
+  asset_barcode: string;
+  barcode_model: string;
+  room_name: string;
+  current_device_name: string;
+  current_device_ref: string;
+  history: QrAssetBinding[];
+}
+
+export interface QrAssetForm {
+  asset_barcode: string;
+  barcode_model: string;
+  room_name: string;
+  current_device_name?: string;
+  current_device_ref?: string;
+  change_reason?: string;
 }
 
 export interface Task {
@@ -114,6 +140,8 @@ export interface AiChatMessage {
 
 export interface AiChatResponse {
   answer: string;
+  status?: string;
+  pending_tool_calls?: Array<{ id?: string; name?: string; arguments?: Record<string, unknown> }>;
   model_provider: string;
   model_name: string;
   input_summary: string;
@@ -144,4 +172,8 @@ export interface AIAdjustmentTask {
   reviewed_at?: string;
   dispatched_at?: string;
   completed_at?: string;
+  reminder_count?: number;
+  reminded_at?: string;
+  reminder_note?: string;
+  reminded_by?: number;
 }

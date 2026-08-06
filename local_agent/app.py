@@ -13,7 +13,8 @@ from fastapi import FastAPI, HTTPException, Request
 
 from .config import agent_token, deepseek_config, load_local_env
 from .context_policy import CONTEXT_POLICY_VERSION, apply_context_policy
-from .llm_client import http_error_detail, post_deepseek_chat
+from .agent_runtime import run_agent
+from .llm_client import http_error_detail, post_deepseek_chat, post_deepseek_chat_response
 from .prompt_loader import render_inventory_analysis_prompt
 from .rules import ANALYSIS_KEYS
 from .tools import run_tool, tool_manifest
@@ -94,6 +95,19 @@ def _chat_history(value: Any) -> list[dict[str, str]]:
     return result
 
 
+def _approval_message(pending_tool_calls: list[dict[str, Any]]) -> str:
+    names = {str(call.get("name") or "") for call in pending_tool_calls}
+    if "report.export_weekly_inventory" in names:
+        return "检测到需要管理员确认的导出操作。请核对当前任务范围后点击“确认导出 Excel”，确认前不会创建文件。"
+    if "adjustment.create_review_draft" in names:
+        return "检测到需要管理员确认的整改草稿生成操作。确认后只生成待审核草稿，不会下发到小程序。"
+    if "adjustment.dispatch_confirmed_task" in names:
+        return "检测到需要管理员确认的整改任务下发操作。请核对草稿 ID 和现场人员 ID，确认后才会下发到小程序。"
+    if "closure.create_reminder" in names:
+        return "检测到需要管理员确认的系统内催办。请核对整改 ID，确认后只记录催办，不发送微信、短信，也不改变任务状态。"
+    return "检测到需要管理员确认的操作。确认前不会修改业务数据。"
+
+
 def chat(payload: dict[str, Any]) -> dict[str, Any]:
     message = _clean_chat_text(payload.get("message"))
     if not message:
@@ -118,6 +132,10 @@ def chat(payload: dict[str, Any]) -> dict[str, Any]:
                 "如果判断依据不足，要向管理员提出明确确认项。"
             ),
         },
+        {
+            "role": "system",
+            "content": "When the administrator asks to export Excel, call the export tool to create a pending approval request; never create the file before confirmation. When the administrator asks to generate adjustment review drafts, call the draft tool to create a pending approval request; never dispatch a task. Only call the adjustment dispatch tool when the administrator provides an exact adjustment ID and worker ID; never infer either ID. When asked about adjustment closure status or overdue items, call the read-only closure tracking tool. Only call the reminder tool when the administrator provides an exact adjustment ID; never infer the ID, never claim that WeChat or SMS was sent, and never change task status.",
+        },
         *_chat_history(payload.get("history")),
         {
             "role": "user",
@@ -130,11 +148,26 @@ def chat(payload: dict[str, Any]) -> dict[str, Any]:
             ),
         },
     ]
-    answer = post_deepseek_chat(messages, temperature=0.2)
+    def model_call(history: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+        return post_deepseek_chat_response(history, temperature=0.2, tools=tools)
+
+    run_result = run_agent(
+        messages,
+        model_call,
+        max_steps=6,
+        include_approval_required=True,
+    )
+    answer = run_result.content
+    if run_result.status == "waiting_approval":
+        answer = _approval_message(run_result.pending_tool_calls)
+    elif run_result.status != "completed":
+        raise RuntimeError(f"Agent 未完成对话：{run_result.status}")
     return {
         "answer": answer.strip(),
+        "status": run_result.status,
+        "pending_tool_calls": run_result.pending_tool_calls,
         "context_meta": context_meta,
-        "tool_manifest": tool_manifest(),
+        "tool_manifest": tool_manifest(include_approval_required=True),
         "agent": "local-inventory-agent",
         "model_name": model_name,
     }
@@ -148,9 +181,25 @@ def analyze(payload: dict[str, Any]) -> dict[str, Any]:
     model_error = ""
     try:
         _, model_name, _ = deepseek_config()
-        messages = render_inventory_analysis_prompt(safe_payload, rule_items, tool_manifest(), context_meta)
-        content = post_deepseek_chat(messages, temperature=0.2)
-        model_items = _parse_json_array(content)
+        messages = render_inventory_analysis_prompt(
+            safe_payload,
+            rule_items,
+            tool_manifest(include_approval_required=False),
+            context_meta,
+        )
+
+        def model_call(history: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+            return post_deepseek_chat_response(history, temperature=0.2, tools=tools)
+
+        run_result = run_agent(
+            messages,
+            model_call,
+            max_steps=6,
+            include_approval_required=False,
+        )
+        if run_result.status != "completed":
+            raise RuntimeError(f"Agent 未完成分析：{run_result.status}")
+        model_items = _parse_json_array(run_result.content)
     except Exception as exc:
         model_error = str(exc)
         model_items = []
@@ -160,7 +209,7 @@ def analyze(payload: dict[str, Any]) -> dict[str, Any]:
         "analysis_items": _merge_items(rule_items, model_items),
         "rule_items": rule_items,
         "context_meta": context_meta,
-        "tool_manifest": tool_manifest(),
+        "tool_manifest": tool_manifest(include_approval_required=False),
         "agent": "local-inventory-agent",
         "model_name": model_name,
     }

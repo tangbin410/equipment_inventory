@@ -50,6 +50,50 @@ class UserUpdateRequest(BaseModel):
     is_active: bool | None = None
 
 
+class QrAssetCreateRequest(BaseModel):
+    """创建一个带固定二维码标识的资产。"""
+    asset_barcode: str
+    barcode_model: str = ""
+    room_name: str
+    current_device_name: str = ""
+    current_device_ref: str = ""
+
+
+class QrAssetUpdateRequest(BaseModel):
+    """修改资产字段；二维码 token 不允许修改。"""
+    asset_barcode: str | None = None
+    barcode_model: str | None = None
+    room_name: str | None = None
+    current_device_name: str | None = None
+    current_device_ref: str | None = None
+    change_reason: str = ""
+
+
+class QrAssetBindingRequest(BaseModel):
+    """变更资产当前关联的传输设备。"""
+    device_name: str = ""
+    device_ref: str = ""
+    change_reason: str = ""
+
+
+class QrAssetHistoryCreateRequest(BaseModel):
+    """补录一条已经结束的历史关联记录。"""
+    device_name: str
+    room_name: str = ""
+    bound_at: str = ""
+    unbound_at: str = ""
+    change_reason: str = ""
+
+
+class QrAssetHistoryUpdateRequest(BaseModel):
+    """修订一条已经结束的历史关联记录。"""
+    device_name: str | None = None
+    room_name: str | None = None
+    bound_at: str | None = None
+    unbound_at: str | None = None
+    change_reason: str | None = None
+
+
 class ScanSubmitRequest(BaseModel):
     """现场人员提交盘点结果"""
     client_request_id: str = Field("", description="客户端提交幂等ID")
@@ -112,6 +156,11 @@ class AIAdjustmentDispatchRequest(BaseModel):
 class AIAdjustmentRejectRequest(BaseModel):
     """管理员驳回 AI 整改草稿"""
     review_note: str = Field("", description="驳回说明")
+
+
+class AIAdjustmentReminderRequest(BaseModel):
+    """管理员记录 AI 整改任务的系统内催办"""
+    reminder_note: str = Field("", max_length=200, description="系统内催办说明")
 
 
 class AdjustmentCompleteRequest(BaseModel):

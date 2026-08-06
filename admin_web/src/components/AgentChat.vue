@@ -28,6 +28,18 @@
     </div>
 
     <footer class="agent-chat-input">
+      <el-button v-if="pendingExport" type="warning" :loading="exporting" @click="confirmExport">
+        确认导出 Excel
+      </el-button>
+      <el-button v-if="pendingDraft" type="warning" :loading="drafting" @click="confirmDraft">
+        确认生成整改草稿
+      </el-button>
+      <el-button v-if="pendingDispatch" type="danger" :loading="dispatching" @click="confirmDispatch">
+        确认下发整改任务
+      </el-button>
+      <el-button v-if="pendingReminder" type="warning" :loading="reminding" @click="confirmReminder">
+        确认记录催办
+      </el-button>
       <el-input
         v-model="chatInput"
         type="textarea"
@@ -44,8 +56,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { ChatDotRound, Close, FullScreen, Minus } from "@element-plus/icons-vue";
-import { ElMessage } from "element-plus";
-import { apiGet, apiPost, getToken } from "../api";
+import { ElMessage, ElMessageBox } from "element-plus";
+import { apiGet, apiPost, downloadBlob, getToken } from "../api";
 import { AI_CHECK_CHANGED_EVENT, getAiChatTaskIds, readAiCheckSession } from "../aiSession";
 import type { AiChatMessage, AiChatResponse, AiStatus } from "../types";
 
@@ -53,6 +65,14 @@ const chatOpen = ref(false);
 const minimized = ref(false);
 const maximized = ref(false);
 const chatting = ref(false);
+const exporting = ref(false);
+const pendingExport = ref(false);
+const drafting = ref(false);
+const pendingDraft = ref(false);
+const dispatching = ref(false);
+const pendingDispatch = ref<{ adjustmentId: number; assignedTo: number; reviewNote: string } | null>(null);
+const reminding = ref(false);
+const pendingReminder = ref<{ adjustmentId: number; reminderNote: string } | null>(null);
 const chatInput = ref("");
 const chatBodyRef = ref<HTMLElement | null>(null);
 const status = ref<AiStatus | null>(null);
@@ -118,8 +138,119 @@ async function sendChat() {
       { timeout: 90000 },
     );
     chatMessages.value.push({ role: "assistant", content: result.answer || "未获得有效回复。" });
+    pendingExport.value = Boolean(
+      result.status === "waiting_approval" &&
+      result.pending_tool_calls?.some((call) => call.name === "report.export_weekly_inventory"),
+    );
+    pendingDraft.value = Boolean(
+      result.status === "waiting_approval" &&
+      result.pending_tool_calls?.some((call) => call.name === "adjustment.create_review_draft"),
+    );
+    const dispatchCall = result.pending_tool_calls?.find((call) => call.name === "adjustment.dispatch_confirmed_task");
+    const adjustmentId = Number(dispatchCall?.arguments?.adjustment_id || 0);
+    const assignedTo = Number(dispatchCall?.arguments?.assigned_to || 0);
+    pendingDispatch.value = result.status === "waiting_approval" && adjustmentId > 0 && assignedTo > 0
+      ? {
+          adjustmentId,
+          assignedTo,
+          reviewNote: String(dispatchCall?.arguments?.review_note || "管理员通过 Agent 审核下发"),
+        }
+      : null;
+    const reminderCall = result.pending_tool_calls?.find((call) => call.name === "closure.create_reminder");
+    const reminderAdjustmentId = Number(reminderCall?.arguments?.adjustment_id || 0);
+    pendingReminder.value = result.status === "waiting_approval" && reminderAdjustmentId > 0
+      ? {
+          adjustmentId: reminderAdjustmentId,
+          reminderNote: String(reminderCall?.arguments?.reminder_note || "管理员通过 Agent 记录系统内催办"),
+        }
+      : null;
   } finally {
     chatting.value = false;
+    await scrollToBottom();
+  }
+}
+
+async function confirmExport() {
+  if (exporting.value) return;
+  const taskIds = getAiChatTaskIds();
+  if (!taskIds.length) {
+    ElMessage.warning("请先在 AI 页面选择需要导出的任务");
+    return;
+  }
+  exporting.value = true;
+  try {
+    const query = taskIds.map((taskId) => `task_ids=${encodeURIComponent(taskId)}`).join("&");
+    await downloadBlob(`/ai/export/inventory?${query}`, `资产盘点数据_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    pendingExport.value = false;
+    chatMessages.value.push({ role: "assistant", content: "Excel 文件已按确认的任务范围生成并开始下载。" });
+  } finally {
+    exporting.value = false;
+    await scrollToBottom();
+  }
+}
+
+async function confirmDraft() {
+  if (drafting.value) return;
+  const taskIds = getAiChatTaskIds();
+  if (!taskIds.length) {
+    ElMessage.warning("请先在 AI 页面选择需要分析的任务");
+    return;
+  }
+  drafting.value = true;
+  try {
+    const result = await apiPost<{ status: string; adjustment_drafts?: unknown[] }>(
+      "/ai/analyze",
+      { task_ids: taskIds },
+      { timeout: 90000 },
+    );
+    pendingDraft.value = false;
+    const count = result.adjustment_drafts?.length || 0;
+    chatMessages.value.push({ role: "assistant", content: `已生成 ${count} 条待审核整改草稿，尚未下发到小程序。` });
+  } finally {
+    drafting.value = false;
+    await scrollToBottom();
+  }
+}
+
+async function confirmDispatch() {
+  const pending = pendingDispatch.value;
+  if (!pending || dispatching.value) return;
+  await ElMessageBox.confirm(
+    `确认将整改草稿 #${pending.adjustmentId} 下发给现场人员 ID ${pending.assignedTo}？`,
+    "审核下发",
+    { type: "warning" },
+  );
+  dispatching.value = true;
+  try {
+    await apiPost(`/ai/adjustments/${pending.adjustmentId}/dispatch`, {
+      assigned_to: pending.assignedTo,
+      review_note: pending.reviewNote,
+    });
+    pendingDispatch.value = null;
+    chatMessages.value.push({ role: "assistant", content: `整改草稿 #${pending.adjustmentId} 已下发到现场人员 ID ${pending.assignedTo}。` });
+  } finally {
+    dispatching.value = false;
+    await scrollToBottom();
+  }
+}
+
+async function confirmReminder() {
+  const pending = pendingReminder.value;
+  if (!pending || reminding.value) return;
+  await ElMessageBox.confirm(
+    `确认给整改任务 #${pending.adjustmentId} 记录一次系统内催办？该操作不会发送微信或短信，也不会改变任务状态。`,
+    "记录催办",
+    { type: "warning" },
+  );
+  reminding.value = true;
+  try {
+    await apiPost(`/ai/adjustments/${pending.adjustmentId}/remind`, {
+      reminder_note: pending.reminderNote,
+    });
+    pendingReminder.value = null;
+    chatMessages.value.push({ role: "assistant", content: `整改任务 #${pending.adjustmentId} 已记录系统内催办，未发送外部通知。` });
+  } finally {
+    reminding.value = false;
     await scrollToBottom();
   }
 }
@@ -341,6 +472,11 @@ onBeforeUnmount(() => {
   padding: 12px;
   border-top: 1px solid rgba(164, 211, 247, 0.48);
   background: rgba(255, 255, 255, 0.96);
+}
+
+.agent-chat-input > .el-button {
+  grid-column: 1 / -1;
+  justify-self: start;
 }
 
 @media (max-width: 760px) {

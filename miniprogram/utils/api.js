@@ -67,36 +67,6 @@ function completeAdjustmentTask(adjustmentId, completionNote = "") {
 function submitScan(data) { return request("POST", "/scan", data); }
 function submitMissing(recordId, data) { return request("POST", "/records/" + recordId + "/missing", data); }
 function submitSurplus(data) { return request("POST", "/surplus", data); }
-function uploadEvidencePhoto(recordId, filePath, evidenceType = "general") {
-  return new Promise((resolve, reject) => {
-    wx.uploadFile({
-      url: app.globalData.apiBase + "/records/" + recordId + "/evidence",
-      filePath,
-      name: "file",
-      formData: {
-        evidence_type: evidenceType,
-      },
-      header: {
-        "Authorization": app.globalData.userInfo && app.globalData.userInfo.access_token
-          ? "Bearer " + app.globalData.userInfo.access_token : "",
-      },
-      success(res) {
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          resolve(JSON.parse(res.data));
-        } else {
-          const data = JSON.parse(res.data || "{}");
-          wx.showToast({ title: data.detail || "照片上传失败", icon: "none" });
-          reject(new Error(data.detail || "照片上传失败"));
-        }
-      },
-      fail(err) {
-        wx.showToast({ title: "照片已保存在草稿，请联网后重试", icon: "none" });
-        reject(err);
-      },
-    });
-  });
-}
-
 module.exports = {
   login,
   bindProfile,
@@ -111,5 +81,4 @@ module.exports = {
   submitScan,
   submitMissing,
   submitSurplus,
-  uploadEvidencePhoto,
 };

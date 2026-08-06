@@ -62,6 +62,11 @@
         <text class="field-text">{{item._basisText}}</text>
       </view>
 
+      <view wx:if="{{item._hasReminder}}" class="reminder-block">
+        <text class="reminder-title">{{item._reminderSummary}}</text>
+        <text class="reminder-note">{{item._reminderNote}}</text>
+      </view>
+
       <button
         wx:if="{{item._canComplete}}"
         class="complete-btn"

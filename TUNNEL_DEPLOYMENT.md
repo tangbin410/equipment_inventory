@@ -151,10 +151,8 @@ devApiBase: "http://localhost:8000/api"
 
 ```text
 request 合法域名：https://api.equip-inventory.xyz
-uploadFile 合法域名：https://api.equip-inventory.xyz
 ```
 
-上传现场照片使用 `wx.uploadFile`，所以 `uploadFile 合法域名` 必须配置。
 
 ## 7. 现场人员首次绑定
 
