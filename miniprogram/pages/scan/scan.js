@@ -2,6 +2,26 @@
 
 const app = getApp();
 const { getTaskItems, submitScan, submitMissing, submitSurplus } = require("../../utils/api");
+const { suggestDeviceModels } = require("../../utils/device-models");
+
+function emptySurplusForm() {
+  return {
+    deviceName: "",
+    actualModel: "",
+    modelSuggestions: [],
+    modelConfirmed: false,
+    assetBarcodes: [],
+    assetNoBarcode: false,
+    cabinetBarcodes: [],
+    cabinetNoBarcode: false,
+    rackNo: "",
+    notes: "",
+    _assetText: "",
+    _hasAssetBarcode: false,
+    _cabinetText: "",
+    _hasCabinetBarcode: false,
+  };
+}
 
 Page({
   data: {
@@ -13,20 +33,7 @@ Page({
     filterOptions: ["全部设备", "未盘点", "异常设备", "盘盈", "盘亏"],
     activeDeviceId: null, // 当前展开的设备ID
     showSurplusForm: false,
-    surplusForm: {
-      deviceName: "",
-      actualModel: "",
-      assetBarcodes: [],
-      assetNoBarcode: false,
-      cabinetBarcodes: [],
-      cabinetNoBarcode: false,
-      rackNo: "",
-      notes: "",
-      _assetText: "",
-      _hasAssetBarcode: false,
-      _cabinetText: "",
-      _hasCabinetBarcode: false,
-    },
+    surplusForm: emptySurplusForm(),
     loading: true,
     scannedCount: 0,
     totalCount: 0,
@@ -66,14 +73,12 @@ Page({
 
       // 将后端数据转为前端状态（每个设备加上扫描表单字段）
       const devices = items.map((item) => this.makeDevice(item));
-      const normalDevices = devices.filter((d) => d.recordType !== "surplus");
-      const scanned = normalDevices.filter((d) => d.submitted).length;
       this.setData({
         taskName: task.task_name,
         allDevices: devices,
         devices,
-        totalCount: normalDevices.length,
-        scannedCount: scanned,
+        totalCount: this.countNormalDevices(devices),
+        scannedCount: this.countScannedDevices(devices),
         loading: false,
       });
     } catch (err) {
@@ -102,6 +107,7 @@ Page({
     const searchableText = [
       device.device_name,
       device.expected_model,
+      device.actualModel,
       device.expectedBarcode,
       device.assetBarcodes.join(","),
       device.cabinetBarcodes.join(","),
@@ -134,16 +140,25 @@ Page({
     wx.removeStorageSync(key);
   },
 
+  countNormalDevices(devices = this.data.allDevices) {
+    return devices.filter((d) => d.recordType !== "surplus").length;
+  },
+
+  countScannedDevices(devices = this.data.allDevices) {
+    return devices.filter((d) => d.recordType !== "surplus" && d.submitted).length;
+  },
+
   makeDevice(item) {
-    const modelOptions = [item.expected_model || item.actual_model || "其他..."];
-    if (item.expected_model) {
-      modelOptions.push("其他...");
-    }
     const draft = wx.getStorageSync(`scan_draft_${item.id}`) || {};
+    const deviceExtra = this.parseDeviceExtra(item.device_extra);
+    const actualModel = Object.prototype.hasOwnProperty.call(draft, "actualModel")
+      ? draft.actualModel
+      : (item.actual_model || "");
     const device = {
       id: item.id,
       device_name: item.device_name,
-      device_extra: item.device_extra || {},
+      device_extra: deviceExtra,
+      expectedRackNo: deviceExtra["设备机架"] || "",
       expected_model: item.expected_model || "",
       expectedBarcode: item.expected_barcode || "",
       recordType: item.record_type || "normal",
@@ -153,10 +168,6 @@ Page({
       assetNoBarcode: !!item.asset_no_barcode,
       cabinetBarcodes: item.cabinet_barcodes ? item.cabinet_barcodes.split(",").filter(Boolean) : [],
       cabinetNoBarcode: !!item.cabinet_no_barcode,
-      modelOptions,
-      showOtherModel: false,
-      selectedModelIndex: -1,
-      actualModel: item.actual_model || "",
       rackNo: item.rack_no || "",
       notes: item.notes || "",
       submitted: item.match_status !== "未扫",
@@ -164,20 +175,33 @@ Page({
       assetMatchStatus: item.asset_match_status || item.match_status,
       modelMatchStatus: item.model_match_status || item.match_status,
       ...draft,
+      actualModel,
+      modelConfirmed: !!draft.modelConfirmed,
+      modelSuggestions: draft.modelConfirmed ? [] : suggestDeviceModels(actualModel),
     };
     this.fillDeviceDisplay(device);
     return device;
   },
 
+  parseDeviceExtra(extra) {
+    if (!extra) return {};
+    if (typeof extra === "object") return extra;
+    try {
+      return JSON.parse(extra) || {};
+    } catch (err) {
+      return {};
+    }
+  },
+
   fillDeviceDisplay(device) {
-    device._matchIcon = device.match_status === "一致" ? "success" : device.match_status === "不一致" ? "error" : "wait";
-    device._tagCls = device.recordType === "surplus" ? "tag-surplus" : device.recordType === "missing" ? "tag-missing" : device.match_status === "一致" ? "tag-success" : device.match_status === "不一致" ? "tag-error" : "tag-wait";
-    device._matchText = device.recordType === "surplus" ? "➕ 盘盈" : device.recordType === "missing" ? "➖ 盘亏" : device.match_status === "一致" ? "✅ 一致" : device.match_status === "不一致" ? "❌ 不一致" : "⏳ " + device.match_status;
-    device._assetMatchText = "资产条码比对: " + (device.assetMatchStatus || "未扫");
-    device._modelMatchText = "型号比对: " + (device.modelMatchStatus || "未扫");
+    device._expectedModelText = device.expected_model || "未导入";
     device._expectedBarcodeText = device.expectedBarcode || "未导入";
+    device._expectedRackText = device.expectedRackNo || "未导入";
+    device._actualModelText = device.actualModel || "未填写";
+    device._rackNoText = device.rackNo || "未填写";
     device._assetText = device.assetBarcodes.length > 0 ? device.assetBarcodes.join(", ") : "";
     device._hasAssetBarcode = device.assetBarcodes.length > 0;
+    device._scannedAssetText = device._hasAssetBarcode ? device._assetText : device.assetNoBarcode ? "无条码" : "未填写";
     device._cabinetText = device.cabinetBarcodes.length > 0 ? device.cabinetBarcodes.join(", ") : "";
     device._hasCabinetBarcode = device.cabinetBarcodes.length > 0;
   },
@@ -283,26 +307,56 @@ Page({
     });
   },
 
-  /** 设备型号下拉选择 */
-  onModelChange(e) {
-    const id = Number(e.currentTarget.dataset.id);
-    const index = Number(e.detail.value);
-    this.updateDevice(id, (d) => {
-      const showOther = d.modelOptions[index] === "其他...";
-      return {
-        selectedModelIndex: index,
-        showOtherModel: showOther,
-        actualModel: showOther ? "" : d.modelOptions[index],
-      };
-    });
+  buildModelSuggestions(query) {
+    return suggestDeviceModels(query);
   },
 
-  /** 手动输入其他型号 */
-  onOtherModelInput(e) {
+  /** 设备型号输入 */
+  onModelInput(e) {
     const id = Number(e.currentTarget.dataset.id);
+    const value = e.detail.value;
     this.updateDevice(id, () => ({
-      actualModel: e.detail.value,
+      actualModel: value,
+      modelConfirmed: false,
+      modelSuggestions: this.buildModelSuggestions(value),
     }));
+  },
+
+  /** 选择推荐型号 */
+  chooseModelSuggestion(e) {
+    const id = Number(e.currentTarget.dataset.id);
+    const model = e.currentTarget.dataset.model || "";
+    this.updateDevice(id, () => ({
+      actualModel: model,
+      modelConfirmed: false,
+      modelSuggestions: this.buildModelSuggestions(model),
+    }));
+  },
+
+  chooseSurplusModelSuggestion(e) {
+    const model = e.currentTarget.dataset.model || "";
+    this.updateSurplusForm({ actualModel: model, modelConfirmed: false });
+  },
+
+  confirmModelInput(e) {
+    const id = Number(e.currentTarget.dataset.id);
+    const device = this.data.allDevices.find((d) => d.id === id);
+    if (!device || !device.actualModel.trim()) {
+      wx.showToast({ title: "请先填写设备型号", icon: "none" });
+      return;
+    }
+    this.updateDevice(id, () => ({ modelConfirmed: true, modelSuggestions: [] }));
+    wx.showToast({ title: "型号已确认", icon: "success" });
+  },
+
+  confirmSurplusModelInput() {
+    const model = this.data.surplusForm.actualModel || "";
+    if (!model.trim()) {
+      wx.showToast({ title: "请先填写设备型号", icon: "none" });
+      return;
+    }
+    this.updateSurplusForm({ modelConfirmed: true, modelSuggestions: [] });
+    wx.showToast({ title: "型号已确认", icon: "success" });
   },
 
   onRackNoInput(e) {
@@ -350,14 +404,9 @@ Page({
                 match_status: result.match_status,
                 assetMatchStatus: result.asset_match_status,
                 modelMatchStatus: result.model_match_status,
-                _matchIcon: "error",
-                _tagCls: "tag-missing",
-                _matchText: "➖ 盘亏",
-                _assetMatchText: "资产条码比对: " + result.asset_match_status,
-                _modelMatchText: "型号比对: " + result.model_match_status,
               }));
               this.setData({
-                scannedCount: this.data.allDevices.filter((d) => d.recordType !== "surplus" && d.submitted).length,
+                scannedCount: this.countScannedDevices(),
               });
               wx.removeStorageSync(`scan_draft_${id}`);
               this.clearRequestId(requestKey);
@@ -377,7 +426,11 @@ Page({
 
   onSurplusInput(e) {
     const field = e.currentTarget.dataset.field;
-    this.updateSurplusForm({ [field]: e.detail.value });
+    const patch = { [field]: e.detail.value };
+    if (field === "actualModel") {
+      patch.modelConfirmed = false;
+    }
+    this.updateSurplusForm(patch);
   },
 
   updateSurplusForm(patch) {
@@ -386,6 +439,11 @@ Page({
     form._hasAssetBarcode = form.assetBarcodes.length > 0;
     form._cabinetText = form.cabinetBarcodes.length > 0 ? form.cabinetBarcodes.join(", ") : "";
     form._hasCabinetBarcode = form.cabinetBarcodes.length > 0;
+    if (form.modelConfirmed) {
+      form.modelSuggestions = [];
+    } else if (!Object.prototype.hasOwnProperty.call(patch, "modelSuggestions")) {
+      form.modelSuggestions = this.buildModelSuggestions(form.actualModel);
+    }
     this.setData({ surplusForm: form });
     wx.setStorageSync(`surplus_draft_${this.taskId}`, form);
   },
@@ -456,20 +514,7 @@ Page({
     this.clearRequestId(`surplus_request_${this.taskId}`);
     this.setData({
       showSurplusForm: false,
-      surplusForm: {
-        deviceName: "",
-        actualModel: "",
-        assetBarcodes: [],
-        assetNoBarcode: false,
-        cabinetBarcodes: [],
-        cabinetNoBarcode: false,
-        rackNo: "",
-        notes: "",
-        _assetText: "",
-        _hasAssetBarcode: false,
-        _cabinetText: "",
-        _hasCabinetBarcode: false,
-      },
+      surplusForm: emptySurplusForm(),
     });
   },
 
@@ -498,7 +543,7 @@ Page({
         client_request_id: this.ensureRequestId(requestKey, "surplus", this.taskId),
         task_id: Number(this.taskId),
         device_name: form.deviceName,
-        actual_model: form.actualModel,
+        actual_model: form.actualModel.trim(),
         asset_barcodes: form.assetBarcodes.join(","),
         asset_no_barcode: form.assetNoBarcode,
         cabinet_barcodes: form.cabinetBarcodes.join(","),
@@ -513,8 +558,8 @@ Page({
       this.setData({
         allDevices,
         devices,
-        totalCount: allDevices.filter((d) => d.recordType !== "surplus").length,
-        scannedCount: allDevices.filter((d) => d.recordType !== "surplus" && d.submitted).length,
+        totalCount: this.countNormalDevices(allDevices),
+        scannedCount: this.countScannedDevices(allDevices),
       });
       this.resetSurplusForm();
       wx.showToast({ title: "盘盈已登记", icon: "success" });
@@ -554,8 +599,8 @@ Page({
       wx.showToast({ title: "请扫码机柜条码或勾选无条码", icon: "none" });
       return;
     }
-    if (!device.actualModel) {
-      wx.showToast({ title: "请选择设备型号", icon: "none" });
+    if (!device.actualModel.trim()) {
+      wx.showToast({ title: "请填写设备型号", icon: "none" });
       return;
     }
     if (!device.rackNo.trim()) {
@@ -572,7 +617,7 @@ Page({
         cabinet_barcodes: device.cabinetBarcodes.join(","),
         cabinet_no_barcode: device.cabinetNoBarcode,
         rack_no: device.rackNo,
-        actual_model: device.actualModel,
+        actual_model: device.actualModel.trim(),
         notes: device.notes,
       });
 
@@ -582,16 +627,11 @@ Page({
         match_status: result.match_status,
         assetMatchStatus: result.asset_match_status,
         modelMatchStatus: result.model_match_status,
-        _matchIcon: result.match_status === "一致" ? "success" : "error",
-        _tagCls: result.match_status === "一致" ? "tag-success" : "tag-error",
-        _matchText: result.match_status === "一致" ? "✅ 一致" : "❌ 不一致",
-        _assetMatchText: "资产条码比对: " + result.asset_match_status,
-        _modelMatchText: "型号比对: " + result.model_match_status,
       }));
 
       // 更新统计
       this.setData({
-        scannedCount: this.data.allDevices.filter((d) => d.recordType !== "surplus" && d.submitted).length,
+        scannedCount: this.countScannedDevices(),
       });
       wx.removeStorageSync(`scan_draft_${id}`);
       this.clearRequestId(requestKey);
@@ -611,15 +651,14 @@ Page({
     let changedDevice = null;
     const allDevices = this.data.allDevices.map((d) => {
       if (d.id === id) {
-        const updated = { ...d, ...updater(d) };
-        // WXML 不能方便地在模板里计算数组长度和 join 文本。
-        // 每次扫码、删除条码、勾选无条码后，都要同步刷新这些页面显示字段。
-        updated._assetText = updated.assetBarcodes.length > 0 ? updated.assetBarcodes.join(", ") : "";
-        updated._hasAssetBarcode = updated.assetBarcodes.length > 0;
-        updated._cabinetText = updated.cabinetBarcodes.length > 0 ? updated.cabinetBarcodes.join(", ") : "";
-        updated._hasCabinetBarcode = updated.cabinetBarcodes.length > 0;
-        updated._tagCls = updated.recordType === "surplus" ? "tag-surplus" : updated.recordType === "missing" ? "tag-missing" : updated._tagCls;
-        updated._matchText = updated.recordType === "surplus" ? "➕ 盘盈" : updated.recordType === "missing" ? "➖ 盘亏" : updated._matchText;
+        const patch = updater(d) || {};
+        const updated = { ...d, ...patch };
+        this.fillDeviceDisplay(updated);
+        if (updated.modelConfirmed) {
+          updated.modelSuggestions = [];
+        } else if (!Object.prototype.hasOwnProperty.call(patch, "modelSuggestions")) {
+          updated.modelSuggestions = this.buildModelSuggestions(updated.actualModel);
+        }
         if (!updated.submitted) {
           wx.setStorageSync(`scan_draft_${id}`, {
             assetBarcodes: updated.assetBarcodes,
@@ -627,6 +666,7 @@ Page({
             cabinetBarcodes: updated.cabinetBarcodes,
             cabinetNoBarcode: updated.cabinetNoBarcode,
             actualModel: updated.actualModel,
+            modelConfirmed: updated.modelConfirmed,
             rackNo: updated.rackNo,
             notes: updated.notes,
           });

@@ -68,6 +68,7 @@ export function inventoryRows(tasks: Task[]) {
         设备名称: record.device_name || "",
         综资设备型号: record.expected_model || "",
         综资资产条码: record.expected_barcode || "",
+        综资机架号: record.expected_rack_no || "",
         现场设备型号: record.actual_model || "",
         现场资产条码: record.asset_barcodes || (record.asset_no_barcode ? "无条码" : ""),
         现场机架号: record.rack_no || "",

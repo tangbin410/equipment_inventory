@@ -10,6 +10,7 @@ from typing import Any
 
 import requests
 from fastapi import FastAPI, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 
 from .config import agent_token, deepseek_config, load_local_env
 from .context_policy import CONTEXT_POLICY_VERSION, apply_context_policy
@@ -215,6 +216,18 @@ def analyze(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _health_check() -> dict[str, Any]:
+    _, model, _ = deepseek_config()
+    content = post_deepseek_chat(
+        [
+            {"role": "system", "content": "你是连通性检测助手。"},
+            {"role": "user", "content": "请只回复 OK"},
+        ],
+        temperature=0,
+    )
+    return {"ok": True, "message": f"local agent ok, model replied: {content.strip()[:40]}", "model_name": model}
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     _, model, _ = deepseek_config()
@@ -245,16 +258,8 @@ async def agent_entry(request: Request) -> dict[str, Any]:
     request_type = payload.get("type") if isinstance(payload, dict) else None
     try:
         if request_type == "health_check":
-            _, model, _ = deepseek_config()
-            content = post_deepseek_chat(
-                [
-                    {"role": "system", "content": "你是连通性检测助手。"},
-                    {"role": "user", "content": "请只回复 OK"},
-                ],
-                temperature=0,
-            )
-            return {"ok": True, "message": f"local agent ok, model replied: {content.strip()[:40]}", "model_name": model}
-        return analyze(payload)
+            return await run_in_threadpool(_health_check)
+        return await run_in_threadpool(analyze, payload)
     except requests.HTTPError as exc:
         raise HTTPException(status_code=502, detail=http_error_detail(exc)) from exc
     except Exception as exc:

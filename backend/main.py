@@ -18,7 +18,7 @@ from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Q
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
 
-from .ai_agent import analyze_inventory, build_inventory_rows, chat_inventory, check_model_available
+from .ai_agent import analyze_inventory, build_inventory_rows, chat_inventory, check_model_available, device_extra_value
 from .asset_qr import (
     batch_import_qr_assets,
     create_qr_asset,
@@ -299,7 +299,7 @@ def _parse_excel_devices(ws, fixed_room_name: str | None = None, fixed_area_name
     if missing:
         raise HTTPException(status_code=400, detail=f"Excel 缺少必要列：{', '.join(missing)}")
 
-    extra_cols = ["网元类型", "设备类别", "所属机房业务级别", "生命周期状态", "维护专业"]
+    extra_cols = ["设备机架", "设备类别", "所属机房业务级别", "生命周期状态", "维护专业"]
     rooms: dict[str, list[dict]] = {}
 
     for row_no, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
@@ -330,6 +330,10 @@ def _parse_excel_devices(ws, fixed_room_name: str | None = None, fixed_area_name
             col_idx = col_map[col_name]
             if col_idx < len(row) and row[col_idx] is not None:
                 extra[col_name] = str(row[col_idx]).strip()
+        if "设备机架" not in extra and "网元类型" in col_map:
+            legacy_col_idx = col_map["网元类型"]
+            if legacy_col_idx < len(row) and row[legacy_col_idx] is not None:
+                extra["设备机架"] = str(row[legacy_col_idx]).strip()
 
         rooms.setdefault(room_name, []).append({
             "_row_no": row_no,
@@ -462,6 +466,18 @@ def _validate_user_payload(wx_openid: str | None, name: str | None, role: str | 
             normalize_user_area_name(area_name)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _worker_session_payload(user: dict) -> dict:
+    """小程序端保存到本地的用户会话字段。"""
+    return {
+        "user_id": user["id"],
+        "name": user["name"],
+        "role": user["role"],
+        "area_name": user["area_name"] or USER_AREA_CORE,
+        "phone": user.get("phone") or "",
+        "access_token": create_access_token(user),
+    }
 
 
 def _wechat_config() -> tuple[str, str]:
@@ -631,35 +647,26 @@ def api_login(req: LoginRequest):
     if not user["is_active"]:
         raise HTTPException(status_code=403, detail="账号未启用，请联系管理员")
     _audit(user, "worker.login", "user", user["id"])
-    return {
-        "user_id": user["id"], "name": user["name"], "role": user["role"],
-        "area_name": user["area_name"] or USER_AREA_CORE, "phone": user.get("phone") or "",
-        "access_token": create_access_token(user),
-    }
+    return _worker_session_payload(user)
 
 
 @app.post("/api/me/profile")
 def api_bind_profile(req: ProfileBindRequest, user: dict = Depends(current_user)):
-    """小程序提交姓名并授权手机号后，服务端换取手机号并更新当前账号资料。"""
+    """小程序提交现场人员姓名和手机号并更新当前账号资料。"""
     name = req.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="姓名不能为空")
-    phone = _get_phone_number_from_wechat(req.code)
+    phone = req.phone.strip()
+    if not re.fullmatch(r"1[3-9]\d{9}", phone):
+        raise HTTPException(status_code=400, detail="请输入正确的11位手机号")
     updated_user = update_user(user["id"], {"name": name, "phone": phone})
     if updated_user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
-    _audit(user, "worker.profile.bind", "user", user["id"], {"name_updated": True, "phone_bound": True})
+    _audit(user, "worker.profile.bind", "user", user["id"], {"name_updated": True, "phone_updated": True})
     return {
         "success": True,
         "message": "手机号已更新",
-        "user": {
-            "user_id": updated_user["id"],
-            "name": updated_user["name"],
-            "role": updated_user["role"],
-            "area_name": updated_user["area_name"] or USER_AREA_CORE,
-            "phone": updated_user.get("phone") or "",
-            "access_token": create_access_token(updated_user),
-        },
+        "user": _worker_session_payload(updated_user),
     }
 
 
@@ -722,8 +729,8 @@ def api_upload_template(_: dict = Depends(admin_user)):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "盘点任务清单"
-    ws.append(["机房名称", "机房所在片区", "网元名称", "设备型号", "资产标签号", "网元类型", "设备类别", "所属机房业务级别", "生命周期状态", "维护专业"])
-    ws.append(["示例机房", USER_AREA_CORE, "NE-001", "OptiX PTN 980B", "ASSET-001", "传输网元", "传输设备", "重要", "在网", "传输"])
+    ws.append(["机房名称", "机房所在片区", "网元名称", "设备型号", "资产标签号", "设备机架", "设备类别", "所属机房业务级别", "生命周期状态", "维护专业"])
+    ws.append(["示例机房", USER_AREA_CORE, "NE-001", "OptiX PTN 980B", "ASSET-001", "01架01框", "传输设备", "重要", "在网", "传输"])
     output = io.BytesIO()
     wb.save(output)
     return Response(
@@ -1211,7 +1218,7 @@ def _excel_response(wb: openpyxl.Workbook, filename: str) -> Response:
 
 INVENTORY_DATA_HEADERS = [
     "任务ID", "任务名称", "机房名称", "片区", "领取人", "任务状态", "任务创建时间",
-    "领取时间", "现场完成时间", "设备名称", "清单设备型号", "清单资产条码",
+    "领取时间", "现场完成时间", "设备名称", "清单设备型号", "清单资产条码", "清单设备机架",
     "现场设备型号", "现场资产条码", "资产无条码", "现场机柜条码", "机柜无条码",
     "现场机架号", "现场状态", "盘点时间", "盘亏原因", "现场备注",
 ]
@@ -1265,7 +1272,7 @@ def api_summary(_: dict = Depends(admin_user)):
             SELECT t.id, t.task_name, t.room_name, t.area_name, t.status, t.created_at, t.assigned_to,
                    t.assigned_at, t.completed_at, t.field_completed_at,
                    u.name as assigned_name,
-                   sr.id as record_id, sr.device_name, sr.expected_model,
+                   sr.id as record_id, sr.device_name, sr.device_extra, sr.expected_model,
                    sr.expected_barcode, sr.asset_barcodes, sr.asset_no_barcode,
                    sr.cabinet_barcodes, sr.cabinet_no_barcode, sr.rack_no,
                     sr.actual_model, sr.notes, sr.match_status, sr.scanned_at,
@@ -1302,6 +1309,7 @@ def api_summary(_: dict = Depends(admin_user)):
                 record = add_compare_status({
                     "id": data["record_id"],
                     "device_name": data["device_name"],
+                    "expected_rack_no": device_extra_value(data, "设备机架"),
                     "expected_model": data["expected_model"],
                     "expected_barcode": data["expected_barcode"],
                     "asset_barcodes": data["asset_barcodes"],

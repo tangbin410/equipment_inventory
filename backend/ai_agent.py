@@ -46,6 +46,18 @@ def _format_bool(value: Any) -> str:
     return "是" if bool(value) else "否"
 
 
+def device_extra_value(record: dict[str, Any], key: str) -> str:
+    extra = record.get("device_extra") or {}
+    if isinstance(extra, str):
+        try:
+            extra = json.loads(extra)
+        except json.JSONDecodeError:
+            extra = {}
+    if not isinstance(extra, dict):
+        return ""
+    return str(extra.get(key) or "").strip()
+
+
 def _mask_free_text(value: str) -> str:
     text = str(value or "")
     for pattern, replacement in SENSITIVE_PATTERNS:
@@ -96,6 +108,7 @@ def build_inventory_rows(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "设备名称": record.get("device_name") or "",
                 "清单设备型号": record.get("expected_model") or "",
                 "清单资产条码": record.get("expected_barcode") or "",
+                "清单设备机架": device_extra_value(record, "设备机架"),
                 "现场设备型号": record.get("actual_model") or "",
                 "现场资产条码": record.get("asset_barcodes") or ("无条码" if record.get("asset_no_barcode") else ""),
                 "资产无条码": _format_bool(record.get("asset_no_barcode")),

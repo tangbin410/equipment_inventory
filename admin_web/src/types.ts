@@ -14,6 +14,7 @@ export interface AdminUser {
 export interface TaskRecord {
   id: number;
   device_name: string;
+  expected_rack_no?: string;
   expected_model?: string;
   expected_barcode?: string;
   actual_model?: string;

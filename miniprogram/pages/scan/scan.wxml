@@ -64,7 +64,20 @@
     </view>
     <view class="field-group">
       <text class="field-label">④ 设备型号</text>
-      <input class="other-input" placeholder="选填：如 OptiX PTN 980B" value="{{surplusForm.actualModel}}" data-field="actualModel" bindinput="onSurplusInput" />
+      <view class="model-input-row">
+        <input class="other-input model-input" placeholder="输入设备型号或关键字" value="{{surplusForm.actualModel}}" data-field="actualModel" bindinput="onSurplusInput" />
+        <button class="model-confirm-btn" bindtap="confirmSurplusModelInput">确认型号</button>
+      </view>
+      <view wx:if="{{surplusForm.modelSuggestions.length}}" class="model-suggestion-list">
+        <view
+          class="model-suggestion"
+          wx:for="{{surplusForm.modelSuggestions}}"
+          wx:for-item="model"
+          wx:key="model"
+          data-model="{{model}}"
+          bindtap="chooseSurplusModelSuggestion"
+        >{{model}}</view>
+      </view>
     </view>
     <view class="field-group">
       <text class="field-label">⑤ 设备所属机架号（必填）</text>
@@ -88,28 +101,44 @@
       <!-- 设备头部 - 点击展开/收起 -->
       <view class="device-header" bindtap="toggleDevice" data-id="{{item.id}}">
         <view class="device-info">
-          <view class="status-icon {{item.submitted ? item._matchIcon : 'wait'}}">
+          <view class="status-icon {{item.submitted ? 'submitted' : 'wait'}}">
             {{item.submitted ? '✓' : '·'}}
           </view>
           <view class="device-text">
             <text class="device-name">{{item.device_name}}</text>
             <text class="device-model">期望型号: {{item.expected_model}}</text>
+            <text class="device-model">清单设备机架: {{item._expectedRackText}}</text>
           </view>
         </view>
         <view class="expand-icon">{{activeDeviceId == item.id ? '▲' : '▼'}}</view>
       </view>
 
       <!-- 已扫结果展示，提交后显示 -->
-      <view wx:if="{{item.submitted}}" class="result-row">
-        <text class="tag {{item._tagCls}}">{{item._matchText}}</text>
-        <text class="result-detail">期望资产条码: {{item._expectedBarcodeText}}</text>
-        <text class="result-detail" wx:if="{{item._hasAssetBarcode}}">
-          扫描资产条码: {{item._assetText}}
-        </text>
-        <text class="result-detail" wx:elif="{{item.assetNoBarcode}}">扫描资产条码: 无条码</text>
-        <text class="result-detail">{{item._assetMatchText}}</text>
-        <text class="result-detail">{{item._modelMatchText}}</text>
-        <text class="result-detail">现场机架号: {{item.rackNo}}</text>
+      <view wx:if="{{activeDeviceId == item.id && item.submitted}}" class="result-row">
+        <view class="result-line">
+          <text class="result-label">综资资产条码</text>
+          <text class="result-value">{{item._expectedBarcodeText}}</text>
+        </view>
+        <view class="result-line">
+          <text class="result-label">扫描资产条码</text>
+          <text class="result-value">{{item._scannedAssetText}}</text>
+        </view>
+        <view class="result-line">
+          <text class="result-label">综资型号</text>
+          <text class="result-value">{{item._expectedModelText}}</text>
+        </view>
+        <view class="result-line">
+          <text class="result-label">现场型号</text>
+          <text class="result-value">{{item._actualModelText}}</text>
+        </view>
+        <view class="result-line">
+          <text class="result-label">综资机架位</text>
+          <text class="result-value">{{item._expectedRackText}}</text>
+        </view>
+        <view class="result-line">
+          <text class="result-label">现场机架位</text>
+          <text class="result-value">{{item._rackNoText}}</text>
+        </view>
         <text class="result-detail" wx:if="{{item.recordType == 'missing'}}">盘亏原因: {{item.missingReason}}</text>
       </view>
 
@@ -150,19 +179,27 @@
         <!-- ③ 设备型号 -->
         <view class="field-group">
           <text class="field-label">③ 设备型号</text>
-          <picker mode="selector" range="{{item.modelOptions}}" bindchange="onModelChange" data-id="{{item.id}}">
-            <view class="picker-value {{item.actualModel ? '' : 'empty'}}">
-              {{item.actualModel || '请选择设备型号'}}
-            </view>
-          </picker>
-          <input
-            wx:if="{{item.showOtherModel}}"
-            class="other-input"
-            placeholder="请输入其他型号"
-            value="{{item.actualModel}}"
-            bindinput="onOtherModelInput"
-            data-id="{{item.id}}"
-          />
+          <view class="model-input-row">
+            <input
+              class="other-input model-input"
+              placeholder="输入设备型号或关键字"
+              value="{{item.actualModel}}"
+              bindinput="onModelInput"
+              data-id="{{item.id}}"
+            />
+            <button class="model-confirm-btn" bindtap="confirmModelInput" data-id="{{item.id}}">确认型号</button>
+          </view>
+          <view wx:if="{{item.modelSuggestions.length}}" class="model-suggestion-list">
+            <view
+              class="model-suggestion"
+              wx:for="{{item.modelSuggestions}}"
+              wx:for-item="model"
+              wx:key="model"
+              data-id="{{item.id}}"
+              data-model="{{model}}"
+              bindtap="chooseModelSuggestion"
+            >{{model}}</view>
+          </view>
         </view>
 
         <!-- ④ 设备所属机架号 -->
@@ -197,7 +234,6 @@
 
       <!-- 提交后再次展开可查看记录 -->
       <view wx:if="{{activeDeviceId == item.id && item.submitted}}" class="submitted-info">
-        <text class="submitted-note">已提交，比对结果: {{item.match_status}}</text>
         <button wx:if="{{item.recordType != 'surplus'}}" class="btn-small" bindtap="reopenDevice" data-id="{{item.id}}">重新盘点</button>
       </view>
     </view>

@@ -139,6 +139,11 @@
   color: #ff4d4f;
 }
 
+.status-icon.submitted {
+  background: #f6ffed;
+  color: #52c41a;
+}
+
 .device-text {
   display: flex;
   flex-direction: column;
@@ -168,10 +173,33 @@
 
 /* 结果展示 */
 .result-row {
-  padding: 10px 16px;
+  padding: 10px 16px 12px;
   display: flex;
   flex-direction: column;
   background: #fafafa;
+}
+
+.result-line {
+  display: flex;
+  align-items: flex-start;
+  padding: 3px 0;
+}
+
+.result-label {
+  flex-shrink: 0;
+  width: 86px;
+  font-size: 12px;
+  color: #8a9aab;
+  line-height: 1.45;
+}
+
+.result-value {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: #43566b;
+  line-height: 1.45;
+  word-break: break-all;
 }
 
 .result-detail {
@@ -180,13 +208,13 @@
 }
 
 .submitted-info {
-  padding: 10px 16px;
-  text-align: center;
+  display: flex;
+  justify-content: center;
+  padding: 12px 16px;
 }
 
-.submitted-note {
-  font-size: 13px;
-  color: #999;
+.submitted-info .btn-small {
+  margin: 0;
 }
 
 /* 扫描表单 */
@@ -295,6 +323,60 @@
   width: 100%;
   box-sizing: border-box;
   min-height: 40px;
+}
+
+.model-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.model-confirm-btn {
+  flex-shrink: 0;
+  min-width: 78px;
+  margin: 0;
+  padding: 0 10px;
+  height: 40px;
+  line-height: 40px;
+  border-radius: 8px;
+  background: #1677ff;
+  color: #fff;
+  font-size: 13px;
+  box-shadow: 0 4px 10px rgba(22,119,255,0.14);
+}
+
+.model-confirm-btn:active {
+  background: #0958d9;
+}
+
+.model-confirm-btn::after {
+  border: none;
+}
+
+.model-suggestion-list {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.model-suggestion {
+  margin: 0 6px 6px 0;
+  padding: 5px 9px;
+  border: 1px solid #b7d7ff;
+  border-radius: 4px;
+  background: #f0f7ff;
+  color: #1677ff;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.model-suggestion:active {
+  background: #e6f2ff;
 }
 
 /* 备注输入 */

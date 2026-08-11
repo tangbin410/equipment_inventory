@@ -95,6 +95,10 @@
   box-sizing: border-box;
 }
 
+.profile-phone-input {
+  margin-top: 10px;
+}
+
 .profile-btn {
   margin-top: 12px;
   height: 44px;

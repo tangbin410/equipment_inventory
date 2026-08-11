@@ -14,6 +14,5 @@ if (Test-Path -LiteralPath $envFile) {
 
 Write-Host "Starting local inventory AI agent..."
 Write-Host "URL: http://127.0.0.1:9000/analyze"
-python -m uvicorn local_agent.app:app --host 127.0.0.1 --port 9000 --reload
+python -m uvicorn local_agent.app:app --host 127.0.0.1 --port 9000
 pause
-

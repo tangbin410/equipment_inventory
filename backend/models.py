@@ -19,8 +19,8 @@ class LoginRequest(BaseModel):
 
 class ProfileBindRequest(BaseModel):
     """小程序现场人员资料绑定请求"""
-    code: str = Field(..., description="wx.getPhoneNumber 返回的手机号动态 code")
     name: str = Field(..., description="现场人员姓名")
+    phone: str = Field(..., description="现场人员手工填写的手机号")
 
 
 class AdminLoginRequest(BaseModel):

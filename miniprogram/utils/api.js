@@ -49,7 +49,7 @@ function request(method, path, data = {}) {
 
 // 用户相关
 function login(code) { return request("POST", "/login", { code }); }
-function bindProfile(name, code) { return request("POST", "/me/profile", { name, code }); }
+function bindProfile(name, phone) { return request("POST", "/me/profile", { name, phone }); }
 
 // 任务相关
 function getAreaTasks() { return request("GET", "/tasks/area"); }

@@ -8,6 +8,7 @@ Page({
     areaName: "",
     phone: "",
     profileName: "",
+    profilePhone: "",
     profileLoading: false,
     showProfileCard: false,
     adjustmentReminderCount: 0,
@@ -27,6 +28,7 @@ Page({
       areaName: user.area_name || "汇聚及核心",
       phone,
       profileName: userName === "待绑定用户" ? "" : userName,
+      profilePhone: phone,
       showProfileCard: !phone || !userName || userName === "待绑定用户",
     });
     this.loadAdjustmentReminderCount();
@@ -51,26 +53,31 @@ Page({
     this.setData({ profileName: e.detail.value });
   },
 
-  async handleGetPhoneNumber(e) {
+  onProfilePhoneInput(e) {
+    this.setData({ profilePhone: e.detail.value });
+  },
+
+  async saveProfile() {
     const name = (this.data.profileName || "").trim();
     if (!name) {
       wx.showToast({ title: "请先填写姓名", icon: "none" });
       return;
     }
-    const code = e.detail && e.detail.code;
-    if (!code) {
-      wx.showToast({ title: "未完成手机号授权", icon: "none" });
+    const phone = (this.data.profilePhone || "").trim();
+    if (!/^1[3-9]\d{9}$/.test(phone)) {
+      wx.showToast({ title: "请输入正确的11位手机号", icon: "none" });
       return;
     }
     this.setData({ profileLoading: true });
     try {
-      const result = await bindProfile(name, code);
+      const result = await bindProfile(name, phone);
       if (result && result.user) {
         app.setUserInfo(result.user);
         this.setData({
           userName: result.user.name || name,
-          phone: result.user.phone || "",
+          phone: result.user.phone || phone,
           profileName: result.user.name || name,
+          profilePhone: result.user.phone || phone,
           showProfileCard: false,
         });
       }

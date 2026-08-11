@@ -14,7 +14,7 @@
   <view class="profile-card" wx:if="{{showProfileCard}}">
     <view class="profile-head">
       <text class="profile-title">完善现场人员资料</text>
-      <text class="profile-desc">姓名由本人填写，手机号需微信授权，同步后后台可查看。</text>
+      <text class="profile-desc">请手动填写姓名和手机号，保存后后台可查看。</text>
     </view>
     <input
       class="profile-input"
@@ -22,14 +22,21 @@
       placeholder="请输入真实姓名"
       bindinput="onProfileNameInput"
     />
+    <input
+      class="profile-input profile-phone-input"
+      value="{{profilePhone}}"
+      type="number"
+      maxlength="11"
+      placeholder="请输入11位手机号码"
+      bindinput="onProfilePhoneInput"
+    />
     <button
       class="profile-btn"
-      open-type="getPhoneNumber"
-      bindgetphonenumber="handleGetPhoneNumber"
+      bindtap="saveProfile"
       loading="{{profileLoading}}"
       disabled="{{profileLoading}}"
     >
-      授权手机号并同步
+      保存资料
     </button>
   </view>
 

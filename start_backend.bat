@@ -7,6 +7,7 @@ echo.
 cd /d "%~dp0"
 rem 临时模式开关：由 switch_miniprogram_mode.ps1 自动切换。
 set WECHAT_APPID=wxf7024f174bbc84fd
+echo Current mode: DEV, test users worker_001 / worker_002 / worker_005 enabled
 if exist ".env" (
     echo 正在读取本地配置: .env
     for /f "usebackq eol=# tokens=1,* delims==" %%A in (".env") do (
@@ -20,7 +21,7 @@ if not defined INVENTORY_SECRET_KEY (
     pause
     exit /b 1
 )
-if not defined INVENTORY_DEV_LOGIN set INVENTORY_DEV_LOGIN=0
+set INVENTORY_DEV_LOGIN=1
 if defined DEEPSEEK_API_KEY (echo AI配置: DEEPSEEK_API_KEY 已加载) else (echo AI配置: 未加载 DEEPSEEK_API_KEY)
 if defined DEEPSEEK_MODEL (echo AI配置: DEEPSEEK_MODEL=%DEEPSEEK_MODEL%) else (echo AI配置: 未加载 DEEPSEEK_MODEL)
 echo 当前模式: INVENTORY_DEV_LOGIN=%INVENTORY_DEV_LOGIN%
