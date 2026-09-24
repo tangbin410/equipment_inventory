@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>机房设备资产盘点系统 · 设计系统比较</title>
+  <link rel="stylesheet" href="design-systems.css">
+</head>
+<body>
+  <main class="page">
+    <header class="page-head">
+      <div>
+        <p class="head-kicker">DESIGN SYSTEM / 03 DIRECTIONS</p>
+        <h1>机房设备资产盘点系统</h1>
+        <p class="head-sub">正式汇报分享 · 16:9 设计系统比较</p>
+      </div>
+      <div class="head-meta">
+        <span>运营商传输网</span>
+        <span>汇报初版</span>
+        <b>16:9</b>
+      </div>
+    </header>
+
+    <section class="systems-grid" aria-label="三套设计系统">
+      <article class="system-card system-a" data-system data-system-name="蓝图秩序">
+        <header class="system-head">
+          <div class="system-number">01</div>
+          <div class="system-title">
+            <p class="system-kicker">SWISS / BLUEPRINT</p>
+            <h2>蓝图秩序</h2>
+            <p>线框、网格、单一主色，适合跨部门正式汇报和试点立项。</p>
+          </div>
+          <div class="swatches" aria-label="蓝图秩序配色">
+            <i style="--swatch:#1557c0"></i>
+            <i style="--swatch:#f4c542"></i>
+            <i style="--swatch:#eef3f8"></i>
+          </div>
+        </header>
+
+        <div class="system-stage" data-stage>
+          <article class="slide-thumb a-cover is-active" data-label="封面">
+            <div class="a-grid"></div>
+            <div class="a-rule"></div>
+            <p class="thumb-kicker">TRANSMISSION NETWORK / ASSET GOVERNANCE</p>
+            <h3>机房设备<br><strong>资产盘点系统</strong></h3>
+            <p class="thumb-lede">让资产条码与传输设备，在同一条现场业务链上被看见、被核验、被追溯。</p>
+            <div class="a-index">01 <span>／</span> 03</div>
+            <div class="a-footer"><span>现场核验</span><span>设备关系</span><span>持续追溯</span></div>
+          </article>
+
+          <article class="slide-thumb a-context" data-label="背景">
+            <div class="a-topline"><span>01 / WHY NOW</span><b>ASSET ↔ DEVICE</b></div>
+            <h3>现有盘点有两个视角，<strong>现场需要一个答案</strong></h3>
+            <div class="a-columns">
+              <div><b>财务资产盘点</b><span>看条码与账实一致</span></div>
+              <div><b>省传输掌上运维</b><span>看网元与维护关系</span></div>
+              <div><b>存量时代变化</b><span>关系持续变更</span></div>
+            </div>
+            <div class="a-callout">这台设备是什么？资产条码对不对？现在在哪？</div>
+          </article>
+
+          <article class="slide-thumb a-flow" data-label="安全边界">
+            <div class="a-topline"><span>08 / SECURITY</span><b>PUBLIC → LOCAL</b></div>
+            <h3>公网可访问，<strong>内网端口不外露</strong></h3>
+            <div class="a-path"><span>微信小程序</span><i>→</i><span>WAF</span><i>→</i><span>Tunnel</span><i>→</i><span>127.0.0.1</span></div>
+            <div class="a-check"><b>已完成</b><span>HTTPS · 登录限流 · Token 失效 · 管理接口隐藏</span></div>
+          </article>
+          <div class="stage-mark"><span data-stage-current>01</span> / 03</div>
+        </div>
+        <div class="thumb-rail" data-rail aria-label="蓝图秩序页面缩略图"></div>
+      </article>
+
+      <article class="system-card system-b" data-system data-system-name="运维控制台">
+        <header class="system-head">
+          <div class="system-number">02</div>
+          <div class="system-title">
+            <p class="system-kicker">OPS / CONTROL ROOM</p>
+            <h2>运维控制台</h2>
+            <p>深色底、浮层卡片、状态色和强阴影，适合技术分享与系统演示。</p>
+          </div>
+          <div class="swatches" aria-label="运维控制台配色">
+            <i style="--swatch:#101923"></i>
+            <i style="--swatch:#a8e63d"></i>
+            <i style="--swatch:#ff9650"></i>
+          </div>
+        </header>
+
+        <div class="system-stage" data-stage>
+          <article class="slide-thumb b-cover is-active" data-label="封面">
+            <div class="b-scan"></div>
+            <div class="b-status"><span class="live-dot"></span> NETWORK ASSET CONTROL <b>ONLINE</b></div>
+            <div class="b-cover-copy"><p class="thumb-kicker">FIELD OPERATIONS / 2026</p><h3>资产条码<br><strong>连接现场与后台</strong></h3><p>领任务、扫设备、交结果，异常进入可追踪闭环。</p></div>
+            <div class="b-metric"><strong>01</strong><span>现场到后台<br>一条业务链</span></div>
+            <div class="b-footer"><span>任务</span><span>扫码</span><span>分析</span><span>闭环</span></div>
+          </article>
+
+          <article class="slide-thumb b-modules" data-label="功能模块">
+            <div class="b-status"><span class="live-dot"></span> CAPABILITY MAP <b>04 MODULES</b></div>
+            <h3>四个模块，串起完整业务链</h3>
+            <div class="b-module-grid">
+              <div><em>01</em><b>数据准备</b><span>清单预检 / 任务</span></div>
+              <div><em>02</em><b>现场盘点</b><span>扫码 / 位置</span></div>
+              <div><em>03</em><b>管理分析</b><span>进度 / 关系</span></div>
+              <div><em>04</em><b>异常闭环</b><span>审核 / 整改</span></div>
+            </div>
+            <div class="b-command">清单 <i>›</i> 任务 <i>›</i> 扫码 <i>›</i> 分析 <i>›</i> 整改</div>
+          </article>
+
+          <article class="slide-thumb b-security" data-label="安全边界">
+            <div class="b-status"><span class="live-dot orange"></span> SECURITY BOUNDARY <b>GUARDED</b></div>
+            <h3>访问路径清晰，<strong>边界逐层收紧</strong></h3>
+            <div class="b-stack"><span>微信小程序 <small>公网 HTTPS</small></span><i>↓</i><span>Cloudflare WAF <small>限流 / 规则</small></span><i>↓</i><span>Cloudflare Tunnel <small>出站连接</small></span><i>↓</i><span>127.0.0.1:8000 <small>本机服务</small></span></div>
+            <div class="b-alert"><b>待补齐</b><span>主机防火墙 · 备份恢复 · 审计监控</span></div>
+          </article>
+          <div class="stage-mark"><span data-stage-current>01</span> / 03</div>
+        </div>
+        <div class="thumb-rail" data-rail aria-label="运维控制台页面缩略图"></div>
+      </article>
+
+      <article class="system-card system-c" data-system data-system-name="审计报告">
+        <header class="system-head">
+          <div class="system-number">03</div>
+          <div class="system-title">
+            <p class="system-kicker">AUDIT / FIELD REPORT</p>
+            <h2>审计报告</h2>
+            <p>纸张、目录、印章和硬阴影，适合向领导汇报、验收材料和制度化总结。</p>
+          </div>
+          <div class="swatches" aria-label="审计报告配色">
+            <i style="--swatch:#f2eadb"></i>
+            <i style="--swatch:#202623"></i>
+            <i style="--swatch:#c4563e"></i>
+          </div>
+        </header>
+
+        <div class="system-stage" data-stage>
+          <article class="slide-thumb c-cover is-active" data-label="报告封面">
+            <div class="c-paper-lines"></div>
+            <div class="c-stamp">FIELD<br>REPORT</div>
+            <p class="thumb-kicker">REPORT 2026 · TRANSMISSION NETWORK</p>
+            <h3>机房设备<br><strong>资产盘点系统</strong></h3>
+            <p class="thumb-lede">从一次盘点，走向资产和设备关系的持续可追溯。</p>
+            <div class="c-index"><span>背景</span><span>目标</span><span>框架</span><span>边界</span></div>
+            <div class="c-footer"><span>运营维护工作汇报</span><b>01</b></div>
+          </article>
+
+          <article class="slide-thumb c-target" data-label="目标">
+            <div class="c-topline"><span>02 / TARGET</span><b>CONTROLLED SCOPE</b></div>
+            <h3>把资产、设备、机房、机架和历史变更，<strong>放进同一张关系表</strong></h3>
+            <div class="c-ledger"><div><b>01</b><span>Excel 清单转任务</span><em>数据入口</em></div><div><b>02</b><span>现场扫码采集</span><em>现场证据</em></div><div><b>03</b><span>后台实时看进度</span><em>管理视图</em></div><div><b>04</b><span>异常闭环整改</span><em>结果留痕</em></div></div>
+          </article>
+
+          <article class="slide-thumb c-next" data-label="推进路径">
+            <div class="c-topline"><span>09 / NEXT STEP</span><b>RECOMMENDATION</b></div>
+            <h3>先试点，再推广；<strong>先把数据关系做实</strong></h3>
+            <div class="c-recommend"><div><b>试点</b><span>选择维护中心或若干机房</span></div><div><b>口径</b><span>统一资产与设备关联标准</span></div><div><b>安全</b><span>补齐生产运维能力</span></div></div>
+            <p class="c-closing">从查数量，推进到查关系、查状态、查闭环。</p>
+          </article>
+          <div class="stage-mark"><span data-stage-current>01</span> / 03</div>
+        </div>
+        <div class="thumb-rail" data-rail aria-label="审计报告页面缩略图"></div>
+      </article>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      'use strict';
+      document.querySelectorAll('[data-system]').forEach(function (system) {
+        var stage = system.querySelector('[data-stage]');
+        var rail = system.querySelector('[data-rail]');
+        var slides = Array.from(stage.querySelectorAll('.slide-thumb'));
+        var current = 0;
+        var suppressClick = false;
+
+        function selectSlide(index) {
+          current = Math.max(0, Math.min(slides.length - 1, index));
+          slides.forEach(function (slide, i) {
+            slide.classList.toggle('is-active', i === current);
+          });
+          rail.querySelectorAll('[data-thumb-index]').forEach(function (button, i) {
+            var selected = i === current;
+            button.classList.toggle('is-selected', selected);
+            button.setAttribute('aria-selected', String(selected));
+          });
+          var mark = stage.querySelector('[data-stage-current]');
+          if (mark) mark.textContent = String(current + 1).padStart(2, '0');
+        }
+
+        slides.forEach(function (slide, index) {
+          var button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'thumb-tab' + (index === 0 ? ' is-selected' : '');
+          button.setAttribute('role', 'tab');
+          button.setAttribute('aria-selected', String(index === 0));
+          button.setAttribute('aria-label', system.dataset.systemName + '：' + slide.dataset.label);
+          button.dataset.thumbIndex = String(index);
+
+          var canvas = document.createElement('span');
+          canvas.className = 'thumb-tab-canvas';
+          var clone = slide.cloneNode(true);
+          clone.classList.remove('is-active');
+          clone.removeAttribute('data-label');
+          clone.setAttribute('aria-hidden', 'true');
+          canvas.appendChild(clone);
+          button.appendChild(canvas);
+
+          var label = document.createElement('span');
+          label.className = 'thumb-tab-label';
+          label.innerHTML = '<b>' + String(index + 1).padStart(2, '0') + '</b><span>' + slide.dataset.label + '</span>';
+          button.appendChild(label);
+          button.addEventListener('click', function () {
+            if (suppressClick) return;
+            selectSlide(index);
+          });
+          rail.appendChild(button);
+        });
+
+        function rescaleThumbs() {
+          rail.querySelectorAll('.thumb-tab-canvas').forEach(function (canvas) {
+            var stageWidth = stage.clientWidth;
+            var stageHeight = stage.clientHeight;
+            var scale = canvas.clientWidth / stageWidth;
+            canvas.style.setProperty('--thumb-stage-width', stageWidth + 'px');
+            canvas.style.setProperty('--thumb-stage-height', stageHeight + 'px');
+            canvas.style.setProperty('--thumb-scale', String(scale));
+          });
+        }
+
+        if (window.ResizeObserver) {
+          var observer = new ResizeObserver(rescaleThumbs);
+          observer.observe(rail);
+        }
+        window.addEventListener('resize', rescaleThumbs);
+        window.requestAnimationFrame(rescaleThumbs);
+
+        var startX = 0;
+        var startScroll = 0;
+        rail.addEventListener('pointerdown', function (event) {
+          if (event.pointerType === 'mouse' && event.button !== 0) return;
+          startX = event.clientX;
+          startScroll = rail.scrollLeft;
+          suppressClick = false;
+          rail.classList.add('is-dragging');
+          rail.setPointerCapture(event.pointerId);
+        });
+        rail.addEventListener('pointermove', function (event) {
+          if (!rail.classList.contains('is-dragging')) return;
+          var delta = event.clientX - startX;
+          if (Math.abs(delta) > 5) suppressClick = true;
+          rail.scrollLeft = startScroll - delta;
+          if (suppressClick) event.preventDefault();
+        });
+        function endDrag(event) {
+          rail.classList.remove('is-dragging');
+          if (event.pointerId && rail.hasPointerCapture(event.pointerId)) rail.releasePointerCapture(event.pointerId);
+          window.setTimeout(function () { suppressClick = false; }, 0);
+        }
+        rail.addEventListener('pointerup', endDrag);
+        rail.addEventListener('pointercancel', endDrag);
+        rail.addEventListener('wheel', function (event) {
+          if (rail.scrollWidth <= rail.clientWidth) return;
+          var delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+          if (!delta) return;
+          event.preventDefault();
+          rail.scrollLeft += delta;
+        }, { passive: false });
+
+        selectSlide(0);
+      });
+    }());
+  </script>
+</body>
+</html>

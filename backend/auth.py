@@ -11,7 +11,7 @@ import secrets
 import time
 from typing import Any
 
-TOKEN_TTL_SECONDS = int(os.getenv("INVENTORY_TOKEN_TTL_SECONDS", "28800"))
+TOKEN_TTL_SECONDS = int(os.getenv("INVENTORY_TOKEN_TTL_SECONDS", "7200"))
 
 
 def _secret() -> bytes:
@@ -48,6 +48,7 @@ def create_access_token(user: dict[str, Any]) -> str:
     payload = {
         "sub": int(user["id"]),
         "role": user["role"],
+        "ver": int(user.get("auth_version") or 0),
         "exp": int(time.time()) + TOKEN_TTL_SECONDS,
     }
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()

@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-themes="ops-console">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>机房设备资产盘点系统汇报</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="assets/fonts.css">
+  <link rel="stylesheet" href="assets/base.css?v=16x9">
+  <link rel="stylesheet" id="theme-link" href="assets/themes/ops-console.css">
+  <link rel="stylesheet" href="assets/animations/animations.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="tpl-presenter-mode-reveal">
+<div class="deck">
+
+  <section class="slide cover-slide" data-slide-id="cover" data-title="封面">
+    <div class="cover-grid"></div>
+    <div class="cover-content">
+      <p class="kicker cover-kicker">01 / 项目汇报 · TRANSMISSION NETWORK / ASSET GOVERNANCE</p>
+      <h1 class="h1 anim-fade-up" data-anim="fade-up">机房设备<br><span class="accent-text">资产盘点系统</span></h1>
+      <p class="lede cover-lede">让资产条码与传输设备，在同一条现场业务链上被看见、被核验、被追溯。</p>
+      <div class="cover-meta"><span class="mono-chip">现场汇报稿</span><span>PC 管理后台 · 微信小程序 · FastAPI · AI Agent</span></div>
+    </div>
+    <div class="cover-signal"><div class="signal-line"></div><span>ASSET ↔ DEVICE ↔ ROOM ↔ CLOSURE</span></div>
+      <div class="deck-footer"><span class="mono">equipment_inventory / 2026</span><span class="slide-number" data-current="1" data-total="24"></span></div>
+    <aside class="notes"><p>今天汇报的不是一个单纯的盘点页面，而是一套面向传输网维护现场的轻量化系统。它把资产条码、传输设备、机房机架、现场盘点和整改闭环放到同一条业务链里。</p><p>这次内容扩展为二十五页，按背景、关系、流程、能力、安全和落地六个层次展开。重点不是堆功能，而是说明一条真实的现场业务如何被记录、核验和追溯。</p><p>当前系统定位仍然是小范围试点和现场验证，不把已完成能力包装成最终生产版本。</p></aside>
+  </section>
+
+  <section class="slide" data-slide-id="agenda" data-title="汇报目录">
+    <p class="kicker">02 / 汇报路线 · ROUTE</p><h2 class="h2">从问题到试点，沿着一条<span class="accent">业务链</span>展开</h2>
+    <div class="agenda-grid mt-l"><div class="agenda-card"><b>01</b><strong>为什么要做</strong><span>两个视角、存量变化、现场断点</span></div><div class="agenda-card"><b>02</b><strong>关系怎么建</strong><span>资产、设备、机房、机架与历史</span></div><div class="agenda-card"><b>03</b><strong>现场怎么跑</strong><span>清单、任务、扫码与异常记录</span></div><div class="agenda-card"><b>04</b><strong>后台如何闭环</strong><span>看板、AI、审核、整改与反馈</span></div><div class="agenda-card"><b>05</b><strong>如何落地</strong><span>安全边界、推广方向与试点建议</span></div></div>
+    <div class="agenda-route"><span>问题定义</span><i>→</i><span>关系建模</span><i>→</i><span>现场采集</span><i>→</i><span>管理闭环</span><i>→</i><span>试点推广</span></div>
+    <aside class="notes"><p>整份汇报按照一条业务链来组织。先说明为什么现有盘点方式在现场会出现断点，再说明系统如何把资产、设备和位置关系统一起来。</p><p>接下来会按实际操作顺序走一遍：管理员准备清单、生成任务，现场人员领取并扫码，后台查看进度，异常经过分析和审核后再回到现场处理。</p><p>最后把当前状态、安全边界和推广条件讲清楚，便于后续决定试点范围。</p></aside>
+  </section>
+
+  <section class="slide" data-slide-id="positioning" data-title="项目定位">
+    <p class="kicker">03 / 项目定位 · POSITIONING</p><h2 class="h2">资产盘点不是终点，<span class="accent">关系核验</span>才是现场价值</h2>
+    <div class="tri-system-map mt-l" role="img" aria-label="资产系统、现场机房与资源中心一一对应关系图">
+      <div class="tri-system-node tri-system-asset"><div class="tri-system-head"><span>01</span><b>ASSET RECORD</b></div><h3>资产系统</h3><p>资产条码 · 固定资产编号 · 账面信息</p><strong>回答“账上是什么”</strong></div>
+      <div class="tri-system-link"><span>条码绑定</span><i>↔</i><small>核对账实</small></div>
+      <div class="tri-system-node tri-system-field"><div class="tri-system-head"><span>02</span><b>FIELD OBJECT</b></div><h3>现场机房</h3><p>实物设备 · 机房机架 · 当前状态</p><strong>回答“现场是什么”</strong></div>
+      <div class="tri-system-link"><span>设备匹配</span><i>↔</i><small>核对资源</small></div>
+      <div class="tri-system-node tri-system-resource"><div class="tri-system-head"><span>03</span><b>RESOURCE DATA</b></div><h3>资源中心</h3><p>网元名称 · 设备型号 · 运维关系</p><strong>回答“资源如何记录”</strong></div>
+      <div class="tri-system-result"><span>统一关系记录</span><div><strong>一个资产条码</strong><i>↔</i><strong>一台现场设备</strong><i>↔</i><strong>一条资源记录</strong></div><b>当前对应关系可查询 · 历史变更过程可追溯</b></div>
+    </div>
+    <div class="quote-line">补位而不替代：补上资产系统、现场机房与资源中心之间的关系映射和现场核验。</div>
+    <aside class="notes"><p>这一页先说明系统要对齐的三个对象：资产系统中的账面记录、机房中的现场实物，以及资源中心中的设备记录。</p><p>系统以现场盘点为核验入口，把一个资产条码、一台现场设备和一条资源记录关联起来，形成明确的一一对应关系。关系发生改绑、调拨或替换时，当前关系可以更新，历史关系仍然保留。</p><p>这套系统不替代资产系统和资源中心，而是补上三方之间的现场核验、关系映射和变更追溯。</p></aside>
+  </section>
+
+  <section class="slide" data-slide-id="two-views" data-title="两套现有管理视角">
+    <p class="kicker">04 / 业务背景 · CURRENT VIEWS</p><h2 class="h2">同一台设备，现有系统各自看见<span class="accent">一半</span></h2>
+    <div class="lens-grid mt-l"><div class="lens-card finance"><div class="lens-mark">VIEW 01</div><h3>财务资产盘点</h3><p>看资产条码、机房是否存在该条码，重点关注数量和账实一致性。</p><div class="blind-spot">现场缺口：条码贴在了哪台设备上？</div></div><div class="lens-card ops"><div class="lens-mark">VIEW 02</div><h3>省传输掌上运维</h3><p>看网元名称、设备型号、机房、机架和运行维护关系。</p><div class="blind-spot">现场缺口：这台设备对应哪个资产条码？</div></div><div class="lens-card stock"><div class="lens-mark">FIELD GAP</div><h3>现场核验层</h3><p>需要把条码、设备和位置在同一次操作中采集，并留下可复核的记录。</p><div class="blind-spot">系统补位：把两个视角变成一条关系记录。</div></div></div>
+    <div class="bridge-strip"><span>现场必须回答：</span><strong>这台设备是什么？资产条码对不对？现在在哪？</strong></div>
+    <aside class="notes"><p>财务资产盘点关注条码和数量，掌上运维关注设备和运行维护关系，两者各自都有明确边界。</p><p>到了机房现场，维护人员面对的是同一台真实设备，需要同时确认型号、网元、资产条码、机柜和机架位置。单独看任意一份清单，都无法完整回答。</p><p>系统要补的是现场核验层：在一次操作中采集事实，再把事实回写成可以查询和追溯的关系记录。</p></aside>
+  </section>
+
+  <section class="slide pain-slide" data-slide-id="field-pains" data-title="现场盘点的业务断点">
+    <p class="kicker">05 / 业务背景 · FIELD PAINS</p><h2 class="h2">现有盘点方式的断点，集中在<span class="accent">现场协同</span></h2>
+    <div class="pain-layout mt-l"><div class="pain-relation"><span class="target-label">现场要核对的完整关系</span><strong>资产条码 <i>↔</i> 传输设备</strong><strong>机房 / 机架 / 机柜 <i>↔</i> 当前状态</strong><div class="pain-relation-foot">任何一环脱离现场，后续判断都要依赖人工补问。</div></div><div class="pain-grid"><div class="pain-card"><b>01</b><span>数据分散</span><p>财务资产条码与传输设备信息分散在不同清单。</p></div><div class="pain-card"><b>02</b><span>关系缺失</span><p>资产与设备之间没有统一、可查询的关联记录。</p></div><div class="pain-card"><b>03</b><span>历史难追</span><p>设备更换后，旧设备、旧位置和变更原因难以追溯。</p></div><div class="pain-card"><b>04</b><span>记录分散</span><p>现场仍依赖 Excel、纸面记录和人工沟通汇总。</p></div><div class="pain-card"><b>05</b><span>过程不可见</span><p>任务分配、盘点进度和超时情况缺少统一平台。</p></div><div class="pain-card"><b>06</b><span>整改不闭环</span><p>盘盈、盘亏、型号不一致发现后，处理过程容易断开。</p></div></div></div>
+    <div class="pain-conclusion"><span>业务判断</span><strong>问题不只在“有没有盘”，而在“事实有没有沉淀、异常有没有闭环”。</strong></div>
+    <aside class="notes"><p>当前痛点不是没有数据，而是数据被分散在多个视角和多个记录工具里。财务侧有资产条码，运维侧有网元和设备，现场又有机房、机柜、机架和状态信息。</p><p>设备发生替换、利旧或调拨以后，如果没有统一关系和历史记录，下一次盘点只能重新依赖人工沟通。</p><p>所以系统要解决的不只是盘点动作，还包括任务分配、进度跟踪、异常识别和整改责任的连续性。</p></aside>
+  </section>
+
+  <section class="slide" data-slide-id="stock-change" data-title="存量时代的关系变化">
+    <p class="kicker">06 / 业务背景 · STOCK REALITY</p><h2 class="h2">退网、利旧、调拨，让设备关系持续<span class="accent">变化</span></h2>
+    <div class="change-layout mt-l"><div class="change-timeline"><div class="change-step"><b>01</b><div><strong>购置与上架</strong><span>资产条码、设备和机房形成初始关系。</span></div></div><div class="change-step"><b>02</b><div><strong>利旧与调拨</strong><span>设备可能跨机房、跨片区重新部署。</span></div></div><div class="change-step"><b>03</b><div><strong>替换与退网</strong><span>当前设备变化，但旧关系仍有追溯价值。</span></div></div><div class="change-step"><b>04</b><div><strong>再次盘点</strong><span>现场记录成为下一次核验的依据。</span></div></div></div><div class="change-panel"><span class="target-label">STATIC LIST BREAKPOINT</span><h3>只保留一个当前值，会丢掉什么？</h3><div class="break-row"><b>位置</b><span>设备现在在哪个机房、机柜和机架？</span></div><div class="break-row"><b>原因</b><span>关系为什么发生变化，谁在什么时候确认？</span></div><div class="break-row"><b>历史</b><span>旧设备关系是否仍需要被查询和复核？</span></div><div class="change-conclusion">存量管理的关键，不只是当前状态，还要保留变化轨迹。</div></div></div>
+    <aside class="notes"><p>进入存量时代以后，设备关系不会一直稳定。安装上架只是开始，后面还会出现利旧、调拨、替换和退网。</p><p>如果系统只覆盖当前值，下一次盘点看到的可能只是一个新的设备名称，却无法解释旧关系什么时候结束、为什么结束。</p><p>因此本系统把当前关系和历史关联分开保存。每次关系变化都可以成为下一次现场核验的上下文。</p></aside>
+  </section>
+
+  <section class="slide" data-slide-id="target" data-title="建设目标">
+    <p class="kicker">07 / 建设目标 · TARGET</p><h2 class="h2">从一次盘点，走向<span class="accent">持续可追溯</span></h2>
+    <div class="target-layout mt-l"><div class="target-statement"><span class="target-label">CORE OUTCOME</span><strong>资产条码<br>与设备关系<br><em>双向校验</em></strong><p>建立资产、设备、机房、机架和历史变更的统一关联。</p></div><div class="target-list"><div class="target-row"><b>01</b><span>统一资产条码和传输设备两个管理维度。</span></div><div class="target-row"><b>02</b><span>把 Excel 清单转成按机房、片区组织的可执行任务。</span></div><div class="target-row"><b>03</b><span>让现场人员通过小程序扫码采集资产、机柜和设备信息。</span></div><div class="target-row"><b>04</b><span>实时掌握各片区、各机房的盘点进度。</span></div><div class="target-row"><b>05</b><span>自动识别盘盈、盘亏、型号不一致等异常。</span></div><div class="target-row"><b>06</b><span>通过 AI 辅助分析问题并生成整改建议。</span></div><div class="target-row"><b>07</b><span>形成发现、审核、下发、处理、反馈的整改闭环。</span></div><div class="target-row"><b>08</b><span>保留资产当前关系和历史设备变更记录。</span></div></div></div>
+    <div class="quote-line">不是替代现有财务或运维系统，而是补上现场核验和闭环管理这一层。</div>
+    <aside class="notes"><p>系统目标可以归纳成一句话：从一次性的资产盘点，走向资产和设备关系的持续可追溯。</p><p>第一步是把清单变成任务，第二步通过小程序采集现场条码、设备型号、机柜和机架信息，第三步让后台实时掌握进度和异常。</p><p>最终目标不是增加一个独立工具，而是让现场事实进入已有管理流程，并在关系变化和异常整改时继续发挥作用。</p></aside>
+  </section>
+
+  <section class="slide model-slide" data-slide-id="relation-model" data-title="资产与设备关系模型">
+    <p class="kicker">08 / 数据关系 · RELATION MODEL</p><h2 class="h2">一张关系图，串起<span class="accent">资产、设备和位置</span></h2>
+    <div class="model-layout mt-l"><div class="model-canvas"><div class="model-node asset-node"><span>ASSET</span><strong>资产条码</strong><small>固定 token / 条码型号</small></div><div class="model-link link-one">当前绑定</div><div class="model-node device-node"><span>DEVICE</span><strong>传输设备</strong><small>设备名称 / 型号 / 网元</small></div><div class="model-link link-two">现场所在</div><div class="model-node place-node"><span>PLACE</span><strong>机房 · 机柜 · 机架</strong><small>片区 / 位置 / 现场记录</small></div><div class="history-ribbon"><b>HISTORY</b><span>历史关联设备不会被覆盖，改绑时结束旧关系并写入新关系。</span></div></div><div class="model-side"><div class="model-rule"><b>稳定二维码</b><span>二维码只编码固定 token，不把当前设备名称写死在图片里。</span></div><div class="model-rule"><b>当前关系</b><span>资产发生改绑时，当前设备和机房可以更新。</span></div><div class="model-rule"><b>历史关系</b><span>旧设备、机房、时间和变更原因继续可查。</span></div><div class="model-rule"><b>扫码读取</b><span>扫码页面每次读取数据库最新状态，避免缓存旧关系。</span></div></div></div>
+    <aside class="notes"><p>关系模型是这套系统能否长期使用的基础。资产条码要和当前传输设备、机房、机柜和机架位置建立关联。</p><p>二维码采用稳定 token。二维码图片不写死设备名称，资产改绑后图片和地址可以保持不变，扫码时读取数据库中的最新关系。</p><p>同时保留历史关联。改绑时结束旧关系、写入新关系，旧记录不被覆盖或删除。</p></aside>
+  </section>
+
+  <section class="slide flow-slide" data-slide-id="business-loop" data-title="端到端业务闭环">
+    <p class="kicker">09 / 业务流程 · END-TO-END LOOP</p><h2 class="h2">业务流程拆成<span class="accent">12 个可追踪动作</span></h2>
+    <div class="process-chain mt-l"><div class="chain-phase data-phase"><div class="phase-head"><b>01—04</b><strong>清单准备</strong><span>把源数据变成任务源</span></div><div class="chain-list"><div class="chain-step"><b>01</b><span>整理资产清单</span></div><div class="chain-step"><b>02</b><span>PC 后台上传 Excel</span></div><div class="chain-step"><b>03</b><span>系统预检数据质量</span></div><div class="chain-step"><b>04</b><span>按机房生成任务</span></div></div></div><i class="phase-arrow">→</i><div class="chain-phase field-phase"><div class="phase-head"><b>05—08</b><strong>现场盘点</strong><span>按片区采集现场事实</span></div><div class="chain-list"><div class="chain-step"><b>05</b><span>片区人员领取任务</span></div><div class="chain-step"><b>06</b><span>扫码资产、机柜和设备</span></div><div class="chain-step"><b>07</b><span>提交正常 / 盘盈 / 盘亏 / 异常</span></div><div class="chain-step"><b>08</b><span>后台实时统计进度</span></div></div></div><i class="phase-arrow">→</i><div class="chain-phase closure-phase"><div class="phase-head"><b>09—12</b><strong>分析闭环</strong><span>从问题识别到责任反馈</span></div><div class="chain-list"><div class="chain-step"><b>09</b><span>AI 分析异常</span></div><div class="chain-step"><b>10</b><span>管理员审核确认</span></div><div class="chain-step"><b>11</b><span>下发整改任务</span></div><div class="chain-step"><b>12</b><span>现场处理并反馈</span></div></div></div></div>
+    <div class="flow-boundary"><span>现场采集事实</span><strong>管理员确认管理动作</strong><span>系统保留过程与历史</span></div>
+    <aside class="notes"><p>完整业务流程可以拆成十二个动作，分别落在清单准备、现场盘点和分析闭环三个阶段。</p><p>前四步由管理员准备清单和任务，第五到第八步由现场人员在片区内领取、扫码和提交，第九到第十二步由系统分析、管理员审核下发、现场反馈完成。</p><p>这样每一个阶段都有明确责任人，现场记录不会直接跳过审核变成最终结论。</p></aside>
+  </section>
+
+  <section class="slide architecture-slide" data-slide-id="architecture" data-title="总体技术架构">
+    <p class="kicker">10 / 技术架构 · ARCHITECTURE</p><h2 class="h2">轻量化技术架构，支撑<span class="accent">现场闭环</span></h2>
+    <div class="arch-layout mt-l"><div class="arch-stack"><div class="arch-node app-node"><span class="node-tag">现场应用</span><strong>微信原生小程序</strong><small>登录 · 领 / 释任务 · 扫码 · 盘盈盘亏 · 整改反馈</small></div><div class="arch-arrow">↓ HTTPS / Tunnel</div><div class="arch-node service-node"><span class="node-tag">业务服务</span><strong>Python + FastAPI</strong><small>权限 · 任务 · 资产关系 · 盘点记录 · 导出</small></div><div class="arch-arrow">↓</div><div class="arch-node data-node"><span class="node-tag">数据存储</span><strong>SQLite</strong><small>用户 · 设备 · 任务 · 盘点记录 · 当前 / 历史关联 · AI 结果</small></div></div><div class="arch-side"><div class="arch-panel local-panel"><span class="node-tag">本机管理应用</span><strong>Vue3 + Element Plus</strong><p>PC 管理后台只在本机使用，通过本机 FastAPI 完成清单、任务、看板、账号和二维码管理。</p></div><div class="arch-panel ai-panel"><span class="node-tag">本地智能分析</span><strong>Local Agent + 规则引擎 + DeepSeek</strong><p>先规则识别、字段控制和数据脱敏，再调用模型生成建议；不直接写库或下发整改。</p></div><div class="arch-panel security-panel"><span class="node-tag">公网与文件处理</span><strong>openpyxl + WAF + Tunnel</strong><p>openpyxl 负责 Excel 预检 / 导出；公网只给小程序走 HTTPS，后端保持 127.0.0.1 监听。</p></div></div></div>
+    <aside class="notes"><p>技术上采用一套轻量化架构。现场使用微信原生小程序，管理人员使用 Vue3 和 Element Plus 构建的 PC 后台，中间由 FastAPI 提供统一业务接口。</p><p>PC 后台只在本机使用；小程序通过 HTTPS 和 Cloudflare Tunnel 进入本机 FastAPI。SQLite 保存用户、任务、盘点、当前关系和历史关联，openpyxl 负责清单导入预检与导出。</p><p>AI 部分由 Local Agent 先做规则、字段控制和脱敏，再调用模型生成分析建议。后端只监听 127.0.0.1，进入长期生产后数据库、备份和服务器部署仍需升级。</p></aside>
+  </section>
+
+  <section class="slide framework-slide" data-slide-id="technical-stack" data-title="技术框架分层">
+    <p class="kicker">11 / 技术架构 · STACK LAYERS</p><h2 class="h2">从现场应用到安全防护，技术框架分为<span class="accent">八层</span></h2>
+    <div class="framework-layout mt-l"><div class="framework-table"><div class="framework-row framework-head"><b>层级</b><b>技术组成</b><b>主要作用</b></div><div class="framework-row"><b>01 · 现场应用</b><strong>微信原生小程序</strong><span>登录、领任务、扫码、异常和整改反馈</span></div><div class="framework-row"><b>02 · 管理应用</b><strong>Vue3 + Element Plus</strong><span>PC 后台管理与进度展示，仅本机使用</span></div><div class="framework-row"><b>03 · 业务服务</b><strong>Python + FastAPI</strong><span>权限、任务、资产、盘点、整改和导出接口</span></div><div class="framework-row"><b>04 · 数据层</b><strong>SQLite</strong><span>用户、设备、任务、记录、历史关系和 AI 结果</span></div><div class="framework-row"><b>05 · 文件处理</b><strong>openpyxl</strong><span>Excel 模板、数据预检、导入和导出</span></div><div class="framework-row"><b>06 · 智能分析</b><strong>Local Agent + 规则引擎 + DeepSeek</strong><span>脱敏后识别异常并生成整改建议</span></div><div class="framework-row"><b>07 · 网络访问</b><strong>HTTPS + Cloudflare Tunnel</strong><span>为小程序提供公网安全访问路径</span></div><div class="framework-row"><b>08 · 安全防护</b><strong>Token + WAF + 限流 + 权限</strong><span>限制未授权访问和恶意请求</span></div></div><div class="framework-callouts"><div><span class="target-label">调用边界</span><strong>AI 只读分析，写动作需要审批</strong><p>异常分析可以自动运行；下发整改、处理反馈和状态变更必须回到管理员确认。</p></div><div><span class="target-label">部署边界</span><strong>小程序可公网访问，后台不直接暴露</strong><p>Cloudflare Tunnel 连接本机服务，当前适合小范围试点，生产化仍需升级基础设施。</p></div></div></div>
+    <aside class="notes"><p>这一页把总体架构拆成八个可以核对的技术层级，避免把技术名词堆在一张图上却看不出责任边界。</p><p>现场应用和管理应用分别服务小程序人员与 PC 管理员，FastAPI 提供统一业务接口，SQLite 负责试点阶段的数据保存，openpyxl 处理 Excel。</p><p>Local Agent 和规则引擎负责分析上下文，网络和安全层负责控制访问边界。写入性操作仍然需要管理员审核。</p></aside>
+  </section>
+
+  <section class="slide process-slide" data-slide-id="import-precheck" data-title="清单导入与数据预检">
+    <p class="kicker">12 / 任务准备 · DATA PREPARATION</p><h2 class="h2">先把 Excel 变成<span class="accent">可执行的任务源</span></h2>
+    <div class="process-layout mt-l"><div class="process-shot"><img src="media/pc-upload.png" alt="PC后台上传任务清单"><span class="image-caption">PC 后台：上传清单、预检并生成待领取任务</span></div><div class="process-side"><div class="process-step"><b>01</b><div><strong>下载标准模板</strong><span>统一片区、机房、设备和资产字段。</span></div></div><div class="process-step"><b>02</b><div><strong>预检清单</strong><span>先拦截空条码、重复条码、重复网元和型号缺失。</span></div></div><div class="precheck-grid"><span>空条码</span><span>重复条码</span><span>重复网元</span><span>型号缺失</span></div><div class="process-step"><b>03</b><div><strong>确认导入</strong><span>按机房生成待领取盘点任务，进入片区任务池。</span></div></div><div class="process-check"><span class="check-dot good"></span><strong>源头先校验，减少无效任务进入现场。</strong></div></div></div>
+    <aside class="notes"><p>现场质量的第一道关口在清单导入。管理员先下载标准模板，整理片区、机房、设备和资产字段，再上传到后台。</p><p>系统提供预检能力，提前发现片区不合法、机房缺失、设备数量异常、条码缺失或重复等问题。</p><p>导入成功后，系统按机房生成待领取任务，给后面的片区权限和现场执行提供清晰边界。</p></aside>
+  </section>
+
+  <section class="slide allocation-slide" data-slide-id="task-allocation" data-title="任务生成与片区分配">
+    <p class="kicker">13 / 任务执行 · 任务生成与片区分配</p><h2 class="h2">任务按机房生成，人员按片区<span class="accent">领取</span></h2>
+    <div class="allocation-layout mt-l"><div class="area-board"><div class="area-card core"><b>汇聚及核心</b><span>固定片区任务池</span><em>待领取 / 盘点中 / 已完成</em></div><div class="area-card south"><b>南区</b><span>固定片区任务池</span><em>待领取 / 盘点中 / 已完成</em></div><div class="area-card north"><b>北区</b><span>固定片区任务池</span><em>待领取 / 盘点中 / 已完成</em></div><div class="area-card west"><b>西区</b><span>固定片区任务池</span><em>待领取 / 盘点中 / 已完成</em></div></div><div class="assignment-panel"><div class="assignment-rule"><span class="rule-tag">ADMIN</span><strong>管理员</strong><p>导入清单、生成任务、查看全量进度、筛选并作废无效任务。</p></div><div class="assignment-rule"><span class="rule-tag">FIELD</span><strong>现场人员</strong><p>查看所属片区任务池，领取或释放任务，执行扫码和整改反馈。</p></div><div class="assignment-rule"><span class="rule-tag">STATE</span><strong>任务状态</strong><p>待领取 → 盘点中 → 现场完成；超时和异常进入管理视角。</p></div></div></div>
+    <div class="allocation-foot">按机房拆分任务，按片区控制边界，按状态推动执行。</div>
+    <aside class="notes"><p>任务生成解决的是“谁去盘、盘哪个机房”的问题。系统按机房创建任务，再根据四个固定片区组织任务池。</p><p>现场人员只能看到和领取自己所属片区的任务，不能跨片区领取。管理员拥有全量视角，可以查询任务、查看领取人和状态，必要时作废错误或无效任务。</p><p>任务状态本身也成为管理推进的抓手。</p></aside>
+  </section>
+
+  <section class="slide workflow-slide" data-slide-id="field-workflow" data-title="现场人员操作流程">
+    <p class="kicker">14 / 现场盘点 · 小程序操作流程</p><h2 class="h2">现场流程保持线性，复杂判断<span class="accent">回到后台</span></h2>
+    <div class="workflow-layout workflow-five mt-l"><div class="workflow-step"><b>01</b><strong>微信登录</strong><span>首次使用补充人员资料和所属片区。</span></div><div class="workflow-step"><b>02</b><strong>任务池</strong><span>查看所属片区任务，领取、释放或进入我的任务。</span></div><div class="workflow-step"><b>03</b><strong>逐台扫码</strong><span>扫描资产、机柜，录入型号、机架号和备注。</span></div><div class="workflow-step"><b>04</b><strong>异常登记</strong><span>处理无条码设备，标记盘亏或登记盘盈。</span></div><div class="workflow-step"><b>05</b><strong>整改反馈</strong><span>接收整改任务，提交处理结果和完成说明。</span></div></div>
+    <div class="workflow-guard"><span>过程保障</span><strong>草稿保存</strong><span>权限边界</span><strong>只处理所属片区</strong><span>判断边界</span><strong>现场提交事实</strong></div>
+    <aside class="notes"><p>现场流程尽量保持线性。人员登录后进入自己的片区，领取一个机房任务，逐台处理设备，最后提交现场结果。</p><p>正常记录会采集资产条码、设备型号、机柜条码和机架号。遇到无条码、找不到设备或清单外设备时，选择对应的异常场景。</p><p>现场人员不负责做最终差异判断，提交的事实回到后台后，由管理人员结合清单、历史关系和分析建议继续处理。</p></aside>
+  </section>
+
+  <section class="slide screenshot-slide" data-slide-id="scan-evidence" data-title="扫码盘点界面">
+    <p class="kicker">15 / 现场盘点 · 扫码记录与现场证据</p><h2 class="h2">扫码页把一次盘点拆成<span class="accent">可复核的现场记录</span></h2>
+    <div class="screenshot-layout mt-l"><div class="phone-frame"><img src="media/mini-scan.png" alt="微信小程序设备扫码盘点页面"><span class="image-caption">小程序：设备扫码盘点</span></div><div class="screenshot-copy"><div class="copy-point"><b>资产与机柜</b><span>分别采集资产条码和机柜条码，避免只记录“已到现场”。</span></div><div class="copy-point"><b>设备与机架</b><span>确认设备型号和现场所属机架，补充运行维护所需位置。</span></div><div class="copy-point"><b>异常显式记录</b><span>无条码、盘亏、盘盈不再用空白字段隐含表达。</span></div><div class="copy-point"><b>草稿可恢复</b><span>扫码草稿本地保存，降低误退出造成的现场数据丢失。</span></div></div></div>
+    <aside class="notes"><p>这张截图展示的是现场扫码盘点页面。它把一次记录拆成几个明确字段：资产条码、机柜条码、设备型号、机架号和备注。</p><p>系统允许明确勾选无资产条码或无机柜条码，也允许将现场未找到的设备标记为盘亏，将清单外设备登记为盘盈。</p><p>页面还支持本地保存扫码草稿，现场人员可以在网络或操作中断后继续处理。</p></aside>
+  </section>
+
+  <section class="slide exception-slide" data-slide-id="exception-scenes" data-title="盘盈盘亏与异常场景">
+    <p class="kicker">16 / 异常识别 · 盘盈盘亏与关系异常</p><h2 class="h2">异常不是失败状态，而是<span class="accent">下一步动作的入口</span></h2>
+    <div class="exception-grid mt-l"><div class="exception-card missing"><div class="exception-top"><span>FIELD STATUS</span><b>盘亏</b></div><h3>清单内设备未找到</h3><p>现场无法确认设备存在时，明确记录未找到，不用伪造扫码结果。</p><div class="exception-action"><b>现场动作</b><span>标记盘亏 · 保留机房和任务上下文</span></div></div><div class="exception-card surplus"><div class="exception-top"><span>FIELD STATUS</span><b>盘盈</b></div><h3>现场发现清单外设备</h3><p>把清单外设备登记出来，补充型号、条码和现场位置，等待后台核查。</p><div class="exception-action"><b>现场动作</b><span>登记盘盈 · 进入异常分析范围</span></div></div><div class="exception-card mismatch"><div class="exception-top"><span>RELATION CHECK</span><b>错贴 / 缺失</b></div><h3>条码、设备或位置不一致</h3><p>无条码、条码与设备不匹配、机柜或机架信息缺失，都保留为待核查事实。</p><div class="exception-action"><b>管理动作</b><span>分析建议 · 人工审核 · 下发整改</span></div></div></div>
+    <div class="exception-foot"><span>盘点记录</span><i>→</i><span>异常类型</span><i>→</i><span>责任人</span><i>→</i><strong>整改闭环</strong></div>
+    <aside class="notes"><p>异常场景需要在现场就被结构化记录。盘亏是清单内设备没有找到，盘盈是现场出现清单外设备，错贴或缺失则是条码、设备和位置关系无法直接确认。</p><p>这些状态不是简单的失败，而是后续管理动作的入口。系统保留原始现场记录，后台再结合清单、历史关系和规则分析决定是否需要整改。</p><p>这样既不要求现场人员在信息不足时做过度判断，也避免异常在人工汇总过程中被遗漏。</p></aside>
+  </section>
+
+  <section class="slide screenshot-slide" data-slide-id="management" data-title="管理后台与进度看板">
+    <p class="kicker">17 / 管理闭环 · PC 后台能力</p><h2 class="h2">管理后台统一承接<span class="accent">清单、过程、资产与人员</span></h2>
+    <div class="dashboard-layout mt-l"><div class="dashboard-main"><img src="media/pc-tasks.png" alt="PC后台任务看板"><span class="image-caption">PC 后台：片区进度、任务状态和超时任务</span></div><div class="dashboard-side"><div class="admin-cap-grid"><div><b>清单与任务</b><span>模板下载 · 上传预检 · 生成任务 · 查询 / 作废</span></div><div><b>进度与明细</b><span>状态 / 超时 · 盘点明细 · 筛选 · Excel 导出</span></div><div><b>人员与片区</b><span>小程序账号 · 所属片区 · 启停状态</span></div><div><b>资产关系</b><span>固定二维码资产 · 当前设备 · 历史设备关联</span></div></div><div class="management-answer"><span>后台回答三个问题</span><strong>进度怎么样？问题在哪里？下一步谁处理？</strong></div></div></div>
+    <aside class="notes"><p>后台的重点不是把现场每个输入框重新展示一遍，而是帮助管理人员快速回答三个问题：进度怎么样、问题在哪里、下一步谁来处理。</p><p>任务看板展示设备总数、已盘和未盘数量、片区完成情况以及任务状态。清单导入页面在源头做预检，资产盘点数据模块保留查询和 Excel 导出能力。</p><p>后台还承担账号和片区权限管理，确保任务边界和责任人清晰。</p></aside>
+  </section>
+
+  <section class="slide screenshot-slide" data-slide-id="ai-analysis" data-title="AI异常分析">
+    <p class="kicker">18 / 智能分析 · AI 异常分析</p><h2 class="h2">AI 不替人做决定，帮助人<span class="accent">更快发现问题</span></h2>
+    <div class="ai-layout mt-l"><div class="ai-image"><img src="media/pc-ai.png" alt="PC后台AI模型分析"><span class="image-caption">PC 后台：AI 分析与整改审核</span></div><div class="closure-steps"><div><b>01</b><span>检索已完成或指定范围任务</span></div><div><b>02</b><span>本地 Agent 白名单、截断、脱敏</span></div><div><b>03</b><span>规则与模型输出问题、依据和建议</span></div><div><b>04</b><span>生成分析报告并留档</span></div><div><b>05</b><span>建议等待管理员确认</span></div></div></div>
+    <aside class="notes"><p>AI 在这个系统中的定位比较克制。管理员先选择已完成或指定范围的盘点任务，再由后端把受控数据交给本地 Agent 分析。</p><p>上下文经过字段白名单、行数和长度限制，并清理现场备注中的可疑指令。发送到云端模型前做脱敏，模型返回问题类型、依据和整改建议。</p><p>分析结果可以下载留档，但不会直接修改数据库，也不会自动下发整改。</p></aside>
+  </section>
+
+  <section class="slide closure-slide" data-slide-id="human-closure" data-title="人工审核与整改闭环">
+    <p class="kicker">19 / 整改闭环 · 人工审核与现场反馈</p><h2 class="h2">模型给建议，管理员<span class="accent">确认动作</span></h2>
+    <div class="closure-layout mt-l"><div class="closure-lane"><div class="lane-step"><b>01</b><span>分析结果</span><small>问题类型、涉及机房、涉及设备、建议</small></div><div class="lane-arrow">↓</div><div class="lane-step human"><b>02</b><span>人工审核</span><small>确认事实、调整建议、判断是否需要下发</small></div><div class="lane-arrow">↓</div><div class="lane-step"><b>03</b><span>选择责任人</span><small>选择所属片区现场人员并下发整改任务</small></div><div class="lane-arrow">↓</div><div class="lane-step done"><b>04</b><span>现场反馈</span><small>处理完成后提交说明，形成闭环状态</small></div></div><div class="closure-panel"><div class="closure-evidence"><img src="media/mini-adjustments.png" alt="小程序资产整改闭环页面"><span>小程序：整改任务与完成反馈</span></div><div class="approval-rules"><div><b>read_only</b><span>预检、统计、规则分析可以自动执行。</span></div><div><b>approval_required</b><span>下发、整改、闭环等写动作必须人工确认。</span></div></div></div></div>
+    <div class="closure-foot">AI 是分析助手；业务责任、执行权和最终状态仍由管理员与现场人员承担。</div>
+    <aside class="notes"><p>AI 分析完成后，建议不会直接变成现场任务。管理员需要先看问题类型、涉及机房、涉及设备和判断依据，确认事实是否成立。</p><p>确认后，管理员可以修改整改内容，选择现场人员并下发。现场人员在小程序中处理完成后提交闭环说明。</p><p>Agent 工具按只读能力和需要审批的写能力管理。预检、统计和规则分析可以自动执行；上传、下发、整改和闭环状态变化必须经过管理员确认。</p></aside>
+  </section>
+
+  <section class="slide security-slide" data-slide-id="security" data-title="公网访问与安全边界">
+    <p class="kicker">20 / 安全边界 · SECURITY BOUNDARY</p><h2 class="h2">可以公网访问，但<span class="accent">不直接暴露内网端口</span></h2>
+    <div class="security-layout mt-l"><div class="security-path"><div class="path-node public"><span>01</span><b>微信小程序</b><small>公网 HTTPS 请求；仅访问小程序业务接口</small></div><div class="path-line"></div><div class="path-node edge"><span>02</span><b>Cloudflare WAF / 限流</b><small>托管规则、登录限流和公网入口防护</small></div><div class="path-line"></div><div class="path-node tunnel"><span>03</span><b>Cloudflare Tunnel</b><small>出站连接，不做端口映射；Token 已轮换并改为本地文件读取</small></div><div class="path-line"></div><div class="path-node local"><span>04</span><b>127.0.0.1:8000</b><small>本机 FastAPI；管理员接口从公网访问返回 404</small></div></div><div class="security-checks"><div class="check-title">已完成</div><div class="check-item good">开发环境与生产环境分离</div><div class="check-item good">关闭测试账号、API 文档和 OpenAPI 暴露</div><div class="check-item good">管理员接口默认仅本机；公网只开放小程序接口</div><div class="check-item good">Token 有效期、版本失效与登录限流</div><div class="check-item good">WAF、Tunnel Token 轮换、数据脱敏</div><div class="check-item good">前端依赖审计、后端测试、公网健康检查</div><div class="check-title pending-title">待补齐</div><div class="check-item pending">Windows 主机防火墙、数据库与备份目录权限</div><div class="check-item pending">二维码链接控制、单机 SQLite 单点、Python 依赖锁定</div><div class="check-item pending">恢复演练、审计监控、渗透测试和安全专项验证</div></div></div>
+    <div class="security-foot">结论：具备小范围试用基础；正式推广前继续完成主机、数据库、备份和监控加固。</div>
+    <aside class="notes"><p>安全部分明确说明访问路径和保护边界。小程序通过 HTTPS 访问 Cloudflare，Cloudflare 负责 WAF 和限流，Tunnel 通过出站连接回到本机，后端仍然监听 127.0.0.1。</p><p>目前已经完成生产测试登录关闭、管理员接口公网隐藏、Token 有效期、WAF、登录限流和 Tunnel Token 轮换等措施。</p><p>还没有完成的部分包括 Windows 主机防火墙、数据库和备份权限、恢复演练、审计监控和正式专项安全测试。因此当前结论是具备小范围试用基础，而不是达到大规模生产安全等级。</p></aside>
+  </section>
+
+  <section class="slide" data-slide-id="status" data-title="建设成果与后续路线">
+    <p class="kicker">21 / 建设状态 · STATUS &amp; ROADMAP</p><h2 class="h2">基本流程已跑通，生产化按<span class="accent">三阶段</span>补齐</h2>
+    <div class="status-grid status-four mt-l"><div class="status-card done-card"><span class="status-icon">✓</span><h3>当前成果</h3><p>PC 后台、小程序、FastAPI 基本功能；清单导入、任务生成、现场盘点、导出、盘盈盘亏、AI 分析与整改闭环；Tunnel、WAF、限流、构建测试和公网健康检查。</p></div><div class="status-card next-card"><span class="status-icon">01</span><h3>近期重点</h3><p>主机防火墙；数据库 / 备份目录权限；自动备份与恢复演练；审计日志；二维码授权；整改照片、凭证和复核意见。</p></div><div class="status-card mid-card"><span class="status-icon">02</span><h3>中期完善</h3><p>细化角色和片区权限；服务异常与 Tunnel 监控；周期盘点和自动周报；对接资产 / 资源 / CMDB；多维护中心数据隔离。</p></div><div class="status-card scale-card"><span class="status-icon">03</span><h3>长期建设</h3><p>部署专用服务器、专网或 VPN；迁移生产级数据库；建立高可用、灾备和正式安全测评；形成统一传输网资产数据标准。</p></div></div>
+    <div class="risk-strip"><span>当前定位</span><strong>具备小范围试用基础 / 不等同于最终生产版本</strong><span>风险闭环优先于范围扩张</span></div>
+    <aside class="notes"><p>从验证结果看，系统已经不是静态原型。清单导入、任务生成、现场扫码、异常记录、AI 分析、整改闭环和公网访问都已经跑通。</p><p>后续建设按近期、中期和长期分层：近期优先补主机、数据库、备份、审计和现场凭证；中期增强权限、监控、周期任务和外部系统对接；长期完成专用部署、数据库升级、高可用和统一数据标准。</p><p>当前阶段应该明确定位为小范围试点和现场验证，用真实数据验证流程和口径，再决定是否扩大范围。</p></aside>
+  </section>
+
+  <section class="slide rollout-slide" data-slide-id="scale-out" data-title="推广路线与考核指标">
+    <p class="kicker">22 / 推广路线 · ROLLOUT &amp; METRICS</p><h2 class="h2">先小范围验证，再沿着<span class="accent">三阶段</span>推广</h2>
+    <div class="rollout-layout mt-l"><div class="rollout-stages"><div class="rollout-stage stage-one"><b>01</b><div><strong>小范围试点</strong><span>一个维护中心；1—3 个机房；少量现场人员。</span><p>验证完整盘点、异常识别和整改闭环流程。</p></div></div><div class="rollout-stage stage-two"><b>02</b><div><strong>片区推广</strong><span>覆盖一个维护中心的多个片区。</span><p>固化 Excel 模板、任务规则、操作流程和反馈机制。</p></div></div><div class="rollout-stage stage-three"><b>03</b><div><strong>跨区域推广</strong><span>多个维护中心接入统一资产数据源。</span><p>建立统一权限、备份、安全和运维体系。</p></div></div></div><div class="metric-panel"><span class="rollout-label">试点观察指标</span><div class="metric-grid"><div><b>耗时</b><span>单个机房盘点耗时</span></div><div><b>完成</b><span>盘点完成率</span></div><div><b>异常</b><span>数据异常数量</span></div><div><b>盘盈 / 盘亏</b><span>发现数量</span></div><div><b>闭环</b><span>整改闭环率</span></div><div><b>工作量</b><span>人工统计汇总变化</span></div></div></div></div>
+    <aside class="notes"><p>推广建议分三个阶段，不直接跨到大范围部署。第一阶段选择一个维护中心和一到三个机房，验证完整流程；第二阶段扩展到多个片区，固化模板、规则和操作口径；第三阶段再考虑跨区域和统一数据源。</p><p>试点不能只看“有没有用起来”，还要记录单机房盘点耗时、完成率、异常数量、盘盈盘亏发现数量、整改闭环率和人工汇总工作量变化。</p><p>这些指标用于判断流程是否有效，不在汇报中预设提升比例，避免在没有真实试点数据前下结论。</p></aside>
+  </section>
+
+  <section class="slide ai-dev-slide" data-slide-id="ai-development" data-title="AI辅助开发与人机职责">
+    <p class="kicker">23 / 开发实践 · AI-ASSISTED DEVELOPMENT</p><h2 class="h2">AI 降低开发门槛，<span class="accent">业务判断决定落地</span></h2>
+    <div class="ai-dev-layout mt-l"><div class="dev-loop"><div class="loop-step">业务场景梳理</div><div class="loop-arrow">→</div><div class="loop-step">拆分后台 / 小程序 / 后端 / 数据库</div><div class="loop-arrow">→</div><div class="loop-step">AI 辅助编码</div><div class="loop-arrow">→</div><div class="loop-step">本地运行与报错修复</div><div class="loop-arrow">→</div><div class="loop-step">测试、安全检查与公网验证</div></div><div class="role-columns"><div><span class="role-label ai-role">AI 主要帮助完成</span><p>FastAPI 接口、Vue 管理页面、微信小程序交互、数据库结构、Excel 导入预检导出、Local Agent、测试与部署脚本、安全风险检查。</p></div><div><span class="role-label human-role">业务人员核心职责</span><p>提供传输网场景和规则，确定资产 / 设备 / 机房 / 机架关系，判断盘盈盘亏含义，验证现场习惯，决定 AI 建议是否可执行并负责最终验收。</p></div></div></div>
+    <div class="ai-principle">AI 是研发工具，不是业务责任主体。</div>
+    <aside class="notes"><p>这套系统的开发方式，是业务人员和 AI 协同完成。AI 帮助把需求转成代码，也帮助编写接口、页面、测试、部署脚本和安全检查。</p><p>但业务规则不是 AI 自己决定的。资产条码和设备如何关联，盘盈盘亏如何判断，哪些数据可以发送给模型，哪些操作必须经过管理员审核，这些都来自现场业务判断。</p><p>采用的是先梳理业务，再拆分模块，逐步实现、运行、修复、测试和安全验证的方式。</p></aside>
+  </section>
+
+  <section class="slide close-slide" data-slide-id="next-step" data-title="试点建议与下一步">
+    <p class="kicker">24 / 汇报结论 · NEXT STEP</p><h2 class="h2">先试点，再推广；先把<span class="accent">数据关系做实</span></h2>
+    <div class="next-layout mt-l"><div class="next-main"><div class="next-number">01 / 当前成果</div><h3>基本业务闭环已形成</h3><p>从清单导入、现场扫码，到异常分析和整改反馈，已实现财务资产视角与传输运维视角的结合。</p></div><div class="next-main"><div class="next-number">02 / 现场验证</div><h3>选择 1—3 个机房开展试点</h3><p>验证盘点流程、关系口径、数据质量和整改闭环是否符合现场实际。</p></div><div class="next-main"><div class="next-number">03 / 推广前提</div><h3>补齐生产安全与运维能力</h3><p>完成主机、数据库、备份、权限、审计、监控和专项安全测试。</p></div></div>
+    <div class="closing-line">让资产盘点从“查数量”，走向“查关系、查状态、查闭环”。</div><div class="deck-footer"><span class="mono">Q&amp;A / 现场试点建议</span><span class="slide-number" data-current="24" data-total="24"></span></div>
+    <aside class="notes"><p>最后建议不要一开始就做大范围推广，而是选择一个维护中心或者几个机房做试点。试点要观察流程是否适合现场、关系口径是否统一、异常能不能真正闭环。</p><p>同时要把安全和运维补齐作为推广前提，包括专用服务器或专网部署、数据库和备份权限、审计、监控以及正式安全测试。</p><p>如果试点结果稳定，再逐步扩展到更多专业、设备类型和管理功能。最终希望把资产盘点从查数量推进到查关系、查状态、查闭环。谢谢大家。</p></aside>
+  </section>
+
+</div>
+<div class="deck-hint">E 编辑文字 · Ctrl+S 保存 · S 演讲者模式 · ← → 翻页 · F 全屏 · O 总览 · T 切换主题</div>
+<script src="assets/runtime.js"></script>
+</body>
+</html>

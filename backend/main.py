@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import ipaddress
 import json
 import os
 import re
@@ -10,13 +11,15 @@ import time
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from urllib.parse import quote, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 import openpyxl
 from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
+from starlette.requests import Request as HttpRequest
 
 from .ai_agent import analyze_inventory, build_inventory_rows, chat_inventory, check_model_available, device_extra_value
 from .asset_qr import (
@@ -111,9 +114,139 @@ from .models import (
 )
 from .auth import create_access_token, decode_access_token, hash_password, require_secret_configured, verify_password
 
-app = FastAPI(title="机房资产盘点系统", version="1.0.0")
+
+def _is_production() -> bool:
+    return os.getenv("INVENTORY_ENV", "").strip().lower() in {"prod", "production"}
+
+
+app = FastAPI(
+    title="机房资产盘点系统",
+    version="1.0.0",
+    docs_url=None if _is_production() else "/docs",
+    redoc_url=None if _is_production() else "/redoc",
+    openapi_url=None if _is_production() else "/openapi.json",
+)
 MAX_EXCEL_BYTES = int(os.getenv("INVENTORY_MAX_EXCEL_MB", "20")) * 1024 * 1024
 _WECHAT_ACCESS_TOKEN_CACHE: dict[str, str | int] = {"token": "", "expires_at": 0}
+_LOGIN_RATE_BUCKETS: dict[str, list[float]] = {}
+_LOGIN_RATE_LOCK = Lock()
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(int(os.getenv(name, str(default))), minimum)
+    except ValueError:
+        return default
+
+
+def _client_ip(request: HttpRequest) -> str:
+    source = (request.client.host if request.client else "") or "unknown"
+    trusted_proxies = _admin_allowed_ips(
+        os.getenv("INVENTORY_TRUSTED_PROXY_IPS", "127.0.0.1,::1")
+    )
+    try:
+        source_ip = ipaddress.ip_address(source)
+        is_trusted_proxy = any(
+            source_ip in ipaddress.ip_network(item, strict=False)
+            for item in trusted_proxies
+            if _valid_network(item)
+        )
+    except ValueError:
+        is_trusted_proxy = False
+
+    if is_trusted_proxy:
+        for header in ("cf-connecting-ip", "x-real-ip", "x-forwarded-for"):
+            value = request.headers.get(header, "").strip()
+            if value:
+                return value.split(",", 1)[0].strip()[:80] or "unknown"
+    return source
+
+
+def _valid_network(value: str) -> bool:
+    try:
+        ipaddress.ip_network(value, strict=False)
+        return True
+    except ValueError:
+        return False
+
+
+def _admin_allowed_ips(raw: str | None = None) -> list[str]:
+    value = raw if raw is not None else os.getenv("INVENTORY_ADMIN_ALLOWED_IPS", "127.0.0.1,::1")
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _check_admin_source_allowed(request: HttpRequest) -> None:
+    if os.getenv("INVENTORY_ADMIN_IP_RESTRICTION_ENABLED", "1") == "0":
+        return
+
+    client = _client_ip(request)
+    try:
+        client_ip = ipaddress.ip_address(client)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Not Found") from exc
+
+    for item in _admin_allowed_ips():
+        try:
+            if client_ip in ipaddress.ip_network(item, strict=False):
+                return
+        except ValueError:
+            continue
+    raise HTTPException(status_code=404, detail="Not Found")
+
+
+def _is_field_or_public_api_path(method: str, path: str) -> bool:
+    allowed = [
+        ("POST", r"^/api/login$"),
+        ("POST", r"^/api/me/profile$"),
+        ("GET", r"^/api/tasks/(area|my)$"),
+        ("GET", r"^/api/tasks/\d+/items$"),
+        ("POST", r"^/api/tasks/\d+/(claim|release)$"),
+        ("POST", r"^/api/scan$"),
+        ("POST", r"^/api/records/\d+/missing$"),
+        ("POST", r"^/api/surplus$"),
+        ("GET", r"^/api/adjustments/my$"),
+        ("POST", r"^/api/adjustments/\d+/complete$"),
+        ("GET", r"^/api/public/qr/[^/]+$"),
+    ]
+    return any(method == allowed_method and re.fullmatch(pattern, path) for allowed_method, pattern in allowed)
+
+
+def _login_rate_config(scope: str) -> tuple[int, int]:
+    scope_name = scope.upper()
+    default_limit = 5 if scope == "admin" else 30
+    limit = _env_int(f"INVENTORY_{scope_name}_LOGIN_RATE_LIMIT", default_limit)
+    window = _env_int(
+        f"INVENTORY_{scope_name}_LOGIN_RATE_WINDOW_SECONDS",
+        _env_int("INVENTORY_LOGIN_RATE_WINDOW_SECONDS", 60),
+    )
+    return limit, window
+
+
+def _check_login_rate_limit(request: HttpRequest, scope: str, identity: str = "") -> None:
+    if os.getenv("INVENTORY_LOGIN_RATE_LIMIT_ENABLED", "1") == "0":
+        return
+
+    limit, window = _login_rate_config(scope)
+    now = time.monotonic()
+    keys = [f"{scope}:ip:{_client_ip(request)}"]
+    if scope == "admin" and identity.strip():
+        keys.append(f"{scope}:id:{identity.strip().lower()[:120]}")
+
+    retry_after = 0
+    with _LOGIN_RATE_LOCK:
+        for key in keys:
+            attempts = [ts for ts in _LOGIN_RATE_BUCKETS.get(key, []) if now - ts < window]
+            _LOGIN_RATE_BUCKETS[key] = attempts
+            if len(attempts) >= limit:
+                retry_after = max(retry_after, int(window - (now - attempts[0])) + 1)
+        if retry_after:
+            raise HTTPException(
+                status_code=429,
+                detail=f"登录尝试过于频繁，请 {retry_after} 秒后再试",
+                headers={"Retry-After": str(retry_after)},
+            )
+        for key in keys:
+            _LOGIN_RATE_BUCKETS.setdefault(key, []).append(now)
 
 
 def _cors_origins() -> list[str]:
@@ -131,6 +264,16 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def hide_admin_api_from_public(request: HttpRequest, call_next):
+    if request.url.path.startswith("/api/") and not _is_field_or_public_api_path(request.method, request.url.path):
+        try:
+            _check_admin_source_allowed(request)
+        except HTTPException:
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+    return await call_next(request)
+
+
 @app.on_event("startup")
 def on_startup():
     """启动时初始化数据库，并创建默认用户。"""
@@ -138,7 +281,10 @@ def on_startup():
     init_db()
     admin = create_user("admin_001", "管理员", "admin", USER_AREA_CORE)
     configured_password = os.getenv("INVENTORY_ADMIN_PASSWORD", "")
-    if configured_password:
+    if configured_password and (
+        not admin.get("password_hash")
+        or not verify_password(configured_password, admin["password_hash"])
+    ):
         set_password_hash(admin["id"], hash_password(configured_password))
     elif not admin.get("password_hash"):
         raise RuntimeError("首次启动缺少 INVENTORY_ADMIN_PASSWORD，无法创建管理员密码")
@@ -154,12 +300,13 @@ def current_user(authorization: str = Header("")) -> dict:
         raise HTTPException(status_code=401, detail="请先登录")
     payload = decode_access_token(authorization[7:].strip())
     user = get_user_for_auth(int(payload["sub"])) if payload else None
-    if not user:
+    if not user or int(payload.get("ver", -1)) != int(user.get("auth_version") or 0):
         raise HTTPException(status_code=401, detail="登录已失效，请重新登录")
     return user
 
 
-def admin_user(user: dict = Depends(current_user)) -> dict:
+def admin_user(request: HttpRequest, user: dict = Depends(current_user)) -> dict:
+    _check_admin_source_allowed(request)
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="仅管理员可执行此操作")
     return user
@@ -606,7 +753,9 @@ def api_delete_user(user_id: int, actor: dict = Depends(admin_user)):
 
 
 @app.post("/api/admin/login")
-def api_admin_login(req: AdminLoginRequest):
+def api_admin_login(req: AdminLoginRequest, request: HttpRequest):
+    _check_admin_source_allowed(request)
+    _check_login_rate_limit(request, "admin", req.username)
     user = get_user_by_openid(req.username.strip())
     if not user or user["role"] != "admin" or not user["is_active"]:
         raise HTTPException(status_code=401, detail="账号或密码错误")
@@ -617,8 +766,9 @@ def api_admin_login(req: AdminLoginRequest):
 
 
 @app.post("/api/login")
-def api_login(req: LoginRequest):
+def api_login(req: LoginRequest, request: HttpRequest):
     """小程序登录；生产通过微信 code2session 获取可信 openid。"""
+    _check_login_rate_limit(request, "worker")
     code = req.code.strip()
     if not code:
         raise HTTPException(status_code=400, detail="登录凭证不能为空")

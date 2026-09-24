@@ -395,7 +395,8 @@ def init_db() -> None:
             area_name   TEXT DEFAULT '汇聚及核心',
             phone       TEXT DEFAULT '',
             employee_no TEXT DEFAULT '',
-            is_active   INTEGER NOT NULL DEFAULT 1
+            is_active   INTEGER NOT NULL DEFAULT 1,
+            auth_version INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS tasks (
@@ -578,6 +579,7 @@ def init_db() -> None:
         "is_deleted": "ALTER TABLE users ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0",
         "deleted_at": "ALTER TABLE users ADD COLUMN deleted_at TEXT",
         "password_hash": "ALTER TABLE users ADD COLUMN password_hash TEXT DEFAULT ''",
+        "auth_version": "ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 0",
     }
     for column, statement in user_migrations.items():
         if column not in user_columns:
@@ -734,7 +736,16 @@ def get_user_by_openid(wx_openid: str) -> dict[str, Any] | None:
 def set_password_hash(user_id: int, password_hash: str) -> None:
     conn = get_conn()
     try:
-        conn.execute("UPDATE users SET password_hash=? WHERE id=?", (password_hash, user_id))
+        current = conn.execute(
+            "SELECT password_hash FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if current is None or current["password_hash"] != password_hash:
+            conn.execute(
+                """UPDATE users
+                   SET password_hash = ?, auth_version = COALESCE(auth_version, 0) + 1
+                   WHERE id = ?""",
+                (password_hash, user_id),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -1304,10 +1315,22 @@ def create_user(
         conn.commit()
         return dict_from_row(conn.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone())
     except sqlite3.IntegrityError:
+        current = conn.execute(
+            "SELECT role, is_active FROM users WHERE wx_openid = ?",
+            (wx_openid.strip(),),
+        ).fetchone()
+        auth_changed = bool(
+            current
+            and (
+                current["role"] != role.strip()
+                or int(current["is_active"] or 0) != (1 if is_active else 0)
+            )
+        )
         conn.execute(
             """UPDATE users
                SET name = ?, role = ?, area_name = ?, phone = ?, employee_no = ?, is_active = ?,
-                   is_deleted = 0, deleted_at = NULL
+                   is_deleted = 0, deleted_at = NULL,
+                   auth_version = COALESCE(auth_version, 0) + ?
                WHERE wx_openid = ?""",
             (
                 name.strip(),
@@ -1316,6 +1339,7 @@ def create_user(
                 phone.strip(),
                 employee_no.strip(),
                 1 if is_active else 0,
+                1 if auth_changed else 0,
                 wx_openid.strip(),
             ),
         )
@@ -1418,10 +1442,26 @@ def update_user(user_id: int, data: dict[str, Any]) -> dict[str, Any] | None:
     params = list(update_data.values()) + [user_id]
     conn = get_conn()
     try:
+        current = conn.execute(
+            "SELECT role, is_active, wx_openid FROM users WHERE id = ? AND COALESCE(is_deleted, 0) = 0",
+            (user_id,),
+        ).fetchone()
+        if current is None:
+            return None
+        auth_changed = any(
+            field in update_data
+            and str(update_data[field] or "") != str(current[field] or "")
+            for field in ("role", "wx_openid")
+        )
+        if "is_active" in update_data:
+            auth_changed = auth_changed or int(update_data["is_active"]) != int(current["is_active"] or 0)
         try:
             cur = conn.execute(
-                f"UPDATE users SET {set_sql} WHERE id = ? AND COALESCE(is_deleted, 0) = 0",
-                params,
+                f"""UPDATE users
+                    SET {set_sql},
+                        auth_version = COALESCE(auth_version, 0) + ?
+                    WHERE id = ? AND COALESCE(is_deleted, 0) = 0""",
+                [*params[:-1], 1 if auth_changed else 0, user_id],
             )
             conn.commit()
         except sqlite3.IntegrityError as exc:
