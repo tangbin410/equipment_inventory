@@ -1,8 +1,10 @@
 import axios, { type AxiosRequestConfig } from "axios";
 import { ElMessage } from "element-plus";
 import { clearAiSessionState } from "./aiSession";
+import { API_BASE } from "./config";
+import { setPermissionUser } from "./permissions";
+import type { AdminUser } from "./types";
 
-export const API_BASE = "http://127.0.0.1:8000/api";
 const TOKEN_KEY = "inventory_admin_token";
 const USER_KEY = "inventory_admin_user";
 
@@ -13,6 +15,7 @@ export function getToken(): string {
 export function setSession(token: string, user: unknown) {
   localStorage.setItem(TOKEN_KEY, token);
   localStorage.setItem(USER_KEY, JSON.stringify(user || {}));
+  setPermissionUser(user as AdminUser);
 }
 
 export function getSessionUser<T = unknown>(): T | null {
@@ -29,6 +32,13 @@ export function clearSession() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
   clearAiSessionState();
+  setPermissionUser(null);
+}
+
+export async function refreshSessionUser(): Promise<AdminUser> {
+  const user = await apiGet<AdminUser>("/admin/me");
+  setSession(getToken(), user);
+  return user;
 }
 
 const client = axios.create({
@@ -47,7 +57,7 @@ client.interceptors.request.use((config) => {
 client.interceptors.response.use(
   (response) => response,
   (error) => {
-    const detail = error?.response?.data?.detail || error?.message || "请求失败";
+    const detail = readableErrorDetail(error?.response?.data?.detail, error?.message || "请求失败");
     if (error?.response?.status === 401) {
       clearSession();
       ElMessage.error(String(detail));
@@ -58,6 +68,19 @@ client.interceptors.response.use(
     return Promise.reject(error);
   },
 );
+
+function readableErrorDetail(detail: unknown, fallback: string): string {
+  if (typeof detail === "string") return detail;
+  if (!Array.isArray(detail)) return fallback;
+  const messages = detail.flatMap((issue) => {
+    if (!issue || typeof issue !== "object" || typeof issue.msg !== "string") return [];
+    const location = Array.isArray(issue.loc)
+      ? issue.loc.filter((part: unknown) => (typeof part === "string" || typeof part === "number") && part !== "body").join(".")
+      : "";
+    return [location ? `${location}：${issue.msg}` : issue.msg];
+  });
+  return messages.join("；") || fallback;
+}
 
 export async function apiGet<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
   const response = await client.get<T>(url, config);
@@ -79,8 +102,8 @@ export async function apiDelete<T>(url: string, config?: AxiosRequestConfig): Pr
   return response.data;
 }
 
-export async function downloadBlob(url: string, filename: string) {
-  const response = await client.get<Blob>(url, { responseType: "blob" });
+export async function downloadBlob(url: string, filename: string, config?: AxiosRequestConfig) {
+  const response = await client.get<Blob>(url, { ...config, responseType: "blob" });
   const blobUrl = URL.createObjectURL(response.data);
   const link = document.createElement("a");
   link.href = blobUrl;

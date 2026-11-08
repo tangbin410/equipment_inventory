@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from backend.main import (
     _LOGIN_RATE_BUCKETS,
     _check_admin_source_allowed,
+    _check_dev_login_source,
     _check_login_rate_limit,
     _client_ip,
 )
@@ -16,6 +17,7 @@ class FakeRequest:
     def __init__(self, headers=None, host="127.0.0.1"):
         self.headers = headers or {}
         self.client = SimpleNamespace(host=host)
+        self.url = SimpleNamespace(hostname="127.0.0.1")
 
 
 class LoginRateLimitTests(unittest.TestCase):
@@ -78,6 +80,13 @@ class LoginRateLimitTests(unittest.TestCase):
     def test_admin_source_accepts_explicit_cidr(self):
         os.environ["INVENTORY_ADMIN_ALLOWED_IPS"] = "203.0.113.0/24"
         _check_admin_source_allowed(FakeRequest({"cf-connecting-ip": "203.0.113.8"}))
+
+    def test_dev_login_rejects_cloudflare_requests(self):
+        _check_dev_login_source(FakeRequest(host="127.0.0.1"))
+        with self.assertRaises(HTTPException) as caught:
+            _check_dev_login_source(FakeRequest({"cf-connecting-ip": "203.0.113.8"}))
+
+        self.assertEqual(caught.exception.status_code, 403)
 
     def test_forwarded_ip_is_ignored_from_untrusted_source(self):
         request = FakeRequest(

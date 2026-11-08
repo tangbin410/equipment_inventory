@@ -14,37 +14,40 @@
   <view class="stats-row">
     <view class="stat-item">
       <text class="stat-num">{{totalTasks}}</text>
-      <text class="stat-label">全部</text>
+      <text class="stat-label">{{mode === 'completed' ? '已完成任务' : '待完成任务'}}</text>
     </view>
-    <view class="stat-item">
+    <view wx:if="{{mode !== 'completed'}}" class="stat-item">
+      <text class="stat-num">{{pendingTasks}}</text>
+      <text class="stat-label">未开始</text>
+    </view>
+    <view wx:if="{{mode !== 'completed'}}" class="stat-item">
       <text class="stat-num">{{doingTasks}}</text>
       <text class="stat-label">盘点中</text>
     </view>
-    <view class="stat-item">
-      <text class="stat-num">{{doneTasks}}</text>
-      <text class="stat-label">完成</text>
+    <view wx:if="{{mode === 'completed'}}" class="stat-item">
+      <text class="stat-num">{{scannedTotal}}</text>
+      <text class="stat-label">已处理设备</text>
     </view>
-    <view class="stat-item">
+    <view wx:if="{{mode !== 'completed'}}" class="stat-item">
       <text class="stat-num warn">{{unscannedTotal}}</text>
-      <text class="stat-label">未扫</text>
+      <text class="stat-label">未处理</text>
     </view>
   </view>
 
   <!-- 任务列表 -->
   <view class="filter-bar">
-    <input class="search-input" placeholder="搜索机房或任务" bindinput="onKeywordInput" />
-    <picker mode="selector" range="{{statusOptions}}" bindchange="onStatusChange">
-      <view class="filter-picker">筛选状态</view>
-    </picker>
+    <input class="search-input" value="{{keyword}}" placeholder="搜索机房或任务" bindinput="onKeywordInput" />
   </view>
-  <view class="section-title">盘点任务</view>
+  <view class="section-title">{{pageTitle}}</view>
 
   <view wx:if="{{loading}}" class="loading">
     <text>加载中...</text>
   </view>
 
   <view wx:elif="{{_tasksEmpty}}" class="empty">
-    <text>暂无我的任务，请先到【领任务】领取机房</text>
+    <text wx:if="{{keyword}}">未找到匹配的机房或任务</text>
+    <text wx:elif="{{mode === 'completed'}}">暂无本人已完成的盘点任务</text>
+    <text wx:else>暂无待完成任务，请先到【领任务】领取机房</text>
   </view>
 
   <view wx:else class="task-list">
@@ -68,12 +71,14 @@
 
       <!-- 机房 -->
       <view class="task-room">📍 {{item.room_name}}</view>
+      <view wx:if="{{item.superseded_by_task_id}}" class="replacement-notice">该机房有最新任务 #{{item.superseded_by_task_id}}，请释放当前任务并领取最新任务。当前任务仅可查看。</view>
+      <view wx:if="{{mode === 'completed'}}" class="completed-time">完成时间：{{item._completedAt || '未记录'}}</view>
       <view class="task-meta-row">
-        <text class="task-meta">未扫 {{item._unscanned}}</text>
+        <text wx:if="{{mode !== 'completed'}}" class="task-meta">未处理 {{item._unscanned}}</text>
         <text class="task-meta warn">异常 {{item._mismatch}}</text>
         <view class="task-actions">
           <text class="task-action" data-id="{{item.id}}" catchtap="openTask">{{item._actionText}}</text>
-          <text wx:if="{{item._canRelease}}" class="release-action" data-id="{{item.id}}" catchtap="releaseTask">释放任务</text>
+          <text wx:if="{{item._canRelease}}" class="release-action" data-id="{{item.id}}" catchtap="releaseTask">{{releasingTaskId == item.id ? '释放中' : item.superseded_by_task_id ? '释放并前往' : '释放任务'}}</text>
         </view>
       </view>
 

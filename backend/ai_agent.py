@@ -15,7 +15,12 @@ from typing import Any
 
 import requests
 
-PROMPT_VERSION = "inventory-ai-v1"
+from local_agent.context_policy import apply_context_policy
+from local_agent.prompt_loader import BUSINESS_RULES_VERSION, load_inventory_business_rules, render_inventory_analysis_prompt
+
+from .database import split_codes
+
+PROMPT_VERSION = BUSINESS_RULES_VERSION
 
 
 def _load_local_env() -> None:
@@ -85,8 +90,7 @@ def _map_code_list(value: str, mapper) -> str:
         return ""
     if text == "无条码":
         return text
-    parts = re.split(r"[,，、/;；\s]+", text)
-    mapped = [mapper(part) for part in parts if part]
+    mapped = [mapper(part) for part in sorted(split_codes(text))]
     return ",".join(mapped)
 
 
@@ -97,6 +101,7 @@ def build_inventory_rows(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for record in task.get("records") or []:
             rows.append({
                 "任务ID": task.get("id"),
+                "导入批次": task.get("import_batch_id") or "",
                 "任务名称": task.get("task_name") or "",
                 "机房名称": task.get("room_name") or "",
                 "片区": task.get("area_name") or "汇聚及核心",
@@ -108,14 +113,14 @@ def build_inventory_rows(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "设备名称": record.get("device_name") or "",
                 "清单设备型号": record.get("expected_model") or "",
                 "清单资产条码": record.get("expected_barcode") or "",
-                "清单设备机架": device_extra_value(record, "设备机架"),
+                "清单设备机架": record["expected_rack_no"] if "expected_rack_no" in record else device_extra_value(record, "设备机架"),
                 "现场设备型号": record.get("actual_model") or "",
                 "现场资产条码": record.get("asset_barcodes") or ("无条码" if record.get("asset_no_barcode") else ""),
                 "资产无条码": _format_bool(record.get("asset_no_barcode")),
                 "现场机柜条码": record.get("cabinet_barcodes") or ("无条码" if record.get("cabinet_no_barcode") else ""),
                 "机柜无条码": _format_bool(record.get("cabinet_no_barcode")),
                 "现场机架号": record.get("rack_no") or "",
-                "现场状态": record.get("field_status") or "正常",
+                "现场状态": "未盘点" if record.get("match_status") == "未扫" else (record.get("field_status") or "正常"),
                 "盘点时间": record.get("scanned_at") or "",
                 "盘亏原因": record.get("missing_reason") or "",
                 "现场备注": record.get("notes") or "",
@@ -127,22 +132,27 @@ def desensitize_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], 
     """脱敏标识类字段，保留数据质量特征供模型分析。"""
     map_room = _mapper("ROOM")
     map_task = _mapper("TASK")
+    map_batch = _mapper("BATCH")
     map_area = _mapper("AREA")
     map_user = _mapper("USER")
     map_device = _mapper("DEVICE")
     map_asset = _mapper("ASSET")
     map_cabinet = _mapper("CABINET")
+    map_location = _mapper("LOCATION")
 
     sensitive_maps: dict[str, dict[str, str]] = defaultdict(dict)
     result = []
     for row in rows:
         item = dict(row)
         replacements = {
+            "导入批次": map_batch,
             "任务名称": map_task,
             "机房名称": map_room,
             "片区": map_area,
             "领取人": map_user,
             "设备名称": map_device,
+            "资产资源名称": map_device, "综资网元名称": map_device, "现场网元名称": map_device,
+            "资产地点编码": map_location, "综资地点编码": map_location, "现场地点编码": map_location,
         }
         for field, mapper in replacements.items():
             original = str(item.get(field) or "")
@@ -150,12 +160,12 @@ def desensitize_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], 
             item[field] = masked
             if original and masked:
                 sensitive_maps[field][masked] = original
-        for field, mapper in {"清单资产条码": map_asset, "现场资产条码": map_asset, "现场机柜条码": map_cabinet}.items():
+        for field, mapper in {"资产信息条码": map_asset, "清单资产条码": map_asset, "现场资产条码": map_asset, "现场机柜条码": map_cabinet}.items():
             original = str(item.get(field) or "")
             masked = _map_code_list(original, mapper)
             item[field] = masked
             if original and masked:
-                for masked_code, original_code in zip(masked.split(","), re.split(r"[,，、/;；\s]+", original)):
+                for masked_code, original_code in zip(masked.split(","), sorted(split_codes(original))):
                     if masked_code and original_code:
                         sensitive_maps[field][masked_code] = original_code
         item["现场备注"] = _mask_free_text(item.get("现场备注") or "")
@@ -172,26 +182,8 @@ def input_summary(rows: list[dict[str, Any]]) -> str:
 
 
 def _analysis_prompt(payload: dict[str, Any]) -> list[dict[str, str]]:
-    return [
-        {
-            "role": "system",
-            "content": (
-                "你是运营商传输网管资产盘点分析 agent。你只能基于用户给出的脱敏数据做只读分析，"
-                "不能编造不存在的设备或机房，不能要求系统自动修改数据。输出必须是 JSON 数组。"
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                "请按以下固定规则分析资产盘点数据：未盘集中、现场型号缺失、现场资产条码缺失、"
-                "机柜条码缺失、盘亏/盘盈记录集中、同一资产条码重复、同一机房同类问题集中、"
-                "现场备注中提示的共性整改问题。输出数组元素字段固定为："
-                "问题类型、涉及机房、涉及设备、风险等级、判断依据、整改建议、优先级。"
-                "风险等级只能是高/中/低，优先级只能是P1/P2/P3。"
-                f"\n\n数据：{json.dumps(payload, ensure_ascii=False)}"
-            ),
-        },
-    ]
+    safe_payload, context_meta = apply_context_policy(payload)
+    return render_inventory_analysis_prompt(safe_payload, [], [], context_meta)
 
 
 def _deepseek_config() -> tuple[str, str, str]:
@@ -346,17 +338,16 @@ def _chat_prompt(message: str, history: list[dict[str, str]], payload: dict[str,
         "不要编造机房、设备、条码、人员或任务；不能直接读取本地文件、查询数据库或修改业务数据。"
         "如果判断依据不足，要向管理员提出需要确认的问题。"
         "涉及整改、下发、闭环时，只能给出建议或待确认事项，不能声称已经执行。"
+        f"\n\n{load_inventory_business_rules()}"
     )
-    context = {
-        "input_summary": payload.get("input_summary") or "",
-        "rows": payload.get("rows") or [],
-    }
+    context, context_meta = apply_context_policy(payload)
     messages = [{"role": "system", "content": system}]
     messages.extend(history)
     messages.append({
         "role": "user",
         "content": (
             f"管理员问题：{message}\n\n"
+            f"上下文管控信息：{json.dumps(context_meta, ensure_ascii=False)}\n"
             f"脱敏盘点上下文：{json.dumps(context, ensure_ascii=False)}\n\n"
             "请用简洁中文回答。若需要管理员确认，请明确列出确认项。"
         ),
@@ -445,13 +436,15 @@ def _restore_sensitive_values(items: list[dict[str, Any]], sensitive_maps: dict[
     return restored
 
 
-def analyze_inventory(tasks: list[dict[str, Any]]) -> dict[str, Any]:
-    rows = build_inventory_rows(tasks)
+def analyze_inventory(tasks: list[dict[str, Any]], comparison: dict[str, Any] | None = None) -> dict[str, Any]:
+    from .three_way import agent_rows
+    rows = agent_rows(comparison) if comparison is not None else build_inventory_rows(tasks)
     masked_rows, sensitive_maps = desensitize_rows(rows)
     payload = {
         "prompt_version": PROMPT_VERSION,
         "input_summary": input_summary(rows),
         "rows": masked_rows,
+        "data_sources": ["资产", "综资", "现场"] if comparison and comparison.get("asset_version") else ["综资", "现场"],
     }
     external_agent_url = _external_agent_url()
     context_meta: dict[str, Any] = {}
@@ -463,6 +456,7 @@ def analyze_inventory(tasks: list[dict[str, Any]]) -> dict[str, Any]:
         context_meta = agent_result.get("context_meta") or {}
         tool_manifest = agent_result.get("tool_manifest") or []
     else:
+        _, context_meta = apply_context_policy(payload)
         items = _call_deepseek(payload)
         model_name = _clean_env_value(os.getenv("DEEPSEEK_MODEL", ""))
     restored_items = _restore_sensitive_values(items, sensitive_maps)
@@ -484,9 +478,11 @@ def chat_inventory(
     tasks: list[dict[str, Any]],
     history: list[dict[str, Any]] | None = None,
     adjustments: list[dict[str, Any]] | None = None,
+    comparison: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """面向管理员的只读对话：后端取数并脱敏，模型只能看脱敏上下文。"""
-    rows = build_inventory_rows(tasks)
+    from .three_way import agent_rows
+    rows = agent_rows(comparison) if comparison is not None else build_inventory_rows(tasks)
     masked_rows, sensitive_maps = desensitize_rows(rows)
     safe_message = _clean_chat_text(message)
     if not safe_message:
@@ -497,6 +493,7 @@ def chat_inventory(
         "input_summary": input_summary(rows) if rows else "当前未选择任务，未附带资产盘点上下文",
         "rows": masked_rows,
         "adjustments": adjustments or [],
+        "data_sources": ["资产", "综资", "现场"] if comparison and comparison.get("asset_version") else ["综资", "现场"],
     }
     external_agent_url = _external_agent_url()
     context_meta: dict[str, Any] = {}
@@ -512,6 +509,7 @@ def chat_inventory(
         context_meta = agent_result.get("context_meta") or {}
         tool_manifest = agent_result.get("tool_manifest") or []
     else:
+        _, context_meta = apply_context_policy(payload)
         answer = _post_deepseek_chat(_chat_prompt(safe_message, normalized_history, payload), temperature=0.2)
         model_name = _clean_env_value(os.getenv("DEEPSEEK_MODEL", ""))
     return {

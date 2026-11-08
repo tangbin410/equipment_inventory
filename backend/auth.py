@@ -44,13 +44,17 @@ def verify_password(password: str, encoded: str) -> bool:
         return False
 
 
-def create_access_token(user: dict[str, Any]) -> str:
+def create_access_token(user: dict[str, Any], auth_method: str | None = None) -> str:
     payload = {
         "sub": int(user["id"]),
         "role": user["role"],
         "ver": int(user.get("auth_version") or 0),
         "exp": int(time.time()) + TOKEN_TTL_SECONDS,
     }
+    if auth_method is not None:
+        payload["method"] = auth_method
+    if user["role"] == "admin":
+        payload["admin_scope"] = user.get("admin_scope") or "full"
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
     body = base64.urlsafe_b64encode(raw).rstrip(b"=")
     signature = hmac.new(_secret(), body, hashlib.sha256).digest()

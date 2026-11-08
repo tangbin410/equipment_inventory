@@ -86,8 +86,6 @@
 
 .filter-bar { display: flex; padding: 16px 12px 0; }
 .search-input { flex: 1; height: 40px; box-sizing: border-box; padding: 0 12px; background: #fff; border: 1px solid #d9e7f7; border-radius: 10px; font-size: 14px; }
-.filter-picker { height: 40px; line-height: 40px; padding: 0 13px; background: #fff; border: 1px solid #d9e7f7; border-radius: 10px; color: #49637e; font-size: 13px; }
-.filter-bar picker { margin-left: 8px; }
 
 .task-list {
   padding: 0 0 16px;
@@ -157,6 +155,22 @@
   font-size: 13px;
   color: #6b7c90;
   margin-bottom: 8px;
+}
+
+.completed-time {
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: #6b7c90;
+}
+
+.replacement-notice {
+  margin: 8px 0 12px;
+  padding: 10px;
+  border-radius: 8px;
+  color: #ad6800;
+  background: #fff7e6;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .task-meta-row {

@@ -1,6 +1,4 @@
 <template>
-  <PageHeader :icon="List" title="任务看板" desc="查看领取与盘点进度，支持作废任务" />
-
   <section class="task-chart-grid">
     <div class="chart-panel">
       <div class="chart-head">
@@ -79,11 +77,13 @@
     <el-table border table-layout="auto" :data="taskRows" height="330">
       <el-table-column prop="机房" label="机房" min-width="190" show-overflow-tooltip />
       <el-table-column prop="片区" label="片区" min-width="90" />
+      <el-table-column prop="批次" label="导入批次" min-width="215" show-overflow-tooltip />
       <el-table-column prop="任务名称" label="任务名称" min-width="210" show-overflow-tooltip />
       <el-table-column prop="领取人" label="领取人" min-width="100" />
       <el-table-column label="现场状态" min-width="112">
         <template #default="{ row }"><el-tag :type="statusTag(row.现场状态)" effect="plain">{{ row.现场状态 }}</el-tag></template>
       </el-table-column>
+      <el-table-column prop="任务更新" label="任务更新说明" min-width="260" show-overflow-tooltip />
       <el-table-column prop="进度" label="进度" min-width="90" />
       <el-table-column prop="完成率" label="完成率" min-width="90" />
       <el-table-column prop="领取时间" label="领取时间" min-width="160" />
@@ -93,6 +93,7 @@
     </el-table>
   </div>
 
+  <template v-if="permissions.manageTasks">
   <SectionTitle :icon="Delete" title="作废任务" muted="查询并勾选任务后填写作废原因" />
   <div class="toolbar">
     <el-form-item class="span-2" label="查询字段">
@@ -145,17 +146,18 @@
       <el-button type="danger" :disabled="!selectedDeleteTask || !deleteReason.trim()" @click="deleteTask">作废选中任务</el-button>
     </template>
   </el-dialog>
+  </template>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { DataLine, Delete, List, Tickets, TrendCharts } from "@element-plus/icons-vue";
-import PageHeader from "../components/PageHeader.vue";
+import { DataLine, Delete, Tickets, TrendCharts } from "@element-plus/icons-vue";
 import SectionTitle from "../components/SectionTitle.vue";
 import { apiDelete, apiGet } from "../api";
 import type { Task } from "../types";
 import { formatTime, isOverdue, taskStage } from "../utils";
+import { permissions } from "../permissions";
 
 const tasks = ref<Task[]>([]);
 const queried = ref(false);
@@ -167,19 +169,21 @@ const deleteReason = ref("");
 const resultDialogVisible = ref(false);
 
 const queryOptions = [
+  { label: "导入批次", value: "import_batch_id" },
   { label: "机房名称", value: "room_name" },
   { label: "任务名称", value: "task_name" },
   { label: "片区", value: "area_name" },
   { label: "领取人", value: "claimed_name" },
   { label: "现场状态", value: "field_stage" },
 ];
-const stageOptions = ["待领取", "盘点中", "现场完成"];
+const stageOptions = ["待领取", "盘点中", "现场完成", "待释放旧任务", "等待旧任务释放"];
 
 const queryLabel = computed(() => queryOptions.find((item) => item.value === queryField.value)?.label || "查询内容");
 const areaOptions = ["汇聚及核心", "南区", "北区", "西区"];
 const overdueCount = computed(() => tasks.value.filter((task) => isOverdue(task)).length);
-const totalDevices = computed(() => tasks.value.reduce((sum, task) => sum + (task.total || 0), 0));
-const scannedDevices = computed(() => tasks.value.reduce((sum, task) => sum + (task.scanned || 0), 0));
+const progressTasks = computed(() => tasks.value.filter((task) => !task.superseded_by_task_id));
+const totalDevices = computed(() => progressTasks.value.reduce((sum, task) => sum + (task.total || 0), 0));
+const scannedDevices = computed(() => progressTasks.value.reduce((sum, task) => sum + (task.scanned || 0), 0));
 const pendingDevices = computed(() => Math.max(totalDevices.value - scannedDevices.value, 0));
 const deviceProgressPercent = computed(() => totalDevices.value ? Math.round((scannedDevices.value / totalDevices.value) * 100) : 0);
 const donutStyle = computed(() => ({ "--progress": deviceProgressPercent.value } as Record<string, string | number>));
@@ -187,7 +191,7 @@ const taskCompletionPercent = computed(() => tasks.value.length ? Math.round((co
 const areaProgressItems = computed(() => {
   const areaNames = ["汇聚及核心", "南区", "北区", "西区"];
   return areaNames.map((area) => {
-    const areaTasks = tasks.value.filter((task) => (task.area_name || "").trim() === area);
+    const areaTasks = progressTasks.value.filter((task) => (task.area_name || "").trim() === area);
     const total = areaTasks.reduce((sum, task) => sum + (task.total || 0), 0);
     const scanned = areaTasks.reduce((sum, task) => sum + (task.scanned || 0), 0);
     return {
@@ -202,18 +206,22 @@ const areaProgressItems = computed(() => {
 const statusChartItems = computed(() => {
   const total = Math.max(tasks.value.length, 1);
   return [
-    { label: "待领取", value: countByStatus("pending"), className: "pending" },
-    { label: "盘点中", value: countByStatus("doing"), className: "doing" },
+    { label: "待领取", value: tasks.value.filter((task) => taskStage(task) === "待领取").length, className: "pending" },
+    { label: "盘点中", value: tasks.value.filter((task) => taskStage(task) === "盘点中").length, className: "doing" },
+    { label: "等待旧任务释放", value: tasks.value.filter((task) => !!task.waiting_for_task_id).length, className: "pending" },
+    { label: "待释放旧任务", value: tasks.value.filter((task) => !!task.superseded_by_task_id).length, className: "pending" },
     { label: "现场完成", value: countByStatus("done"), className: "done" },
     { label: "超时任务", value: overdueCount.value, className: "overdue" },
   ].map((item) => ({ ...item, percent: Math.round((item.value / total) * 100) }));
 });
 const taskRows = computed(() => tasks.value.map((task) => ({
   机房: task.room_name,
+  批次: task.import_batch_id || "",
   片区: task.area_name || "汇聚及核心",
   任务名称: task.task_name,
   领取人: task.claimed_name || "-",
   现场状态: taskStage(task),
+  任务更新: task.replacement_notice || "",
   进度: `${task.scanned || 0}/${task.total || 0}`,
   完成率: `${Math.round(((task.scanned || 0) / (task.total || 1)) * 100)}%`,
   领取时间: formatTime(task.claimed_at),
@@ -275,6 +283,7 @@ async function deleteTask() {
 }
 
 onMounted(loadTasks);
+defineExpose({ refresh: loadTasks });
 </script>
 
 <style scoped>

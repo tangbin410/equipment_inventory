@@ -15,6 +15,10 @@
         <text class="num">{{doneCount}}</text>
         <text class="label">已完成</text>
       </view>
+      <view wx:if="{{waitingCount}}" class="stat">
+        <text class="num">{{waitingCount}}</text>
+        <text class="label">待旧任务释放</text>
+      </view>
     </view>
   </view>
 
@@ -29,12 +33,14 @@
   <view wx:elif="{{empty}}" class="empty">暂无符合条件的机房任务</view>
 
   <view wx:else class="task-list">
-    <view class="task-card" wx:for="{{tasks}}" wx:key="id">
+    <view class="task-card {{item._highlight ? 'highlight' : ''}}" wx:for="{{tasks}}" wx:key="id">
       <view class="card-head">
         <text class="room">{{item.room_name}}</text>
         <text class="tag {{item._statusCls}}">{{item._statusText}}</text>
       </view>
       <text class="task-name">{{item.task_name}}</text>
+      <text wx:if="{{item._highlight}}" class="task-notice">请核对并领取此最新任务 #{{item.id}}</text>
+      <text wx:if="{{item.waiting_for_task_id}}" class="task-notice">等待旧任务 #{{item.waiting_for_task_id}} 释放后才能领取，已盘结果将在释放时沿用。</text>
       <view class="meta-row">
         <text class="meta">设备 {{item._total}}</text>
         <text class="meta">已扫 {{item._scanned}}</text>
@@ -48,7 +54,7 @@
       </view>
       <view class="bottom-row">
         <text class="claimed">{{item._claimedText}}</text>
-        <button wx:if="{{item._canClaim}}" class="claim-btn" data-id="{{item.id}}" catchtap="claimTask">领取任务</button>
+        <button wx:if="{{item._canClaim}}" class="claim-btn" data-id="{{item.id}}" catchtap="claimTask" disabled="{{claimingTaskId}}" loading="{{claimingTaskId == item.id}}">领取任务</button>
       </view>
     </view>
   </view>

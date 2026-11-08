@@ -7,10 +7,10 @@
       </div>
       <div class="header-actions">
         <el-button @click="downloadTemplate">下载导入模板</el-button>
-        <el-upload :show-file-list="false" accept=".xlsx" :http-request="importAssets">
+        <el-upload v-if="permissions.manageQr" :show-file-list="false" accept=".xlsx" :http-request="importAssets">
           <el-button>批量导入</el-button>
         </el-upload>
-        <el-button type="primary" @click="openCreate">新增资产</el-button>
+        <el-button v-if="permissions.manageQr" type="primary" @click="openCreate">新增资产</el-button>
       </div>
     </div>
 
@@ -37,15 +37,15 @@
       </el-table-column>
       <el-table-column label="操作" width="300" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" @click="openBinding(row)">改绑设备</el-button>
+          <el-button v-if="permissions.manageQr" link type="primary" @click="openBinding(row)">改绑设备</el-button>
           <el-button link @click="downloadQr(row)">下载二维码</el-button>
-          <el-button link @click="openEdit(row)">编辑</el-button>
-          <el-button link type="danger" @click="deleteAsset(row)">删除</el-button>
+          <el-button v-if="permissions.manageQr" link @click="openEdit(row)">编辑</el-button>
+          <el-button v-if="permissions.manageQr" link type="danger" @click="deleteAsset(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="assetDialog.open" :title="assetDialog.editing ? '编辑资产' : '新增资产'" width="460px">
+    <el-dialog v-if="permissions.manageQr" v-model="assetDialog.open" :title="assetDialog.editing ? '编辑资产' : '新增资产'" width="460px">
       <el-form label-width="100px">
         <el-form-item label="资产条码"><el-input v-model="assetDialog.form.asset_barcode" /></el-form-item>
         <el-form-item label="条码型号"><el-input v-model="assetDialog.form.barcode_model" /></el-form-item>
@@ -56,7 +56,7 @@
       <template #footer><el-button @click="assetDialog.open = false">取消</el-button><el-button type="primary" @click="saveAsset">保存</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="bindingDialog.open" title="变更当前传输设备" width="430px">
+    <el-dialog v-if="permissions.manageQr" v-model="bindingDialog.open" title="变更当前传输设备" width="430px">
       <el-form label-width="90px">
         <el-form-item label="资产条码"><span>{{ bindingDialog.asset?.asset_barcode }}</span></el-form-item>
         <el-form-item label="当前设备"><span>{{ bindingDialog.asset?.current_device_name || "未绑定" }}</span></el-form-item>
@@ -69,7 +69,7 @@
     <el-dialog v-model="historyDialog.open" title="历史关联设备" width="720px">
       <div class="history-toolbar">
         <span>资产条码：{{ historyDialog.asset?.asset_barcode }}</span>
-        <el-button type="primary" size="small" @click="openHistoryCreate">补录历史</el-button>
+        <el-button v-if="permissions.manageQr" type="primary" size="small" @click="openHistoryCreate">补录历史</el-button>
       </div>
       <el-table :data="historyDialog.rows" border size="small">
         <el-table-column prop="device_name" label="设备" />
@@ -77,7 +77,7 @@
         <el-table-column prop="bound_at" label="开始时间" min-width="160" />
         <el-table-column prop="unbound_at" label="结束时间" min-width="160"><template #default="{ row }">{{ row.unbound_at || "当前" }}</template></el-table-column>
         <el-table-column prop="change_reason" label="变更原因" />
-        <el-table-column label="操作" width="110">
+        <el-table-column v-if="permissions.manageQr" label="操作" width="110">
           <template #default="{ row }">
             <template v-if="row.unbound_at">
               <el-button link type="primary" @click="openHistoryEdit(row)">编辑</el-button>
@@ -89,7 +89,7 @@
       </el-table>
     </el-dialog>
 
-    <el-dialog v-model="historyFormDialog.open" :title="historyFormDialog.editing ? '编辑历史记录' : '补录历史记录'" width="460px">
+    <el-dialog v-if="permissions.manageQr" v-model="historyFormDialog.open" :title="historyFormDialog.editing ? '编辑历史记录' : '补录历史记录'" width="460px">
       <el-form label-width="90px">
         <el-form-item label="设备名称"><el-input v-model="historyFormDialog.form.device_name" /></el-form-item>
         <el-form-item label="所在机房"><el-input v-model="historyFormDialog.form.room_name" /></el-form-item>
@@ -108,6 +108,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import type { UploadRequestOptions } from "element-plus";
 import { apiDelete, apiGet, apiPatch, apiPost, downloadBlob } from "../api";
 import type { QrAsset, QrAssetBinding, QrAssetForm } from "../types";
+import { permissions } from "../permissions";
 
 const assets = ref<QrAsset[]>([]);
 const query = ref("");

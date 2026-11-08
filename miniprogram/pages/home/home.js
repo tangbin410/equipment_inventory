@@ -1,5 +1,5 @@
 const app = getApp();
-const { bindProfile, getMyAdjustmentTasks } = require("../../utils/api");
+const { bindProfile, getProfile, getMyAdjustmentTasks } = require("../../utils/api");
 const { getUnreadReminders } = require("../../utils/adjustment-reminders");
 
 Page({
@@ -20,7 +20,12 @@ Page({
       wx.reLaunch({ url: "/pages/login/login" });
       return;
     }
-    const user = app.globalData.userInfo || {};
+    this.applyUserProfile(app.globalData.userInfo || {});
+    this.refreshProfile();
+    this.loadAdjustmentReminderCount();
+  },
+
+  applyUserProfile(user) {
     const userName = user.name || "";
     const phone = user.phone || "";
     this.setData({
@@ -31,7 +36,18 @@ Page({
       profilePhone: phone,
       showProfileCard: !phone || !userName || userName === "待绑定用户",
     });
-    this.loadAdjustmentReminderCount();
+  },
+
+  async refreshProfile() {
+    try {
+      const result = await getProfile();
+      if (result && result.user) {
+        app.setUserInfo(result.user);
+        this.applyUserProfile(result.user);
+      }
+    } catch (err) {
+      // 网络异常时保留本地资料，避免首页因资料刷新失败无法使用。
+    }
   },
 
   async loadAdjustmentReminderCount() {
@@ -95,6 +111,10 @@ Page({
 
   goMyTasks() {
     wx.navigateTo({ url: "/pages/tasks/tasks" });
+  },
+
+  goCompletedTasks() {
+    wx.navigateTo({ url: "/pages/tasks/tasks?mode=completed" });
   },
 
   goAdjustments() {

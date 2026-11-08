@@ -1,5 +1,5 @@
 <template>
-  <PageHeader :icon="User" title="账号管理" desc="维护账号、片区和启停状态" />
+  <PageHeader :icon="User" title="账号管理" desc="维护现场人员、完整管理员与协作管理员，管理独立登录密码" />
 
   <section class="account-overview">
     <div class="account-main-card">
@@ -36,94 +36,82 @@
     <div class="account-mini-card info">
       <span>资料完整</span>
       <strong>{{ profileCompleteRate }}%</strong>
-      <small>姓名、工号、手机号完整</small>
+      <small>姓名、手机号完整</small>
     </div>
   </section>
 
-  <SectionTitle :icon="User" title="账号列表" muted="总览账号，维护请到下方查询" />
-  <div class="table-wrap">
-    <el-table border table-layout="auto" :data="userRows" height="360">
-      <el-table-column prop="姓名" label="姓名" min-width="110" show-overflow-tooltip />
-      <el-table-column prop="角色" label="角色" min-width="110" />
-      <el-table-column prop="负责片区" label="负责片区" min-width="130" />
-      <el-table-column prop="手机号" label="手机号" min-width="135" />
-      <el-table-column prop="工号" label="工号" min-width="120" />
-      <el-table-column label="状态" min-width="100">
-        <template #default="{ row }"><el-tag :type="row.状态 === '启用' ? 'success' : 'info'" effect="plain">{{ row.状态 }}</el-tag></template>
-      </el-table-column>
-    </el-table>
+  <div class="account-list-heading">
+    <SectionTitle :icon="User" title="账号列表" />
+    <el-button class="account-create-button" type="primary" :icon="Plus" :disabled="busy" @click="openCreate">新建空白账号</el-button>
   </div>
-
-  <SectionTitle :icon="Tools" title="账号维护" muted="查询并勾选账号后编辑" />
   <div class="toolbar">
     <el-form-item class="span-2" label="查询字段">
       <el-select v-model="queryField" @change="onQueryFieldChange">
         <el-option v-for="item in queryOptions" :key="item.value" :label="item.label" :value="item.value" />
       </el-select>
     </el-form-item>
-    <el-form-item class="span-6" label="查询内容">
-      <el-select v-if="queryField === 'area_name'" v-model="queryText" class="full-btn" placeholder="请选择负责片区">
+    <el-form-item class="span-8" label="查询内容">
+      <el-select v-if="queryField === 'area_name'" v-model="queryText" clearable class="full-btn" placeholder="请选择负责片区">
         <el-option v-for="item in areaOptions" :key="item" :label="item" :value="item" />
       </el-select>
-      <el-select v-else-if="queryField === 'role'" v-model="queryText" class="full-btn" placeholder="请选择角色">
+      <el-select v-else-if="queryField === 'role'" v-model="queryText" clearable class="full-btn" placeholder="请选择角色">
         <el-option label="现场人员" value="现场人员" />
-        <el-option label="管理员" value="管理员" />
+        <el-option label="完整管理员" value="完整管理员" />
+        <el-option label="协作管理员" value="协作管理员" />
       </el-select>
-      <el-select v-else-if="queryField === 'is_active'" v-model="queryText" class="full-btn" placeholder="请选择状态">
+      <el-select v-else-if="queryField === 'is_active'" v-model="queryText" clearable class="full-btn" placeholder="请选择状态">
         <el-option label="启用" value="启用" />
         <el-option label="停用" value="停用" />
       </el-select>
-      <el-input v-else v-model="queryText" :placeholder="`请输入${queryLabel}`" />
+      <el-input v-else v-model="queryText" clearable :placeholder="`输入${queryLabel}筛选账号`" />
     </el-form-item>
     <div class="span-2">
-      <el-button type="primary" class="full-btn" @click="runQuery">查询</el-button>
-    </div>
-    <div class="span-2">
-      <el-button class="full-btn" @click="openCreate"><el-icon><Plus /></el-icon>新建空白账号</el-button>
+      <el-button class="full-btn" @click="queryText = ''">重置</el-button>
     </div>
   </div>
-
-  <el-dialog v-model="resultDialogVisible" title="查询结果" width="900px" class="result-dialog">
-    <el-empty v-if="!candidates.length" description="没有查到相关账号。" />
-    <template v-else>
-      <div class="dialog-tip">查询到 {{ candidates.length }} 个账号，请勾选需要维护的账号。</div>
-      <div class="table-wrap compact">
-        <el-table border table-layout="auto" :data="candidates" height="320" @selection-change="onSelectionChange">
-          <el-table-column type="selection" width="48" />
-          <el-table-column prop="name" label="姓名" min-width="110" show-overflow-tooltip />
-          <el-table-column label="角色" min-width="110"><template #default="{ row }">{{ roleText(row.role) }}</template></el-table-column>
-          <el-table-column label="负责片区" min-width="130"><template #default="{ row }">{{ displayArea(row.area_name) }}</template></el-table-column>
-          <el-table-column prop="phone" label="手机号" min-width="135" />
-          <el-table-column prop="employee_no" label="工号" min-width="120" />
-          <el-table-column label="状态" min-width="100"><template #default="{ row }"><el-tag :type="row.is_active ? 'success' : 'info'" effect="plain">{{ row.is_active ? "启用" : "停用" }}</el-tag></template></el-table-column>
-        </el-table>
-      </div>
-    </template>
-    <template #footer>
-      <span class="dialog-footer-note">已选 {{ selectedUser ? 1 : 0 }} 个账号</span>
-      <el-button @click="resultDialogVisible = false">关闭</el-button>
-      <el-button type="primary" :disabled="!selectedUser" @click="openEdit">编辑选中账号</el-button>
-    </template>
-  </el-dialog>
+  <div class="table-wrap">
+    <el-table v-loading="loading" border table-layout="auto" :data="filteredUsers" row-key="id" height="440" empty-text="没有符合条件的账号">
+      <el-table-column prop="name" label="姓名" min-width="110" show-overflow-tooltip />
+      <el-table-column label="角色" min-width="120"><template #default="{ row }">{{ adminRoleText(row) }}</template></el-table-column>
+      <el-table-column label="负责片区" min-width="130"><template #default="{ row }">{{ displayArea(row.area_name) }}</template></el-table-column>
+      <el-table-column prop="phone" label="手机号" min-width="135" />
+      <el-table-column label="状态" min-width="100">
+        <template #default="{ row }"><el-tag :type="row.is_active ? 'success' : 'info'" effect="plain">{{ row.is_active ? "启用" : "停用" }}</el-tag></template>
+      </el-table-column>
+      <el-table-column label="操作" width="320" fixed="right">
+        <template #default="{ row }">
+          <el-button size="small" :disabled="busy" @click="openEdit(row)">编辑</el-button>
+          <el-button v-if="row.role === 'admin'" size="small" :disabled="busy" @click="openPasswordReset(row)">重置密码</el-button>
+          <el-button size="small" :type="row.is_active ? 'warning' : 'success'" plain :disabled="busy" @click="toggleUserStatus(row)">{{ row.is_active ? "停用" : "启用" }}</el-button>
+          <el-button size="small" type="danger" plain :disabled="busy" @click="deleteUser(row)">删除</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
+  </div>
 
   <el-dialog v-model="dialogVisible" :title="dialogMode === 'create' ? '新建账号' : '编辑账号'" width="560px">
-    <el-form :model="form" label-position="top">
+    <el-form :model="form" :disabled="saving" label-position="top">
       <el-form-item label="登录编码">
-        <el-input v-model="form.wx_openid" placeholder="例如 worker_006 或真实 openid" />
+        <el-input v-model="form.wx_openid" placeholder="后台账号例如 admin_b；现场人员填写微信 openid" />
       </el-form-item>
       <el-form-item label="姓名">
         <el-input v-model="form.name" />
       </el-form-item>
-      <el-form-item label="工号">
-        <el-input v-model="form.employee_no" />
-      </el-form-item>
       <el-form-item label="角色">
-        <el-select v-model="form.role" class="full-btn">
+        <el-select v-model="form.account_role" class="full-btn">
           <el-option label="现场人员" value="worker" />
-          <el-option label="管理员" value="admin" />
+          <el-option label="完整管理员" value="full" />
+          <el-option label="协作管理员" value="collaborator" />
         </el-select>
       </el-form-item>
-      <el-form-item label="负责片区">
+      <el-alert v-if="form.account_role === 'collaborator'" title="可查看全部机房、执行比对、修正盘点数据和更新综资基线；账号、任务管理写入及系统配置由完整管理员负责。" type="info" :closable="false" show-icon />
+      <el-form-item v-if="needsInitialPassword" label="管理员登录密码（12–128 位）">
+        <el-input v-model="form.password" type="password" show-password autocomplete="new-password" maxlength="128" />
+      </el-form-item>
+      <el-form-item v-if="needsInitialPassword" label="再次输入密码">
+        <el-input v-model="form.confirm_password" type="password" show-password autocomplete="new-password" maxlength="128" />
+      </el-form-item>
+      <el-form-item :label="form.account_role === 'worker' ? '负责片区' : '登记片区（后台管理员可查看全部机房）'">
         <el-select v-model="form.area_name" class="full-btn">
           <el-option v-for="item in areaOptions" :key="item" :label="item" :value="item" />
         </el-select>
@@ -136,47 +124,60 @@
       </el-form-item>
     </el-form>
     <template #footer>
-      <el-button v-if="dialogMode === 'edit'" type="danger" plain @click="deleteUser">删除账号</el-button>
-      <el-button @click="dialogVisible = false">取消</el-button>
-      <el-button type="primary" @click="saveUser">保存</el-button>
+      <el-button :disabled="saving" @click="dialogVisible = false">取消</el-button>
+      <el-button type="primary" :loading="saving" @click="saveUser">保存</el-button>
     </template>
+  </el-dialog>
+  <el-dialog v-model="passwordDialogVisible" title="重置管理员密码" width="480px" @closed="clearPasswordForm">
+    <p>{{ passwordUser?.name || passwordUser?.wx_openid }}：重置后该账号的现有登录会话失效，需使用新密码登录。</p>
+    <el-form label-position="top" :disabled="saving">
+      <el-form-item label="新密码（12–128 位）"><el-input v-model="passwordForm.password" type="password" show-password autocomplete="new-password" maxlength="128" /></el-form-item>
+      <el-form-item label="再次输入密码"><el-input v-model="passwordForm.confirm_password" type="password" show-password autocomplete="new-password" maxlength="128" /></el-form-item>
+    </el-form>
+    <template #footer><el-button :disabled="saving" @click="passwordDialogVisible=false">取消</el-button><el-button type="primary" :loading="saving" @click="resetPassword">重置密码</el-button></template>
   </el-dialog>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Plus, Tools, User } from "@element-plus/icons-vue";
+import { Plus, User } from "@element-plus/icons-vue";
 import PageHeader from "../components/PageHeader.vue";
 import SectionTitle from "../components/SectionTitle.vue";
-import { apiDelete, apiGet, apiPatch, apiPost } from "../api";
+import { apiDelete, apiGet, apiPatch, apiPost, clearSession, refreshSessionUser } from "../api";
+import { adminRoleText, permissions, sessionUser } from "../permissions";
 import type { AdminUser } from "../types";
 
 const users = ref<AdminUser[]>([]);
-const queried = ref(false);
+const loading = ref(false);
+const saving = ref(false);
+const actionUserId = ref<number | null>(null);
+const busy = computed(() => saving.value || actionUserId.value !== null);
 const queryField = ref("name");
 const queryText = ref("");
-const candidates = ref<AdminUser[]>([]);
 const selectedUser = ref<AdminUser | null>(null);
-const resultDialogVisible = ref(false);
 const dialogVisible = ref(false);
 const dialogMode = ref<"create" | "edit">("create");
 const form = reactive({
   wx_openid: "",
   name: "",
-  employee_no: "",
-  role: "worker",
+  account_role: "worker",
+  password: "",
+  confirm_password: "",
   area_name: "汇聚及核心",
   phone: "",
   is_active: true,
 });
+const needsInitialPassword = computed(() => form.account_role !== "worker" && (dialogMode.value === "create" || selectedUser.value?.role !== "admin"));
+const passwordDialogVisible = ref(false);
+const passwordUser = ref<AdminUser | null>(null);
+const passwordForm = reactive({ password: "", confirm_password: "" });
 
 const areaOptions = ["汇聚及核心", "南区", "北区", "西区"];
 const queryOptions = [
   { label: "姓名", value: "name" },
   { label: "手机号", value: "phone" },
   { label: "登录编码", value: "wx_openid" },
-  { label: "工号", value: "employee_no" },
   { label: "负责片区", value: "area_name" },
   { label: "角色", value: "role" },
   { label: "状态", value: "is_active" },
@@ -194,21 +195,13 @@ const areaCount = computed(() => {
 });
 const profileCompleteRate = computed(() => {
   if (!users.value.length) return 0;
-  const completeCount = users.value.filter((user) => Boolean(user.name && user.employee_no && user.phone)).length;
+  const completeCount = users.value.filter((user) => Boolean(user.name && user.phone)).length;
   return Math.round((completeCount / users.value.length) * 100);
 });
-const userRows = computed(() => users.value.map((user) => ({
-  姓名: user.name || "",
-  角色: roleText(user.role),
-  负责片区: displayArea(user.area_name),
-  手机号: user.phone || "",
-  工号: user.employee_no || "",
-  状态: user.is_active ? "启用" : "停用",
-})));
-
-function roleText(role: string) {
-  return role === "admin" ? "管理员" : "现场人员";
-}
+const filteredUsers = computed(() => {
+  const needle = String(queryText.value || "").trim().toLowerCase();
+  return users.value.filter((user) => !needle || userValue(user, queryField.value).toLowerCase().includes(needle));
+});
 
 function displayArea(areaName?: string) {
   const value = String(areaName || "").trim();
@@ -219,7 +212,7 @@ function displayArea(areaName?: string) {
 }
 
 function userValue(user: AdminUser, field: string) {
-  if (field === "role") return roleText(user.role);
+  if (field === "role") return adminRoleText(user);
   if (field === "is_active") return user.is_active ? "启用" : "停用";
   if (field === "area_name") return displayArea(user.area_name);
   return String((user as unknown as Record<string, unknown>)[field] || "");
@@ -232,71 +225,143 @@ function onQueryFieldChange() {
 function resetForm(user?: AdminUser) {
   form.wx_openid = user?.wx_openid || "";
   form.name = user?.name || "";
-  form.employee_no = user?.employee_no || "";
-  form.role = user?.role || "worker";
+  form.account_role = user?.role === "admin" ? user.admin_scope || "full" : "worker";
+  form.password = "";
+  form.confirm_password = "";
   form.area_name = displayArea(user?.area_name);
   form.phone = user?.phone || "";
   form.is_active = user ? Boolean(user.is_active) : true;
 }
 
 async function loadUsers() {
-  users.value = await apiGet<AdminUser[]>("/users");
-}
-
-function runQuery() {
-  const needle = queryText.value.trim().toLowerCase();
-  queried.value = true;
-  selectedUser.value = null;
-  if (!needle) {
-    ElMessage.warning("请输入查询内容后再查询");
-    candidates.value = [];
-    resultDialogVisible.value = false;
-    return;
+  loading.value = true;
+  try {
+    users.value = await apiGet<AdminUser[]>("/users");
+  } finally {
+    loading.value = false;
   }
-  candidates.value = users.value.filter((user) => userValue(user, queryField.value).toLowerCase().includes(needle));
-  resultDialogVisible.value = true;
-}
-
-function onSelectionChange(rows: AdminUser[]) {
-  selectedUser.value = rows[rows.length - 1] || null;
 }
 
 function openCreate() {
+  selectedUser.value = null;
   dialogMode.value = "create";
   resetForm();
   dialogVisible.value = true;
 }
 
-function openEdit() {
-  if (!selectedUser.value) return;
+function openEdit(user: AdminUser) {
+  selectedUser.value = user;
   dialogMode.value = "edit";
-  resetForm(selectedUser.value);
+  resetForm(user);
   dialogVisible.value = true;
-  resultDialogVisible.value = false;
 }
 
 async function saveUser() {
-  const payload = { ...form, is_active: form.is_active ? 1 : 0 };
-  if (dialogMode.value === "create") {
-    await apiPost("/users", payload);
-    ElMessage.success("账号已创建");
-  } else if (selectedUser.value) {
-    await apiPatch(`/users/${selectedUser.value.id}`, payload);
-    ElMessage.success("账号已保存");
+  if (saving.value) return;
+  if (needsInitialPassword.value && !validPassword(form.password, form.confirm_password)) return;
+  const payload = {
+    wx_openid: form.wx_openid.trim(), name: form.name.trim(),
+    role: form.account_role === "worker" ? "worker" : "admin",
+    admin_scope: form.account_role === "collaborator" ? "collaborator" : "full",
+    area_name: form.area_name, phone: form.phone.trim(), is_active: form.is_active ? 1 : 0,
+    ...(needsInitialPassword.value ? { password: form.password } : {}),
+  };
+  saving.value = true;
+  try {
+    if (dialogMode.value === "create") {
+      await apiPost("/users", payload);
+      ElMessage.success("账号已创建");
+    } else if (selectedUser.value) {
+      await apiPatch(`/users/${selectedUser.value.id}`, payload);
+      ElMessage.success("账号已保存");
+    }
+    dialogVisible.value = false;
+    form.password = "";
+    form.confirm_password = "";
+    if (selectedUser.value?.id === sessionUser.value?.id) {
+      if (payload.role !== "admin" || !payload.is_active) clearSession();
+      else await refreshSessionUser();
+    }
+    if (permissions.value.manageAccounts) await loadUsers();
+  } catch {
+    return;
+  } finally {
+    saving.value = false;
   }
-  dialogVisible.value = false;
-  await loadUsers();
-  if (queried.value) runQuery();
 }
 
-async function deleteUser() {
-  if (!selectedUser.value) return;
-  await ElMessageBox.confirm(`确认删除账号：${selectedUser.value.name || selectedUser.value.wx_openid}？`, "删除账号", { type: "warning" });
-  await apiDelete(`/users/${selectedUser.value.id}`);
-  ElMessage.success("账号已删除");
-  dialogVisible.value = false;
-  await loadUsers();
-  if (queried.value) runQuery();
+function validPassword(password: string, confirmation: string) {
+  if (!password.trim()) {
+    ElMessage.warning("管理员密码不能全部为空白字符");
+    return false;
+  }
+  if (password.length < 12 || password.length > 128) {
+    ElMessage.warning("管理员密码长度应为 12–128 位");
+    return false;
+  }
+  if (password !== confirmation) {
+    ElMessage.warning("两次输入的密码不一致");
+    return false;
+  }
+  return true;
+}
+
+function clearPasswordForm() {
+  passwordForm.password = "";
+  passwordForm.confirm_password = "";
+}
+
+function openPasswordReset(user: AdminUser) {
+  clearPasswordForm();
+  passwordUser.value = user;
+  passwordDialogVisible.value = true;
+}
+
+async function resetPassword() {
+  if (!passwordUser.value || saving.value || !validPassword(passwordForm.password, passwordForm.confirm_password)) return;
+  saving.value = true;
+  try {
+    await apiPost(`/users/${passwordUser.value.id}/password`, { password: passwordForm.password });
+    passwordDialogVisible.value = false;
+    clearPasswordForm();
+    ElMessage.success("密码已重置，该账号需重新登录");
+    if (passwordUser.value.id === sessionUser.value?.id) await refreshSessionUser();
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function toggleUserStatus(user: AdminUser) {
+  if (busy.value) return;
+  actionUserId.value = user.id;
+  try {
+    await apiPatch(`/users/${user.id}`, { is_active: user.is_active ? 0 : 1 });
+    ElMessage.success(user.is_active ? "账号已停用" : "账号已启用");
+    await loadUsers();
+  } catch {
+    return;
+  } finally {
+    actionUserId.value = null;
+  }
+}
+
+async function deleteUser(user: AdminUser) {
+  if (busy.value) return;
+  try {
+    await ElMessageBox.confirm(`确认删除账号：${user.name || user.wx_openid}？`, "删除账号", { type: "warning" });
+  } catch {
+    return;
+  }
+  actionUserId.value = user.id;
+  try {
+    await apiDelete(`/users/${user.id}`);
+    ElMessage.success("账号已删除");
+    await loadUsers();
+  } catch {
+    return;
+  } finally {
+    actionUserId.value = null;
+  }
 }
 
 onMounted(loadUsers);
@@ -405,22 +470,45 @@ onMounted(loadUsers);
   line-height: 1.45;
 }
 
-.span-9 { grid-column: span 9; }
-
-.dialog-tip {
-  margin-bottom: 12px;
-  color: var(--muted);
-  font-size: 14px;
+.account-list-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 20px 0 12px;
 }
 
-.dialog-footer-note {
-  float: left;
-  color: var(--muted);
-  line-height: 32px;
+.account-list-heading :deep(.section-title) {
+  margin: 0;
 }
 
-.table-wrap.compact {
-  margin-bottom: 0;
+.account-list-heading .el-button.account-create-button {
+  --el-button-text-color: #fff;
+  --el-button-hover-text-color: #fff;
+  --el-button-active-text-color: #fff;
+  --el-button-disabled-text-color: #fff;
+  min-height: 36px;
+  padding: 9px 16px;
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(135deg, #1976e5, #129fad);
+  box-shadow: 0 4px 10px rgba(31, 125, 242, 0.2);
+}
+
+.account-list-heading .el-button.account-create-button:not(.is-disabled):hover,
+.account-list-heading .el-button.account-create-button:not(.is-disabled):focus-visible {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(135deg, #1267cf, #0c8997);
+}
+
+.account-list-heading .el-button.account-create-button.is-disabled,
+.account-list-heading .el-button.account-create-button.is-disabled:hover {
+  color: #fff;
+  border-color: transparent;
+  background: #83a6ca;
+  box-shadow: none;
+  opacity: 1;
 }
 
 @media (max-width: 1280px) {

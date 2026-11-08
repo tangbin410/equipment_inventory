@@ -17,6 +17,10 @@
       <text class="stat-label">待整改</text>
     </view>
     <view class="stat-item">
+      <text class="stat-num warn">{{verifyCount}}</text>
+      <text class="stat-label">待验收</text>
+    </view>
+    <view class="stat-item">
       <text class="stat-num done">{{doneCount}}</text>
       <text class="stat-label">已完成</text>
     </view>
@@ -67,6 +71,29 @@
         <text class="reminder-note">{{item._reminderNote}}</text>
       </view>
 
+      <view wx:if="{{item._canComplete}}" class="field-block">
+        <text class="field-label">审核要求</text><text class="field-text">{{item.review_note || '按整改建议处理'}}</text>
+        <text class="field-label">整改结果说明（必填）</text>
+        <textarea class="feedback-input" placeholder="填写实际处理情况和核实依据" maxlength="1500" data-index="{{index}}" bindinput="inputFeedback" />
+        <view wx:if="{{item.needs_new_feedback}}" class="feedback-record">
+          <text class="field-label">本单暂无现场记录，可补充本设备反馈 · {{item.target_room}}</text>
+          <input class="feedback-input" placeholder="现场新增设备名称" data-index="{{index}}" data-field="device_name" bindinput="inputNewFeedback" />
+          <input class="feedback-input" placeholder="实际资产条码" data-index="{{index}}" data-field="asset_barcodes" bindinput="inputNewFeedback" />
+          <input class="feedback-input" placeholder="实际型号" data-index="{{index}}" data-field="actual_model" bindinput="inputNewFeedback" />
+          <input class="feedback-input" placeholder="机柜条码" data-index="{{index}}" data-field="cabinet_barcodes" bindinput="inputNewFeedback" />
+          <view>无机柜条码 <switch data-index="{{index}}" data-field="cabinet_no_barcode" bindchange="inputNewFeedback" /></view>
+          <input class="feedback-input" placeholder="机架号" data-index="{{index}}" data-field="rack_no" bindinput="inputNewFeedback" />
+        </view>
+        <text wx:if="{{item.field_records.length}}" class="field-label">需要更新条码或型号时，仅修改本单设备反馈</text>
+        <view wx:for="{{item.field_records}}" wx:for-item="record" wx:for-index="recordindex" wx:key="id" class="feedback-record">
+          <text>{{record.device_name}} · 记录 #{{record.id}}</text>
+          <input class="feedback-input" value="{{record.asset_barcodes}}" placeholder="实际资产条码" data-index="{{index}}" data-recordindex="{{recordindex}}" data-field="asset_barcodes" bindinput="editFeedbackRecord" />
+          <input class="feedback-input" value="{{record.actual_model}}" placeholder="整改后的实际型号" data-index="{{index}}" data-recordindex="{{recordindex}}" data-field="actual_model" bindinput="editFeedbackRecord" />
+          <input class="feedback-input" value="{{record.cabinet_barcodes}}" disabled="{{record.cabinet_no_barcode}}" placeholder="实际机柜条码" data-index="{{index}}" data-recordindex="{{recordindex}}" data-field="cabinet_barcodes" bindinput="editFeedbackRecord" />
+          <view>无机柜条码 <switch checked="{{record.cabinet_no_barcode}}" data-index="{{index}}" data-recordindex="{{recordindex}}" bindchange="toggleCabinetMissing" /></view>
+          <input class="feedback-input" value="{{record.rack_no}}" placeholder="实际机架号" data-index="{{index}}" data-recordindex="{{recordindex}}" data-field="rack_no" bindinput="editFeedbackRecord" />
+        </view>
+      </view>
       <button
         wx:if="{{item._canComplete}}"
         class="complete-btn"
@@ -75,7 +102,7 @@
       >
         确认整改完成
       </button>
-      <view wx:else class="done-tip">已反馈管理员，等待后台复核。</view>
+      <view wx:else class="done-tip">{{item._tipText}}</view>
     </view>
   </view>
 </view>

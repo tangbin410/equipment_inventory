@@ -1,9 +1,13 @@
 __pycache__/
 *.py[cod]
+.DS_Store
 
 .env
+.env.*
+!.env.example
 .secrets/
 .venv/
+.venv-*/
 venv/
 
 .playwright-cli/
@@ -11,8 +15,13 @@ output/
 
 admin_web/node_modules/
 admin_web/dist/
+admin_web/remote_dist/
+admin_web/.remote-admin-build.*/
+admin_web/.remote-admin-previous.*/
+*.tsbuildinfo
 
 data/inventory.db
+data/inventory.db-*
 data/backups/
 data/evidence/
 

@@ -7,15 +7,26 @@ import json
 import re
 from typing import Any
 
+from .prompt_loader import BUSINESS_RULES_VERSION
 
-CONTEXT_POLICY_VERSION = "inventory-context-v3"
+
+CONTEXT_POLICY_VERSION = "inventory-context-v6"
 MAX_CONTEXT_ROWS = 800
 MAX_ADJUSTMENT_ROWS = 300
 MAX_TEXT_CHARS = 160
 MAX_NOTES_CHARS = 220
 
 ALLOWED_ROW_FIELDS = [
+    "资产资源名称", "综资网元名称", "现场网元名称", "资产信息条码",
+    "资产地点编码", "综资地点编码", "现场地点编码", "资产规格型号",
+    "条码关联状态", "现场反馈数", "综资现场网元关联与条码核对",
+    "比对模式", "名称比对结论", "地点比对结论", "型号人工判断",
+    "综资设备机架号", "现场设备机架号", "综资现场机架号核对",
+    "综资现场型号人工判断", "综资资产条码核对", "综资资产地点核对",
+    "综资资产型号人工判断", "现场资产条码核对", "现场资产地点核对",
+    "资产记录数", "综资记录数", "现场记录数", "规则问题类型",
     "任务ID",
+    "导入批次",
     "任务名称",
     "机房名称",
     "片区",
@@ -27,6 +38,7 @@ ALLOWED_ROW_FIELDS = [
     "设备名称",
     "清单设备型号",
     "清单资产条码",
+    "清单设备机架",
     "现场设备型号",
     "现场资产条码",
     "资产无条码",
@@ -70,7 +82,7 @@ PROMPT_INJECTION_PATTERNS = [
 
 
 def _text(value: Any, limit: int = MAX_TEXT_CHARS) -> str:
-    text = str(value or "").strip()
+    text = str(value if value is not None else "").strip()
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
     text = re.sub(r"\s+", " ", text)
     if len(text) > limit:
@@ -157,6 +169,10 @@ def apply_context_policy(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[
     safe_payload = {
         "prompt_version": _text(payload.get("prompt_version")),
         "input_summary": _text(payload.get("input_summary"), 500),
+        "data_sources": [
+            source for source in ("资产", "综资", "现场")
+            if isinstance(payload.get("data_sources"), list) and source in payload["data_sources"]
+        ],
         "rows": safe_rows,
         "adjustments": [
             _safe_adjustment(item)
@@ -165,6 +181,9 @@ def apply_context_policy(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[
         ],
     }
     context_meta = {
+        "business_rules_version": BUSINESS_RULES_VERSION,
+        "provided_data_sources": safe_payload["data_sources"],
+        "missing_data_sources": [source for source in ("资产", "综资", "现场") if source not in safe_payload["data_sources"]],
         "context_policy_version": CONTEXT_POLICY_VERSION,
         "allowed_fields": ALLOWED_ROW_FIELDS,
         "raw_row_count": raw_count,

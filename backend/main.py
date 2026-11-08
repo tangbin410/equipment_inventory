@@ -16,11 +16,15 @@ from urllib.parse import quote, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 import openpyxl
+from openpyxl.styles import Alignment
 from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from starlette.requests import Request as HttpRequest
 
+from . import three_way
 from .ai_agent import analyze_inventory, build_inventory_rows, chat_inventory, check_model_available, device_extra_value
 from .asset_qr import (
     batch_import_qr_assets,
@@ -40,12 +44,13 @@ from .asset_qr import (
 from .database import (
     assign_task,
     batch_assign_tasks,
-    batch_create_records,
+    backup_database,
     complete_ai_adjustment_task,
+    complete_inventory_task,
     create_audit_log,
-    create_ai_adjustment_drafts,
+    create_record_correction,
+    create_rule_adjustment,
     create_surplus_record,
-    create_task,
     create_user,
     delete_user,
     delete_task,
@@ -55,6 +60,7 @@ from .database import (
     get_area_tasks,
     get_audit_logs,
     get_ai_analysis_result,
+    list_ai_analysis_results,
     get_claimed_tasks,
     get_latest_ai_analysis_result,
     list_analyzed_ai_task_versions,
@@ -65,8 +71,13 @@ from .database import (
     get_report,
     get_system_setting,
     get_record_by_id,
+    list_record_corrections,
     get_task_by_id,
     get_task_items,
+    get_asset_info_status,
+    list_asset_info_imports,
+    normalize_barcode,
+    query_asset_info,
     get_user_by_id,
     get_user_by_openid,
     get_user_for_auth,
@@ -75,6 +86,9 @@ from .database import (
     USER_AREA_CHOICES,
     USER_AREA_CORE,
     init_db,
+    import_room_tasks,
+    user_can_access_area,
+    split_codes,
     mark_record_missing,
     normalize_user_area_name,
     reject_ai_adjustment_task,
@@ -85,12 +99,31 @@ from .database import (
     set_system_setting,
     submit_scan,
     update_user,
+    verify_ai_adjustment_task,
     set_password_hash,
     add_compare_status,
+    apply_latest_record_correction,
+    apply_resource_baseline,
     add_task_field_status,
+    create_cabinet,
+    CaptureConflictError,
+    get_collection_warnings,
+    save_admin_rack,
+    void_capture_record,
+    delete_task_rack,
+    delete_task_surplus,
+    get_task_cabinet_data,
+    get_prior_room_racks,
+    save_asset_info_snapshot,
+    set_asset_info_display_fields,
 )
 from .models import (
     AdjustmentCompleteRequest,
+    AdjustmentVerifyRequest,
+    AdminRecordCorrectionRequest,
+    CabinetCreateRequest,
+    AdminRackCorrectionRequest,
+    CaptureVoidRequest,
     AIAdjustmentDispatchRequest,
     AIAdjustmentRejectRequest,
     AIAdjustmentReminderRequest,
@@ -100,11 +133,13 @@ from .models import (
     LoginRequest,
     MissingSubmitRequest,
     ProfileBindRequest,
+    ManualRecordAdjustmentRequest,
     ScanResponse,
     ScanSubmitRequest,
     SurplusSubmitRequest,
     UserCreateRequest,
     UserUpdateRequest,
+    UserPasswordRequest,
     UserOut,
     QrAssetBindingRequest,
     QrAssetCreateRequest,
@@ -112,7 +147,11 @@ from .models import (
     QrAssetHistoryUpdateRequest,
     QrAssetUpdateRequest,
 )
+from .models import ComparisonRequest, ComparisonDecisionRequest, ComparisonCaseActionRequest, LocationCodeRequest, AdminResourceCorrectionRequest
 from .auth import create_access_token, decode_access_token, hash_password, require_secret_configured, verify_password
+from .permissions import admin_request_allowed
+from .admin_access import remote_admin_host, verify_remote_admin_request
+from .admin_site import RemoteAdminSiteMiddleware
 
 
 def _is_production() -> bool:
@@ -127,9 +166,28 @@ app = FastAPI(
     openapi_url=None if _is_production() else "/openapi.json",
 )
 MAX_EXCEL_BYTES = int(os.getenv("INVENTORY_MAX_EXCEL_MB", "20")) * 1024 * 1024
+TASK_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "inventory_template.xlsx"
+TASK_TEMPLATE_HEADERS = (
+    "机房名称",
+    "机房所在片区",
+    "设备类别",
+    "网元名称",
+    "设备型号",
+    "资产标签号",
+    "设备机架",
+    "生命周期状态",
+    "地点编码",
+)
 _WECHAT_ACCESS_TOKEN_CACHE: dict[str, str | int] = {"token": "", "expires_at": 0}
 _LOGIN_RATE_BUCKETS: dict[str, list[float]] = {}
 _LOGIN_RATE_LOCK = Lock()
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_without_input(_request: HttpRequest, exc: RequestValidationError):
+    # 保留字段及错误说明；密码等原始输入不回显给浏览器或接口调用方。
+    errors = [{key: value for key, value in error.items() if key not in {"input", "ctx"}} for error in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -176,6 +234,11 @@ def _admin_allowed_ips(raw: str | None = None) -> list[str]:
 
 
 def _check_admin_source_allowed(request: HttpRequest) -> None:
+    # 公网后台必须同时满足专用域名、Access 签名和邮箱白名单；不关闭原有 IP 保护。
+    host = remote_admin_host()
+    if host and request.url.hostname == host:
+        verify_remote_admin_request(request)
+        return
     if os.getenv("INVENTORY_ADMIN_IP_RESTRICTION_ENABLED", "1") == "0":
         return
 
@@ -194,16 +257,30 @@ def _check_admin_source_allowed(request: HttpRequest) -> None:
     raise HTTPException(status_code=404, detail="Not Found")
 
 
+def _check_dev_login_source(request: HttpRequest) -> None:
+    try:
+        local = ipaddress.ip_address(_client_ip(request)).is_loopback
+    except ValueError:
+        local = False
+    if _is_production() or not local or request.headers.get("cf-connecting-ip"):
+        raise HTTPException(status_code=403, detail="测试账号仅允许本机调测")
+
+
 def _is_field_or_public_api_path(method: str, path: str) -> bool:
     allowed = [
         ("POST", r"^/api/login$"),
         ("POST", r"^/api/me/profile$"),
+        ("GET", r"^/api/me/profile$"),
         ("GET", r"^/api/tasks/(area|my)$"),
         ("GET", r"^/api/tasks/\d+/items$"),
-        ("POST", r"^/api/tasks/\d+/(claim|release)$"),
+        ("POST", r"^/api/tasks/\d+/(claim|release|complete)$"),
         ("POST", r"^/api/scan$"),
         ("POST", r"^/api/records/\d+/missing$"),
         ("POST", r"^/api/surplus$"),
+        ("POST", r"^/api/cabinets$"),
+        ("DELETE", r"^/api/tasks/\d+/cabinets/\d+$"),
+        ("DELETE", r"^/api/tasks/\d+/surplus/\d+$"),
+        ("GET", r"^/api/report/\d+$"),
         ("GET", r"^/api/adjustments/my$"),
         ("POST", r"^/api/adjustments/\d+/complete$"),
         ("GET", r"^/api/public/qr/[^/]+$"),
@@ -274,34 +351,55 @@ async def hide_admin_api_from_public(request: HttpRequest, call_next):
     return await call_next(request)
 
 
+app.add_middleware(RemoteAdminSiteMiddleware)
+
+
+def _ensure_default_user(wx_openid: str, name: str, role: str, area_name: str) -> dict:
+    """仅创建缺失的默认账号，避免服务重启覆盖管理员维护的资料。"""
+    user = get_user_by_openid(wx_openid)
+    return user if user is not None else create_user(wx_openid, name, role, area_name)
+
+
 @app.on_event("startup")
 def on_startup():
     """启动时初始化数据库，并创建默认用户。"""
     require_secret_configured()
     init_db()
-    admin = create_user("admin_001", "管理员", "admin", USER_AREA_CORE)
+    admin = _ensure_default_user("admin_001", "管理员", "admin", USER_AREA_CORE)
     configured_password = os.getenv("INVENTORY_ADMIN_PASSWORD", "")
-    if configured_password and (
-        not admin.get("password_hash")
-        or not verify_password(configured_password, admin["password_hash"])
-    ):
+    if not admin.get("password_hash"):
+        if not configured_password:
+            raise RuntimeError("首次启动缺少 INVENTORY_ADMIN_PASSWORD，无法创建管理员密码")
+        # 环境密码只用于首次初始化；后台重置的密码不能被重启覆盖。
         set_password_hash(admin["id"], hash_password(configured_password))
-    elif not admin.get("password_hash"):
-        raise RuntimeError("首次启动缺少 INVENTORY_ADMIN_PASSWORD，无法创建管理员密码")
-    create_user("worker_001", "张三", "worker", "北区")
-    create_user("worker_002", "李四", "worker", "南区")
-    create_user("worker_003", "王五", "worker", "西区")
-    create_user("worker_004", "赵六", "worker", "南区")
-    create_user("worker_005", "周班长", "worker", USER_AREA_CORE)
+    _ensure_default_user("worker_001", "张三", "worker", "北区")
+    _ensure_default_user("worker_002", "李四", "worker", "南区")
+    _ensure_default_user("worker_003", "王五", "worker", "西区")
+    _ensure_default_user("worker_004", "赵六", "worker", "南区")
+    _ensure_default_user("worker_005", "周班长", "worker", USER_AREA_CORE)
 
 
-def current_user(authorization: str = Header("")) -> dict:
+def current_user(request: HttpRequest, authorization: str = Header("")) -> dict:
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="请先登录")
     payload = decode_access_token(authorization[7:].strip())
-    user = get_user_for_auth(int(payload["sub"])) if payload else None
-    if not user or int(payload.get("ver", -1)) != int(user.get("auth_version") or 0):
+    try:
+        user = get_user_for_auth(int(payload["sub"])) if payload else None
+    except (KeyError, TypeError, ValueError):
+        user = None
+    if not user or payload.get("role") != user["role"] or int(payload.get("ver", -1)) != int(user.get("auth_version") or 0):
         raise HTTPException(status_code=401, detail="登录已失效，请重新登录")
+    if payload.get("method") == "dev" or (
+        not payload.get("method") and str(user.get("wx_openid", "")).startswith("worker_")
+    ):
+        if os.getenv("INVENTORY_DEV_LOGIN", "0") != "1" or _is_production():
+            raise HTTPException(status_code=401, detail="测试登录已失效，请重新登录")
+        _check_dev_login_source(request)
+    if user["role"] == "admin":
+        # 管理员即使访问现场接口，也必须经过相同的来源及权限检查。
+        _check_admin_source_allowed(request)
+        if not admin_request_allowed(user, request.method, request.url.path):
+            raise HTTPException(status_code=403, detail="协作管理员无权执行此操作，请联系完整管理员")
     return user
 
 
@@ -323,8 +421,19 @@ def _require_task_access(user: dict, task_id: int, require_claim: bool = True) -
     task = _get_task_or_404(task_id)
     if user["role"] == "admin":
         return task
+    if not user_can_access_area(user["area_name"], task["area_name"]):
+        raise HTTPException(status_code=403, detail="只能操作本人所属片区的任务")
     if require_claim and task.get("claimed_by") != user["id"]:
         raise HTTPException(status_code=403, detail="只能操作本人已领取的任务")
+    return task
+
+
+def _require_task_write_access(user: dict, task_id: int) -> dict:
+    task = _require_task_access(user, task_id)
+    if task.get("superseded_by_task_id"):
+        raise HTTPException(status_code=409, detail="该机房有最新任务，请释放当前任务并领取最新任务")
+    if task["status"] != "doing":
+        raise HTTPException(status_code=409, detail="任务尚未领取或已完成锁定；有误数据请由管理员修正，严重问题转整改")
     return task
 
 
@@ -332,6 +441,8 @@ def _require_record_access(user: dict, record_id: int) -> dict:
     record = get_record_by_id(record_id)
     if not record:
         raise HTTPException(status_code=404, detail="盘点记录不存在")
+    if record.get("is_void"):
+        raise HTTPException(status_code=409, detail="该盘盈记录已作废，请刷新任务")
     _require_task_access(user, record["task_id"])
     return record
 
@@ -368,13 +479,102 @@ async def _read_excel_upload(file: UploadFile) -> bytes:
     suffix = Path(file.filename or "").suffix.lower()
     if suffix != ".xlsx":
         raise HTTPException(status_code=400, detail="仅支持 .xlsx 格式的 Excel 文件")
-    content = await file.read()
+    content = await file.read(MAX_EXCEL_BYTES + 1)
     if not content:
         raise HTTPException(status_code=400, detail="Excel 文件不能为空")
     if len(content) > MAX_EXCEL_BYTES:
         max_mb = MAX_EXCEL_BYTES // 1024 // 1024
         raise HTTPException(status_code=400, detail=f"Excel 文件不能超过 {max_mb}MB")
     return content
+
+
+def _excel_cell_text(value) -> str:
+    """将 Excel 单元格值转成可展示、可稳定查询的文本。"""
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _asset_info_preview(workbook, file_name: str) -> dict:
+    """读取资产信息表表头和数据质量问题，不写数据库。"""
+    sheets = workbook.worksheets
+    if not sheets:
+        raise HTTPException(status_code=400, detail="Excel 中没有工作表")
+    sheet = workbook.active
+    rows = list(sheet.iter_rows(values_only=True))
+    if not rows:
+        raise HTTPException(status_code=400, detail="资产信息表为空，未找到表头")
+
+    raw_headers = [_excel_cell_text(value) for value in rows[0]]
+    if not any(raw_headers):
+        raise HTTPException(status_code=400, detail="资产信息表第一行没有有效表头")
+    headers = []
+    duplicate_headers = set()
+    seen_headers = set()
+    for index, header in enumerate(raw_headers, start=1):
+        name = header or f"未命名列{index}"
+        if name in seen_headers:
+            duplicate_headers.add(name)
+        seen_headers.add(name)
+        headers.append(name)
+    if duplicate_headers:
+        raise HTTPException(status_code=400, detail=f"资产信息表存在重复表头：{'、'.join(sorted(duplicate_headers))}")
+
+    data_rows = []
+    for excel_row, row in enumerate(rows[1:], start=2):
+        fields = {
+            header: _excel_cell_text(row[index]) if index < len(row) else ""
+            for index, header in enumerate(headers)
+        }
+        if any(fields.values()):
+            data_rows.append({"excel_row": excel_row, "fields": fields})
+    barcode_candidates = [
+        header for header in headers
+        if any(token in header.lower() for token in ("资产条码", "资产编码", "条码", "asset barcode", "asset_barcode"))
+    ]
+    return {
+        "file_name": file_name or "未命名文件.xlsx",
+        "sheet_name": sheet.title,
+        "sheets": [item.title for item in sheets],
+        "headers": headers,
+        "row_count": len(data_rows),
+        "barcode_candidates": barcode_candidates,
+        "rows": data_rows,
+    }
+
+
+def _validate_asset_info_rows(preview: dict, barcode_column: str) -> list[dict]:
+    headers = preview["headers"]
+    if barcode_column not in headers:
+        raise HTTPException(status_code=400, detail="请选择有效的资产条码列")
+    if not preview["rows"]:
+        raise HTTPException(status_code=400, detail="资产信息表没有有效数据行")
+    records = []
+    seen: dict[str, int] = {}
+    empty_rows = []
+    duplicates: dict[str, list[int]] = {}
+    for item in preview["rows"]:
+        barcode = item["fields"].get(barcode_column, "").strip()
+        if not barcode:
+            empty_rows.append(item["excel_row"])
+            continue
+        normalized = normalize_barcode(barcode)
+        if normalized in seen:
+            duplicates.setdefault(normalized, [seen[normalized]]).append(item["excel_row"])
+        else:
+            seen[normalized] = item["excel_row"]
+        records.append({"barcode": barcode, "fields": item["fields"]})
+    if empty_rows:
+        preview_rows = "、".join(str(row) for row in empty_rows[:20])
+        suffix = "等" if len(empty_rows) > 20 else ""
+        raise HTTPException(status_code=400, detail=f"资产条码列存在空值，Excel行号：{preview_rows}{suffix}")
+    if duplicates:
+        duplicate_text = "；".join(f"{barcode}（第{'、'.join(map(str, rows))}行）" for barcode, rows in list(duplicates.items())[:20])
+        suffix = "等" if len(duplicates) > 20 else ""
+        raise HTTPException(status_code=400, detail=f"资产条码必须唯一，发现重复：{duplicate_text}{suffix}")
+    return records
 
 
 def _build_col_map(ws) -> dict[str, int]:
@@ -387,7 +587,10 @@ def _build_col_map(ws) -> dict[str, int]:
     col_map = {}
     for idx, value in enumerate(header):
         if value is not None:
-            col_map[str(value).strip()] = idx
+            name = str(value).strip()
+            if name in col_map:
+                raise HTTPException(status_code=400, detail=f"Excel 存在重复表头：{name}")
+            col_map[name] = idx
     return col_map
 
 
@@ -426,28 +629,19 @@ def _normalize_import_area_name(value: str | None, row_no: int | str = "") -> st
 def _parse_excel_devices(ws, fixed_room_name: str | None = None, fixed_area_name: str = USER_AREA_CORE) -> dict[str, list[dict]]:
     """解析设备清单，并按机房名称分组。"""
     col_map = _build_col_map(ws)
-    room_col = _find_room_col(col_map)
-    area_col = _find_area_col(col_map)
-    device_col = _find_col(col_map, ("网元名称", "设备名称", "网元", "设备"))
-    model_col = _find_col(col_map, ("设备型号", "型号", "设备类型"))
-    barcode_col = _find_col(col_map, ("资产标签号", "资产条码", "资产编码", "固资编号", "标签编号"))
-
-    missing = []
-    if device_col is None:
-        missing.append("网元名称/设备名称")
-    if model_col is None:
-        missing.append("设备型号")
-    if barcode_col is None:
-        missing.append("资产标签号/资产条码")
-    if fixed_room_name is None and room_col is None:
-        missing.append("机房名称")
-    if fixed_room_name is None and area_col is None:
-        missing.append("机房所在片区")
+    missing = [column for column in TASK_TEMPLATE_HEADERS if column not in col_map]
     if missing:
-        raise HTTPException(status_code=400, detail=f"Excel 缺少必要列：{', '.join(missing)}")
+        raise HTTPException(status_code=400, detail=f"Excel 缺少模板必填列：{', '.join(missing)}")
+
+    room_col = "机房名称"
+    area_col = "机房所在片区"
+    device_col = "网元名称"
+    model_col = "设备型号"
+    barcode_col = "资产标签号"
 
     extra_cols = ["设备机架", "设备类别", "所属机房业务级别", "生命周期状态", "维护专业"]
     rooms: dict[str, list[dict]] = {}
+    room_codes: dict[str, str] = {}
 
     for row_no, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
         if all(cell is None for cell in row):
@@ -455,18 +649,27 @@ def _parse_excel_devices(ws, fixed_room_name: str | None = None, fixed_area_name
 
         raw_device_name = row[col_map[device_col]]
         if raw_device_name is None or str(raw_device_name).strip() == "":
-            continue
+            raise HTTPException(status_code=400, detail=f"第 {row_no} 行网元名称为空，请补齐或删除整行")
 
         room_name = fixed_room_name
         if room_name is None and room_col is not None:
             raw_room_name = row[col_map[room_col]]
             room_name = str(raw_room_name).strip() if raw_room_name else ""
         if not room_name:
-            continue
+            raise HTTPException(status_code=400, detail=f"第 {row_no} 行机房名称为空，请补齐或删除整行")
         area_name = _normalize_import_area_name(fixed_area_name)
         if fixed_room_name is None and area_col is not None:
             raw_area_name = row[col_map[area_col]]
             area_name = _normalize_import_area_name(raw_area_name, row_no)
+
+        room_code = _excel_cell_text(row[col_map["地点编码"]]).strip()
+        if not room_code:
+            raise HTTPException(status_code=400, detail=f"第 {row_no} 行地点编码不能为空")
+        if room_name in room_codes and room_codes[room_name] != room_code:
+            raise HTTPException(status_code=400, detail=f"{room_name}对应多个地点编码")
+        if any(n != room_name and c == room_code for n, c in room_codes.items()):
+            raise HTTPException(status_code=400, detail=f"地点编码 {room_code} 对应多个机房")
+        room_codes[room_name] = room_code
 
         raw_model = row[col_map[model_col]]
         raw_barcode = row[col_map[barcode_col]]
@@ -485,9 +688,10 @@ def _parse_excel_devices(ws, fixed_room_name: str | None = None, fixed_area_name
         rooms.setdefault(room_name, []).append({
             "_row_no": row_no,
             "_area_name": area_name,
+            "room_code": room_code,
             "device_name": str(raw_device_name).strip(),
-            "expected_model": str(raw_model).strip() if raw_model else "",
-            "expected_barcode": str(raw_barcode).strip() if raw_barcode else "",
+            "expected_model": _excel_cell_text(raw_model),
+            "expected_barcode": _excel_cell_text(raw_barcode),
             "device_extra": extra,
         })
 
@@ -509,7 +713,7 @@ def _preview_rooms(rooms: dict[str, list[dict]]) -> dict:
     for room_name, devices in rooms.items():
         room_areas = sorted({(device.get("_area_name") or "").strip() for device in devices if (device.get("_area_name") or "").strip()})
         area_name = room_areas[0] if room_areas else ""
-        room_rows.append({"room_name": room_name, "area_name": area_name, "device_count": len(devices)})
+        room_rows.append({"room_name": room_name, "room_code": devices[0].get("room_code", "") if devices else "", "area_name": area_name, "device_count": len(devices)})
         if not area_name:
             issue_rows.append({
                 "级别": "错误",
@@ -533,9 +737,11 @@ def _preview_rooms(rooms: dict[str, list[dict]]) -> dict:
             device_key = f"{room_name}::{device['device_name']}"
             device_keys.append(device_key)
             device_rows.setdefault(device_key, []).append(device)
-            if device["expected_barcode"]:
-                barcode_keys.append(device["expected_barcode"])
-                barcode_rows.setdefault(device["expected_barcode"], []).append(device)
+            codes = split_codes(device["expected_barcode"])
+            if codes:
+                for code in sorted(codes):
+                    barcode_keys.append(code)
+                    barcode_rows.setdefault(code, []).append(device)
             else:
                 missing_barcode += 1
                 issue_rows.append({
@@ -615,7 +821,7 @@ def _validate_user_payload(wx_openid: str | None, name: str | None, role: str | 
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _worker_session_payload(user: dict) -> dict:
+def _worker_session_payload(user: dict, auth_method: str | None = None) -> dict:
     """小程序端保存到本地的用户会话字段。"""
     return {
         "user_id": user["id"],
@@ -623,7 +829,7 @@ def _worker_session_payload(user: dict) -> dict:
         "role": user["role"],
         "area_name": user["area_name"] or USER_AREA_CORE,
         "phone": user.get("phone") or "",
-        "access_token": create_access_token(user),
+        "access_token": create_access_token(user, auth_method=auth_method),
     }
 
 
@@ -691,6 +897,12 @@ def api_workers(_: dict = Depends(admin_user)):
     return get_workers()
 
 
+@app.get("/api/admin/me", response_model=UserOut)
+def api_admin_me(user: dict = Depends(admin_user)):
+    """返回数据库中的当前后台权限，避免前端依赖旧登录缓存。"""
+    return user
+
+
 @app.get("/api/users", response_model=list[UserOut])
 def api_users(_: dict = Depends(admin_user)):
     """PC 后台查询全部小程序账号。"""
@@ -708,45 +920,79 @@ def api_user(user_id: int, _: dict = Depends(admin_user)):
 
 @app.post("/api/users", response_model=UserOut)
 def api_create_user(req: UserCreateRequest, actor: dict = Depends(admin_user)):
-    """PC 后台新增或更新小程序账号。"""
+    """完整管理员新增账号；重复编码须显式编辑，不能覆盖已有密码。"""
     _validate_user_payload(req.wx_openid, req.name, req.role, req.area_name)
-    user = create_user(
-        wx_openid=req.wx_openid,
-        name=req.name,
-        role=req.role,
-        area_name=req.area_name,
-        phone=req.phone,
-        employee_no=req.employee_no,
-        is_active=1 if req.is_active else 0,
-    )
-    _audit(actor, "user.upsert", "user", user["id"], {"wx_openid": user.get("wx_openid"), "role": user.get("role")})
+    if get_user_by_openid(req.wx_openid.strip()):
+        raise HTTPException(status_code=409, detail="登录编码已存在，请编辑已有账号")
+    if req.role == "admin" and req.password is None:
+        raise HTTPException(status_code=400, detail="请为后台管理员设置独立登录密码（12—128位）")
+    if req.role != "admin" and req.password is not None:
+        raise HTTPException(status_code=400, detail="现场人员通过微信登录，无需设置后台密码")
+    try:
+        user = create_user(
+            wx_openid=req.wx_openid, name=req.name, role=req.role, area_name=req.area_name,
+            phone=req.phone, employee_no=req.employee_no, is_active=1 if req.is_active else 0,
+            admin_scope=req.admin_scope if req.role == "admin" else "full",
+            password_hash=hash_password(req.password) if req.password is not None else None,
+            update_existing=False,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _audit(actor, "user.create", "user", user["id"], {"role": user["role"], "admin_scope": user["admin_scope"]})
     return user
 
 
 @app.patch("/api/users/{user_id}", response_model=UserOut)
 def api_update_user(user_id: int, req: UserUpdateRequest, actor: dict = Depends(admin_user)):
     """PC 后台修改小程序账号信息。"""
-    data = req.dict(exclude_unset=True)
+    data = req.model_dump(exclude_unset=True, exclude={"password"})
     _validate_user_payload(
         data.get("wx_openid"),
         data.get("name"),
         data.get("role"),
         data.get("area_name"),
     )
+    existing = get_user_by_id(user_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    target_role = data.get("role", existing["role"])
+    if target_role == "admin" and existing["role"] != "admin" and req.password is None:
+        raise HTTPException(status_code=400, detail="升级为后台管理员时，请设置独立登录密码（12—128位）")
+    if target_role != "admin" and req.password is not None:
+        raise HTTPException(status_code=400, detail="现场人员通过微信登录，无需设置后台密码")
     try:
-        user = update_user(user_id, data)
+        user = update_user(user_id, data, password_hash=hash_password(req.password) if req.password is not None else None)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
     _audit(actor, "user.update", "user", user_id, {"fields": sorted(data.keys())})
+    if req.password is not None:
+        _audit(actor, "user.password.reset", "user", user_id)
     return user
+
+
+@app.post("/api/users/{user_id}/password")
+def api_reset_user_password(user_id: int, req: UserPasswordRequest, actor: dict = Depends(admin_user)):
+    """完整管理员重置后台密码；不返回明文或哈希，旧会话立即失效。"""
+    user = get_user_by_id(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if user["role"] != "admin":
+        raise HTTPException(status_code=400, detail="仅后台管理员需要设置登录密码")
+    set_password_hash(user_id, hash_password(req.password))
+    _audit(actor, "user.password.reset", "user", user_id)
+    return {"success": True, "message": "密码已更新，请使用新密码重新登录"}
 
 
 @app.delete("/api/users/{user_id}")
 def api_delete_user(user_id: int, actor: dict = Depends(admin_user)):
     """PC 后台删除小程序账号。采用业务删除，保留历史任务引用。"""
-    if not delete_user(user_id):
+    try:
+        deleted = delete_user(user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not deleted:
         raise HTTPException(status_code=404, detail="用户不存在或已删除")
     _audit(actor, "user.delete", "user", user_id)
     return {"success": True, "message": "账号已删除"}
@@ -762,7 +1008,7 @@ def api_admin_login(req: AdminLoginRequest, request: HttpRequest):
     if not verify_password(req.password, user.get("password_hash") or ""):
         raise HTTPException(status_code=401, detail="账号或密码错误")
     _audit(user, "admin.login", "user", user["id"])
-    return {"access_token": create_access_token(user), "token_type": "bearer", "user": UserOut(**user)}
+    return {"access_token": create_access_token(user, auth_method="password"), "token_type": "bearer", "user": UserOut(**user)}
 
 
 @app.post("/api/login")
@@ -772,8 +1018,11 @@ def api_login(req: LoginRequest, request: HttpRequest):
     code = req.code.strip()
     if not code:
         raise HTTPException(status_code=400, detail="登录凭证不能为空")
+    auth_method = "wechat"
     if os.getenv("INVENTORY_DEV_LOGIN", "0") == "1" and code.startswith("worker_"):
+        _check_dev_login_source(request)
         openid = code
+        auth_method = "dev"
     else:
         appid = os.getenv("WECHAT_APPID", "")
         secret = os.getenv("WECHAT_SECRET", "")
@@ -787,6 +1036,8 @@ def api_login(req: LoginRequest, request: HttpRequest):
         except Exception as exc:
             raise HTTPException(status_code=502, detail="微信登录服务暂不可用") from exc
         openid = result.get("openid", "")
+        if not isinstance(openid, str) or not openid.strip():
+            raise HTTPException(status_code=401, detail="微信登录凭证无效，请重新登录")
     user = get_user_by_openid(openid)
     if not user:
         if os.getenv("INVENTORY_ALLOW_LOGIN_REQUESTS", "0") == "1":
@@ -797,7 +1048,7 @@ def api_login(req: LoginRequest, request: HttpRequest):
     if not user["is_active"]:
         raise HTTPException(status_code=403, detail="账号未启用，请联系管理员")
     _audit(user, "worker.login", "user", user["id"])
-    return _worker_session_payload(user)
+    return _worker_session_payload(user, auth_method=auth_method)
 
 
 @app.post("/api/me/profile")
@@ -820,6 +1071,12 @@ def api_bind_profile(req: ProfileBindRequest, user: dict = Depends(current_user)
     }
 
 
+@app.get("/api/me/profile")
+def api_get_profile(user: dict = Depends(current_user)):
+    """小程序进入首页时读取当前账号的最新资料，避免使用过期本地缓存。"""
+    return {"user": _worker_session_payload(user)}
+
+
 @app.post("/api/upload_rooms")
 async def api_upload_rooms(
     file: UploadFile = File(...),
@@ -833,32 +1090,33 @@ async def api_upload_rooms(
     if not preview["valid"] and not force_import:
         raise HTTPException(status_code=400, detail="清单预检未通过，请先处理空资产条码、重复网元、重复标签或空设备型号")
 
-    created = []
-    total_devices = 0
+    if any(row["问题类型"] == "同一机房片区不一致" for row in preview["issue_rows"]):
+        raise HTTPException(status_code=400, detail="同一机房片区不一致，无法生成可靠的片区任务；请修正清单")
+    code_conn = get_conn()
+    try:
+        three_way.validate_room_codes(code_conn, {name: devices[0]["room_code"] for name, devices in rooms.items()})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        code_conn.close()
+    try:
+        batch_id, created = import_room_tasks(rooms)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    total_devices = sum(item["device_count"] for item in created)
     error_count = sum(1 for row in preview.get("issue_rows", []) if row.get("级别") == "错误")
-    for room_name, devices in rooms.items():
-        area_name = (devices[0].get("_area_name") or USER_AREA_CORE).strip() if devices else USER_AREA_CORE
-        task_name = f"{room_name}-盘点"
-        task_id = create_task(task_name, room_name, None, area_name)
-        count = batch_create_records(task_id, devices)
-        total_devices += count
-        created.append({
-            "task_id": task_id,
-            "task_name": task_name,
-            "room_name": room_name,
-            "area_name": area_name,
-            "device_count": count,
-        })
+    for item in created:
         _audit(
             actor,
             "task.import",
             "task",
-            task_id,
-            {"room_name": room_name, "area_name": area_name, "device_count": count, "force_import": force_import, "error_count": error_count},
+            item["task_id"],
+            {**item, "force_import": force_import, "error_count": error_count},
         )
 
     message_prefix = "已按管理员确认继续导入；" if force_import and error_count else ""
     return {
+        "import_batch_id": batch_id,
         "task_count": len(created),
         "device_count": total_devices,
         "tasks": created,
@@ -875,19 +1133,96 @@ async def api_preview_upload_rooms(file: UploadFile = File(...), _: dict = Depen
 
 @app.get("/api/upload_template")
 def api_upload_template(_: dict = Depends(admin_user)):
-    """下载标准导入模板。"""
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "盘点任务清单"
-    ws.append(["机房名称", "机房所在片区", "网元名称", "设备型号", "资产标签号", "设备机架", "设备类别", "所属机房业务级别", "生命周期状态", "维护专业"])
-    ws.append(["示例机房", USER_AREA_CORE, "NE-001", "OptiX PTN 980B", "ASSET-001", "01架01框", "传输设备", "重要", "在网", "传输"])
-    output = io.BytesIO()
-    wb.save(output)
+    """下载统一任务导入模板。"""
     return Response(
-        content=output.getvalue(),
+        content=TASK_TEMPLATE_PATH.read_bytes(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename*=UTF-8''inventory_template.xlsx"},
     )
+
+
+# ──────────────────────────────────────────────
+# 静态资产信息表
+# ──────────────────────────────────────────────
+
+@app.get("/api/asset-info/status")
+def api_asset_info_status(_: dict = Depends(admin_user)):
+    """返回当前资产信息表快照和最近导入记录。"""
+    return {
+        "current": get_asset_info_status(),
+        "history": list_asset_info_imports(),
+    }
+
+
+@app.post("/api/asset-info/preview")
+async def api_preview_asset_info(file: UploadFile = File(...), _: dict = Depends(admin_user)):
+    """预览自定义资产信息表，供管理员选择资产条码列。"""
+    workbook = _load_workbook(await _read_excel_upload(file))
+    preview = _asset_info_preview(workbook, file.filename or "")
+    return {
+        "file_name": preview["file_name"],
+        "sheet_name": preview["sheet_name"],
+        "sheets": preview["sheets"],
+        "headers": preview["headers"],
+        "row_count": preview["row_count"],
+        "barcode_candidates": preview["barcode_candidates"],
+    }
+
+
+@app.post("/api/asset-info/import")
+async def api_import_asset_info(
+    file: UploadFile = File(...),
+    barcode_column: str = Form(...),
+    actor: dict = Depends(admin_user),
+):
+    """管理员确认条码列后导入资产信息表，重复条码整表拒绝。"""
+    file_content = await _read_excel_upload(file)
+    workbook = _load_workbook(file_content)
+    preview = _asset_info_preview(workbook, file.filename or "")
+    records = _validate_asset_info_rows(preview, barcode_column.strip())
+    backup_path = backup_database("asset_info_import")
+    status = save_asset_info_snapshot(
+        file_name=preview["file_name"],
+        sheet_name=preview["sheet_name"],
+        barcode_column=barcode_column.strip(),
+        headers=preview["headers"],
+        records=records,
+        imported_by=actor["id"],
+        imported_by_name=actor.get("name", ""),
+    )
+    _audit(
+        actor,
+        "asset_info.batch_import",
+        "asset_info_import",
+        status["id"],
+        {"file_name": preview["file_name"], "row_count": len(records), "barcode_column": barcode_column.strip(), "backup_path": backup_path or ""},
+    )
+    return {"success": True, "message": f"成功导入 {len(records)} 条资产信息", "current": status}
+
+
+@app.get("/api/asset-info/query")
+def api_query_asset_info(barcode: str = Query(..., min_length=1, max_length=200), _: dict = Depends(admin_user)):
+    """查询当前资产信息表中的一条资产记录。"""
+    normalized = normalize_barcode(barcode)
+    if not normalized or normalized == "无条码":
+        raise HTTPException(status_code=400, detail="无效的资产条码")
+    result = query_asset_info(barcode)
+    if result is None:
+        return {"found": False, "barcode": barcode.strip(), "fields": {}}
+    result["found"] = True
+    return result
+
+
+@app.post("/api/asset-info/display-fields")
+def api_set_asset_info_display_fields(fields: list[str] = Body(..., embed=True), actor: dict = Depends(admin_user)):
+    """配置资产条码查询弹窗展示的字段。"""
+    if not fields:
+        raise HTTPException(status_code=400, detail="请至少选择一个展示字段")
+    status = set_asset_info_display_fields(fields)
+    if status is None:
+        raise HTTPException(status_code=409, detail="请先导入资产信息表")
+    _audit(actor, "asset_info.display_fields.update", "asset_info_import", status["id"], {"fields": status["display_fields"]})
+    return {"success": True, "message": "弹窗展示字段已保存", "current": status}
 
 
 # ──────────────────────────────────────────────
@@ -1166,17 +1501,37 @@ def api_release_task(
     user: dict = Depends(current_user),
 ):
     """现场人员释放自己的盘点中任务，任务回到待领取池。"""
-    success, message = release_task(task_id, user["id"], reason)
+    details = {}
+    try:
+        success, message = release_task(task_id, user["id"], reason, details=details)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not success:
         raise HTTPException(status_code=400, detail=message)
     _audit(user, "task.release", "task", task_id, {"reason": reason})
-    return {"success": True, "message": message}
+    return {"success": True, "message": message, **details}
+
+
+@app.post("/api/tasks/{task_id}/complete")
+def api_complete_inventory_task(task_id: int, user: dict = Depends(current_user)):
+    _require_task_access(user, task_id)
+    if user["role"] != "worker":
+        raise HTTPException(status_code=403, detail="请由领取任务的现场人员确认完成")
+    try:
+        result = complete_inventory_task(task_id, user["id"])
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"success": True, "message": "任务已确认完成并锁定，有误数据请联系管理员修正", **result}
 
 
 @app.post("/api/tasks/{task_id}/assign")
 def api_assign_task(task_id: int, assigned_to: int = Body(..., embed=True), actor: dict = Depends(admin_user)):
     """单个机房任务下发给指定现场人员。"""
-    if not assign_task(task_id, assigned_to):
+    try:
+        updated = assign_task(task_id, assigned_to)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not updated:
         raise HTTPException(status_code=404, detail="任务不存在")
     _audit(actor, "task.assign", "task", task_id, {"assigned_to": assigned_to})
     return {"success": True, "message": "任务已下发"}
@@ -1187,7 +1542,14 @@ def api_batch_assign_tasks(assignments: list[dict[str, int]] = Body(..., embed=T
     """批量下发多个机房任务。"""
     if not assignments:
         raise HTTPException(status_code=400, detail="请至少选择一个任务")
-    count = batch_assign_tasks(assignments)
+    if any(set(item) != {"task_id", "assigned_to"} or min(item.values()) < 1 for item in assignments):
+        raise HTTPException(status_code=400, detail="每项下发必须提供正整数 task_id 和 assigned_to")
+    if len({item["task_id"] for item in assignments}) != len(assignments):
+        raise HTTPException(status_code=400, detail="同一任务不能重复下发")
+    try:
+        count = batch_assign_tasks(assignments)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     _audit(actor, "task.batch_assign", "task", None, {"assignments": assignments, "updated": count})
     return {"success": True, "updated": count, "message": f"已下发 {count} 个机房任务"}
 
@@ -1197,7 +1559,11 @@ def api_delete_task(task_id: int, reason: str = "管理员作废", actor: dict =
     """作废某个机房盘点任务，保留审计数据但不再参与业务展示。"""
     if not reason.strip():
         raise HTTPException(status_code=400, detail="请填写作废原因")
-    if not delete_task(task_id, reason):
+    try:
+        deleted = delete_task(task_id, reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not deleted:
         raise HTTPException(status_code=404, detail="任务不存在")
     _audit(actor, "task.delete", "task", task_id, {"reason": reason})
     return {"success": True, "message": "任务已作废，不再参与统计"}
@@ -1207,18 +1573,136 @@ def api_delete_task(task_id: int, reason: str = "管理员作废", actor: dict =
 def api_task_items(task_id: int, user: dict = Depends(current_user)):
     """查询某个任务下的设备清单。"""
     task = _require_task_access(user, task_id)
-    return {"task": task, "items": get_task_items(task_id)}
+    items = get_task_items(task_id)
+    cabinet_data = get_task_cabinet_data(task_id, items)
+    for item in items:
+        item["write_locked"] = task["status"] != "doing" or bool(task.get("superseded_by_task_id") or task.get("waiting_for_task_id") or item.get("has_admin_correction"))
+    return {
+        "task": task,
+        "items": items,
+        "cabinet_records": cabinet_data["cabinets"],
+        "cabinet_summary": cabinet_data["summary"],
+        "rack_reference": get_prior_room_racks(task_id),
+    }
+
+
+@app.post("/api/cabinets")
+def api_create_cabinet(req: CabinetCreateRequest, user: dict = Depends(current_user)):
+    """现场单独登记 ODF/IODF 机架，传输综合柜随设备盘点提交。"""
+    _require_task_access(user, req.task_id)
+    cached = get_idempotent_result(user["id"], "cabinet.register", req.client_request_id)
+    if cached:
+        if not any(r["id"] == cached["cabinet"]["id"] for r in get_task_cabinet_data(req.task_id)["cabinets"]):
+            raise HTTPException(status_code=409, detail="该机架登记已删除，请重新登记")
+        return cached
+    _require_task_write_access(user, req.task_id)
+    if not req.cabinet_type.strip():
+        raise HTTPException(status_code=400, detail="请选择机架类型")
+    if not req.no_barcode and not req.cabinet_barcode.strip():
+        raise HTTPException(status_code=400, detail="请填写机架条码")
+    if not req.rack_no.strip():
+        raise HTTPException(status_code=400, detail="请填写机架编号")
+    try:
+        result = create_cabinet(
+            task_id=req.task_id,
+            cabinet_type=req.cabinet_type,
+            cabinet_barcode=req.cabinet_barcode,
+            no_barcode=req.no_barcode,
+            rack_no=req.rack_no,
+            notes=req.notes,
+            created_by=user["id"],
+            client_request_id=req.client_request_id,
+        )
+    except CaptureConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    cabinet, created = result
+    message = "机架已登记" if created else "该机架已登记，本次未重复新增"
+    _audit(
+        user,
+        "cabinet.register",
+        "cabinet_record",
+        cabinet.get("id"),
+        {"task_id": req.task_id, "created": created, "cabinet_type": cabinet.get("cabinet_type")},
+        req.client_request_id,
+    )
+    response = {"success": True, "created": created, "duplicate": not created, "cabinet": cabinet, "message": message, "warnings": get_collection_warnings(req.task_id, cabinet_id=cabinet["id"])}
+    return save_idempotent_result(user["id"], "cabinet.register", req.client_request_id, response, "cabinet_record", cabinet["id"])
+
+
+@app.delete("/api/tasks/{task_id}/cabinets/{cabinet_id}")
+def api_delete_task_rack(task_id: int, cabinet_id: int, user: dict = Depends(current_user)):
+    _require_task_write_access(user, task_id)
+    try:
+        deleted = delete_task_rack(task_id, cabinet_id, user["id"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True, "deleted": deleted, "message": "机架已删除" if deleted else "该机架已删除，无需重复操作"}
+
+
+@app.delete("/api/tasks/{task_id}/surplus/{record_id}")
+def api_delete_task_surplus(task_id: int, record_id: int, user: dict = Depends(current_user)):
+    """现场删除本次未完成任务中的误录盘盈，保留原记录和审计。"""
+    _require_task_write_access(user, task_id)
+    try:
+        deleted = delete_task_surplus(task_id, record_id, user["id"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True, "deleted": deleted, "message": "盘盈已删除" if deleted else "该盘盈已删除，无需重复操作"}
+
+
+@app.post("/api/admin/tasks/{task_id}/racks")
+def api_admin_create_rack(task_id: int, payload: AdminRackCorrectionRequest, actor: dict = Depends(admin_user)):
+    return _save_admin_rack(task_id, payload, actor)
+
+
+@app.put("/api/admin/tasks/{task_id}/racks/{rack_id}")
+def api_admin_update_rack(task_id: int, rack_id: int, payload: AdminRackCorrectionRequest, actor: dict = Depends(admin_user)):
+    return _save_admin_rack(task_id, payload, actor, rack_id)
+
+
+def _save_admin_rack(task_id: int, payload: AdminRackCorrectionRequest, actor: dict, rack_id: int | None = None):
+    _get_task_or_404(task_id)
+    try:
+        cabinet = save_admin_rack(task_id, payload.model_dump(), actor["id"], rack_id)
+    except CaptureConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True, "message": "机架已更正" if rack_id else "机架已补录", "cabinet": cabinet, "warnings": get_collection_warnings(task_id, cabinet_id=cabinet["id"])}
+
+
+@app.delete("/api/admin/tasks/{task_id}/racks/{rack_id}")
+def api_admin_void_rack(task_id: int, rack_id: int, payload: CaptureVoidRequest, actor: dict = Depends(admin_user)):
+    try:
+        deleted = void_capture_record("cabinet_records", rack_id, actor["id"], payload.reason, task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True, "deleted": deleted, "message": "机架已作废"}
+
+
+@app.delete("/api/admin/records/{record_id}")
+def api_admin_void_surplus(record_id: int, payload: CaptureVoidRequest, actor: dict = Depends(admin_user)):
+    try:
+        deleted = void_capture_record("scan_records", record_id, actor["id"], payload.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True, "deleted": deleted, "message": "盘盈设备已作废"}
 
 
 @app.post("/api/scan", response_model=ScanResponse)
 def api_scan(req: ScanSubmitRequest, user: dict = Depends(current_user)):
     """现场人员提交一条盘点结果。"""
-    _require_record_access(user, req.record_id)
+    record = _require_record_access(user, req.record_id)
     action = "scan.submit"
     request_id = req.client_request_id.strip()
     cached = get_idempotent_result(user["id"], action, request_id)
     if cached:
         return cached
+    _require_task_write_access(user, record["task_id"])
     try:
         result = submit_scan(
             record_id=req.record_id,
@@ -1229,6 +1713,8 @@ def api_scan(req: ScanSubmitRequest, user: dict = Depends(current_user)):
             rack_no=req.rack_no,
             actual_model=req.actual_model,
             notes=req.notes,
+            created_by=user["id"],
+            device_name=req.device_name,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1240,7 +1726,9 @@ def api_scan(req: ScanSubmitRequest, user: dict = Depends(current_user)):
         "match_status": result["match_status"],
         "asset_match_status": result["asset_match_status"],
         "model_match_status": result["model_match_status"],
+        "record_type": result["record_type"],
         "message": f"盘点完成，比对结果：{result['match_status']}",
+        "warnings": get_collection_warnings(record["task_id"], record_id=result["id"]),
     }
     response = save_idempotent_result(user["id"], action, request_id, response, "scan_record", result["id"])
     _audit(
@@ -1257,14 +1745,15 @@ def api_scan(req: ScanSubmitRequest, user: dict = Depends(current_user)):
 @app.post("/api/records/{record_id}/missing", response_model=ScanResponse)
 def api_mark_missing(record_id: int, req: MissingSubmitRequest, user: dict = Depends(current_user)):
     """把任务清单内的设备标记为盘亏：现场应有但未找到。"""
-    _require_record_access(user, record_id)
+    record = _require_record_access(user, record_id)
     action = "record.missing"
     request_id = req.client_request_id.strip()
     cached = get_idempotent_result(user["id"], action, request_id)
     if cached:
         return cached
+    _require_task_write_access(user, record["task_id"])
     try:
-        result = mark_record_missing(record_id, req.reason, req.notes)
+        result = mark_record_missing(record_id, req.reason, req.notes, user["id"])
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if result is None:
@@ -1276,6 +1765,7 @@ def api_mark_missing(record_id: int, req: MissingSubmitRequest, user: dict = Dep
         "asset_match_status": result["asset_match_status"],
         "model_match_status": result["model_match_status"],
         "message": "已标记为盘亏，可在后台 AI 模型分析中核查",
+        "record_type": result["record_type"],
     }
     response = save_idempotent_result(user["id"], action, request_id, response, "scan_record", result["id"])
     _audit(user, action, "scan_record", result["id"], {"reason": req.reason}, request_id)
@@ -1290,7 +1780,11 @@ def api_create_surplus(req: SurplusSubmitRequest, user: dict = Depends(current_u
     request_id = req.client_request_id.strip()
     cached = get_idempotent_result(user["id"], action, request_id)
     if cached:
+        current = get_record_by_id(cached["record_id"])
+        if current and current.get("is_void"):
+            raise HTTPException(status_code=409, detail="该盘盈记录已作废，请刷新任务后重新登记")
         return cached
+    _require_task_write_access(user, req.task_id)
     try:
         record = create_surplus_record(
             task_id=req.task_id,
@@ -1317,6 +1811,7 @@ def api_create_surplus(req: SurplusSubmitRequest, user: dict = Depends(current_u
         "asset_match_status": record["asset_match_status"],
         "model_match_status": record["model_match_status"],
         "message": "盘盈设备已登记，可在后台 AI 模型分析中核查",
+        "warnings": get_collection_warnings(req.task_id, record_id=record["id"]),
     }
     response = save_idempotent_result(user["id"], action, request_id, response, "scan_record", record["id"])
     _audit(user, action, "scan_record", record["id"], {"task_id": req.task_id, "device_name": req.device_name}, request_id)
@@ -1334,15 +1829,95 @@ def api_report(task_id: int, user: dict = Depends(current_user)):
     """获取单个任务盘点报告。"""
     task = _require_task_access(user, task_id)
     records = get_report(task_id)
+    cabinet_data = get_task_cabinet_data(task_id, records)
     inventory_records = [r for r in records if (r.get("record_type") or "normal") != "surplus"]
     return {
         "task": task,
         "records": records,
+        "cabinet_records": cabinet_data["cabinets"],
+        "cabinet_summary": cabinet_data["summary"],
         "summary": {
             "total": len(inventory_records),
             "已盘": sum(1 for r in inventory_records if r["match_status"] != "未扫"),
             "未盘": sum(1 for r in inventory_records if r["match_status"] == "未扫"),
         },
+    }
+
+
+@app.get("/api/admin/records/{record_id}/corrections")
+def api_record_corrections(record_id: int, _: dict = Depends(admin_user)):
+    """管理员查看一条现场反馈的历次修正记录。"""
+    record = get_record_by_id(record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="盘点记录不存在")
+    return {"record": record, "corrections": list_record_corrections(record_id)}
+
+
+@app.post("/api/admin/records/{record_id}/adjustments")
+def api_manual_record_adjustment(
+    record_id: int, payload: ManualRecordAdjustmentRequest, actor: dict = Depends(admin_user),
+):
+    """管理员人工确认严重问题，直接加入待审核整改台账。"""
+    record = _require_record_access(actor, record_id)
+    task = _get_task_or_404(record["task_id"])
+    if task["status"] != "done":
+        raise HTTPException(status_code=409, detail="请待现场确认任务完成后再转整改")
+    if not all(value.strip() for value in (payload.problem_type, payload.basis, payload.suggestion)):
+        raise HTTPException(status_code=400, detail="请填写问题类型、确认依据和整改要求")
+    result = _three_way_call(three_way.read, [task["id"]])
+    if result["warnings"]:
+        raise HTTPException(status_code=400, detail="；".join(result["warnings"]))
+    candidates = [g for g in result["groups"] if any(r.get("record_id") == record_id for system in three_way.SYSTEMS for r in three_way.source_records(g, system))]
+    group = next((g for g in candidates if any(r.get("record_id") == record_id for r in three_way.source_records(g, "现场"))), candidates[0] if candidates else None)
+    if not group:
+        raise HTTPException(status_code=400, detail="设备暂未形成三方对照组，请先核查条码和来源")
+    case_id = _three_way_call(three_way.create_case, [task["id"]], group["group_key"], group["fingerprint"], actor["id"], payload.model_dump())
+    return {"success": True, "message": "已转入整改台账，待管理员审核处理责任", "item": three_way.case_detail(case_id)}
+
+
+@app.post("/api/admin/records/{record_id}/corrections")
+def api_create_record_correction(
+    record_id: int,
+    payload: AdminRecordCorrectionRequest,
+    actor: dict = Depends(admin_user),
+):
+    """管理员新增一版现场反馈修正，保留小程序原始值。"""
+    before = get_record_by_id(record_id)
+    if before is None:
+        raise HTTPException(status_code=404, detail="盘点记录不存在")
+    try:
+        record = create_record_correction(
+            record_id,
+            payload.model_dump(),
+            payload.correction_reason,
+            payload.correction_note,
+            actor["id"],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail="盘点记录不存在")
+    changed_fields = {
+        field: {"before": before.get(field), "after": record.get(field)}
+        for field in (
+            "device_name", "actual_model", "asset_barcodes", "asset_no_barcode", "cabinet_barcodes",
+            "cabinet_no_barcode", "rack_no", "notes", "record_type", "missing_reason",
+        )
+        if before.get(field) != record.get(field)
+    }
+    _audit(actor, "scan_record.correct", "scan_record", record_id, {
+        "correction_id": record.get("latest_correction_id"),
+        "correction_reason": payload.correction_reason,
+        "correction_note": payload.correction_note,
+        "changed_fields": changed_fields,
+        "related_adjustment_ids": record.get("related_adjustment_ids") or [],
+    })
+    return {
+        "success": True,
+        "message": "现场反馈已修正并重新核对",
+        "record": record,
+        "related_adjustment_ids": record.get("related_adjustment_ids") or [],
+        "warnings": get_collection_warnings(record["task_id"], record_id=record_id),
     }
 
 
@@ -1356,6 +1931,12 @@ def _autosize_workbook(wb: openpyxl.Workbook) -> None:
 
 def _excel_response(wb: openpyxl.Workbook, filename: str) -> Response:
     """把工作簿统一转成下载响应。"""
+    # 用户字段（如备注以 = 开头）按文本导出，不能变成可执行 Excel 公式。
+    for sheet in wb.worksheets:
+        for row in sheet:
+            for cell in row:
+                if cell.data_type == "f":
+                    cell.data_type = "s"
     _autosize_workbook(wb)
     output = io.BytesIO()
     wb.save(output)
@@ -1367,20 +1948,58 @@ def _excel_response(wb: openpyxl.Workbook, filename: str) -> Response:
 
 
 INVENTORY_DATA_HEADERS = [
-    "任务ID", "任务名称", "机房名称", "片区", "领取人", "任务状态", "任务创建时间",
+    "任务ID", "导入批次", "任务名称", "机房名称", "片区", "领取人", "任务状态", "任务创建时间",
     "领取时间", "现场完成时间", "设备名称", "清单设备型号", "清单资产条码", "清单设备机架",
     "现场设备型号", "现场资产条码", "资产无条码", "现场机柜条码", "机柜无条码",
     "现场机架号", "现场状态", "盘点时间", "盘亏原因", "现场备注",
 ]
+CABINET_COMMON_HEADERS = ["任务ID", "导入批次", "任务名称", "机房名称", "片区"]
+EQUIPMENT_CABINET_HEADERS = CABINET_COMMON_HEADERS + ["机柜资产条码", "无条码", "设备机柜位", "登记来源", "登记人", "登记时间", "备注"]
+RACK_DATA_HEADERS = CABINET_COMMON_HEADERS + ["机架类型", "机架资产条码", "无条码", "资源名称/机架编号", "登记来源", "登记人", "登记时间", "备注"]
 
 
 def _append_inventory_data_sheet(wb: openpyxl.Workbook, tasks: list[dict]) -> None:
     """导出任务清单和现场盘点合并后的原始数据。"""
     ws = wb.active
     ws.title = "资产盘点数据"
-    ws.append(INVENTORY_DATA_HEADERS)
+    labels = {"清单设备机架": "清单设备机柜位", "现场机架号": "现场设备机柜位"}
+    ws.append([labels.get(header, header) for header in INVENTORY_DATA_HEADERS])
     for row in build_inventory_rows(tasks):
         ws.append([row.get(header) or "" for header in INVENTORY_DATA_HEADERS])
+
+
+def _append_cabinet_data_sheet(wb: openpyxl.Workbook, tasks: list[dict]) -> None:
+    """传输综合柜随设备、ODF/IODF 独立盘点，分别导出。"""
+    equipment_ws = wb.create_sheet("传输综合柜明细")
+    rack_ws = wb.create_sheet("ODF-IODF机架明细")
+    equipment_ws.append(EQUIPMENT_CABINET_HEADERS)
+    rack_ws.append(RACK_DATA_HEADERS)
+    seen_ids: set[int | str] = set()
+    for task in tasks:
+        for cabinet in task.get("cabinets") or []:
+            if cabinet.get("id") in seen_ids:
+                continue
+            seen_ids.add(cabinet.get("id"))
+            row = {
+                "任务ID": task.get("id"),
+                "导入批次": task.get("import_batch_id") or "",
+                "任务名称": task.get("task_name"),
+                "机房名称": task.get("room_name"),
+                "片区": task.get("area_name") or USER_AREA_CORE,
+                "无条码": "是" if cabinet.get("no_barcode") else "否",
+                "登记来源": cabinet.get("source_label") or cabinet.get("source"),
+                "登记人": cabinet.get("created_by_name") or "",
+                "登记时间": cabinet.get("scanned_at"),
+                "备注": cabinet.get("notes"),
+            }
+            barcode = cabinet.get("cabinet_barcode") or ("无条码" if cabinet.get("no_barcode") else "")
+            name = cabinet.get("rack_no") or cabinet.get("cabinet_name")
+            if cabinet.get("cabinet_type") == "equipment":
+                row.update({"机柜资产条码": barcode, "设备机柜位": name})
+                equipment_ws.append([row.get(header) or "" for header in EQUIPMENT_CABINET_HEADERS])
+            else:
+                row.update({"机架类型": cabinet.get("cabinet_type_label"), "机架资产条码": barcode, "资源名称/机架编号": name})
+                rack_ws.append([row.get(header) or "" for header in RACK_DATA_HEADERS])
 
 
 @app.get("/api/export/{task_id}")
@@ -1389,9 +2008,11 @@ def api_export(task_id: int, _: dict = Depends(admin_user)):
     task = _get_task_or_404(task_id)
     records = get_report(task_id)
     task["records"] = records
+    task["cabinets"] = get_task_cabinet_data(task_id, task["records"])["cabinets"]
 
     wb = openpyxl.Workbook()
     _append_inventory_data_sheet(wb, [task])
+    _append_cabinet_data_sheet(wb, [task])
     return _excel_response(wb, f"资产盘点数据_{task['room_name']}_{task_id}.xlsx")
 
 
@@ -1405,10 +2026,12 @@ def api_ai_export_inventory(task_ids: list[int] = Query(default=[]), actor: dict
     for task_id in selected_ids:
         task = _get_task_or_404(task_id)
         task["records"] = get_report(task_id)
+        task["cabinets"] = get_task_cabinet_data(task_id, task["records"])["cabinets"]
         tasks.append(task)
 
     wb = openpyxl.Workbook()
     _append_inventory_data_sheet(wb, tasks)
+    _append_cabinet_data_sheet(wb, tasks)
     _audit(actor, "ai.export_inventory", "ai_export", None, {"task_ids": selected_ids})
     return _excel_response(wb, f"资产盘点数据_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
 
@@ -1420,6 +2043,7 @@ def api_summary(_: dict = Depends(admin_user)):
     try:
         rows = conn.execute("""
             SELECT t.id, t.task_name, t.room_name, t.area_name, t.status, t.created_at, t.assigned_to,
+                   t.import_batch_id, t.room_code,
                    t.assigned_at, t.completed_at, t.field_completed_at,
                    u.name as assigned_name,
                    sr.id as record_id, sr.device_name, sr.device_extra, sr.expected_model,
@@ -1429,20 +2053,23 @@ def api_summary(_: dict = Depends(admin_user)):
                     sr.record_type, sr.field_status, sr.missing_reason, sr.created_by
             FROM tasks t
             LEFT JOIN users u ON u.id = t.assigned_to
-            LEFT JOIN scan_records sr ON sr.task_id = t.id
+            LEFT JOIN scan_records sr ON sr.task_id = t.id AND sr.is_void=0
             WHERE t.is_deleted = 0
             ORDER BY t.created_at DESC, sr.id
         """).fetchall()
 
         tasks_map = {}
+        baseline_cache = {}
         for row in rows:
             data = dict(row)
             task_id = data["id"]
             if task_id not in tasks_map:
                 tasks_map[task_id] = {
                     "id": task_id,
+                    "import_batch_id": data["import_batch_id"],
                     "task_name": data["task_name"],
                     "room_name": data["room_name"],
+                    "room_code": data["room_code"],
                     "area_name": data["area_name"] or USER_AREA_CORE,
                     "status": data["status"],
                     "created_at": data["created_at"],
@@ -1456,8 +2083,9 @@ def api_summary(_: dict = Depends(admin_user)):
                     "records": [],
                 }
             if data["record_id"]:
-                record = add_compare_status({
+                record = add_compare_status(apply_resource_baseline(conn, apply_latest_record_correction(conn, {
                     "id": data["record_id"],
+                    "task_id": task_id,
                     "device_name": data["device_name"],
                     "expected_rack_no": device_extra_value(data, "设备机架"),
                     "expected_model": data["expected_model"],
@@ -1475,7 +2103,7 @@ def api_summary(_: dict = Depends(admin_user)):
                     "field_status": data["field_status"],
                     "missing_reason": data["missing_reason"],
                     "created_by": data["created_by"],
-                })
+                }), baseline_cache))
                 tasks_map[task_id]["records"].append(record)
                 if record["scanned_at"]:
                     current_last = tasks_map[task_id]["last_scanned_at"]
@@ -1486,10 +2114,160 @@ def api_summary(_: dict = Depends(admin_user)):
             inventory_records = [r for r in task["records"] if (r.get("record_type") or "normal") != "surplus"]
             task["total"] = len(inventory_records)
             task["scanned"] = sum(1 for r in inventory_records if r["match_status"] != "未扫")
+            cabinet_data = get_task_cabinet_data(task["id"], task["records"])
+            task["cabinets"] = cabinet_data["cabinets"]
+            task["cabinet_summary"] = cabinet_data["summary"]
             add_task_field_status(task)
         return result
     finally:
         conn.close()
+
+
+def _three_way_call(function, *args):
+    try:
+        return function(*args)
+    except ValueError as exc:
+        raise HTTPException(status_code=409 if any(word in str(exc) for word in ("已有整改单", "已更新", "已变化")) else 400, detail=str(exc)) from exc
+
+
+@app.get("/api/reconciliation")
+def api_reconciliation(task_ids: list[int] = Query(default=[]), _: dict = Depends(admin_user)):
+    return _three_way_call(three_way.read_completed, task_ids)
+
+
+@app.get("/api/reconciliation/export")
+def api_export_comparison(task_ids: list[int] = Query(default=[]), _: dict = Depends(admin_user)):
+    result = _three_way_call(three_way.read_completed, task_ids)
+    if result["warnings"]:
+        raise HTTPException(status_code=400, detail="；".join(result["warnings"]))
+    workbook = openpyxl.Workbook()
+    ws = workbook.active
+    ws.title = "三系统比对"
+    ws.append(["关联键：网元 / 资源名称", "系统", "资产条码", "设备机柜位", "地点编码", "规格型号",
+               "比对结果", "问题明细", "机房", "资产版本", "综资版本", "数据来源"])
+    for group in result["groups"]:
+        start_row = ws.max_row + 1
+        manual_values = (group.get("manual_decision") or {}).get("values", {})
+        key = ""
+        for system in ("综资", "现场", "资产"):
+            manual = manual_values.get(system, {})
+            key = manual.get("name") if "name" in manual else next(
+                (row["name"] for row in three_way.source_records(group, system) if row["name"]), "")
+            if key:
+                break
+        key = key or "未填写"
+        checks = "\n".join(f"{pair}：" + "；".join(f"{'设备机柜位' if label == '机架号' else label}{status}"
+                              for label, status in values.items()) for pair, values in group["checks"].items())
+        for system in ("综资", "现场", "资产"):
+            rows = three_way.source_records(group, system)
+            manual = manual_values.get(system, {})
+            missing = "无对应设备" if system == "综资" else (
+                "登记盘亏" if group["stage_one_status"] == "现场登记盘亏" else "未反馈") if system == "现场" else "缺失"
+            values = []
+            for field in ("barcode", "rack_no", "location_code", "model"):
+                if field == "rack_no" and system == "资产":
+                    value = "不参与"
+                elif field in manual:
+                    value = manual[field] or "未填写"
+                elif not rows:
+                    value = missing
+                else:
+                    value = "\n".join(row.get(field) or (
+                        row.get("barcode_state") or "未填写（待补录）" if field == "barcode" else "未填写") for row in rows)
+                values.append(value)
+            provenance = {"综资": "综资基线", "资产": "最新资产信息表"}.get(system, "")
+            if system == "现场":
+                provenance = "；".join(dict.fromkeys(row.get("source_label") or "现场原始反馈" for row in rows))
+            if group.get("pending_sources", {}).get(system):
+                provenance += "；已有记录，条码待补录"
+            if manual:
+                provenance += "；管理员人工核对"
+            ws.append([key, system, *values, checks, "；".join(group["problems"]), group["room_name"],
+                       group["versions"]["asset_batch_id"], json.dumps(group["versions"]["resources"]), provenance])
+        for column in (1, 7, 8, 9, 10, 11):
+            ws.merge_cells(start_row=start_row, start_column=column, end_row=ws.max_row, end_column=column)
+    ws.freeze_panes = "C2"
+    if result.get("cabinet_comparison"):
+        cabinet_ws = workbook.create_sheet("传输综合柜核对")
+        cabinet_ws.append(["机柜资源 / 柜位", "系统", "机柜资产条码", "机柜位", "地点编码", "核对结论", "问题明细", "机房"])
+        for cabinet in result["cabinet_comparison"]:
+            start_row = cabinet_ws.max_row + 1
+            checks = f"{cabinet['status']}；综资与现场柜位{cabinet['position_status']}；现场与资产条码{cabinet['barcode_status']}、地点{cabinet['location_status']}"
+            for system in ("综资", "现场", "资产"):
+                if system == "综资":
+                    barcode, position = cabinet["resource_barcode_status"], cabinet["resource_position"] or "未找到"
+                    code = cabinet["room_code"] if cabinet["resource_devices"] else "未提供"
+                elif system == "现场":
+                    barcode, position = cabinet["field_barcodes"], cabinet["field_position"] or "未反馈"
+                    code = cabinet["room_code"] if cabinet["field_devices"] else "未反馈"
+                else:
+                    barcode = cabinet["asset_barcodes"] or "未找到"
+                    position = cabinet["position"] if cabinet["asset_records"] else "未找到"
+                    code = "、".join(dict.fromkeys(a["location_code"] for a in cabinet["asset_records"])) or "未找到"
+                cabinet_ws.append([cabinet["resource_name"], system, barcode, position, code, checks,
+                                   "；".join(cabinet["problems"]), cabinet["room_name"]])
+            for column in (1, 6, 7, 8):
+                cabinet_ws.merge_cells(start_row=start_row, start_column=column, end_row=cabinet_ws.max_row, end_column=column)
+        cabinet_ws.freeze_panes = "C2"
+    for sheet in workbook:
+        for row in sheet:
+            for cell in row:
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+    return _excel_response(workbook, "three_way_comparison.xlsx")
+
+
+@app.post("/api/reconciliation/decisions")
+def api_comparison_decision(payload: ComparisonDecisionRequest, actor: dict = Depends(admin_user)):
+    payload = payload.model_dump()
+    return _three_way_call(three_way.save_decision, payload.get("task_ids", []), payload.get("group_key"),
+                           payload.get("fingerprint"), payload.get("kind"), payload.get("decision", {}), actor["id"])
+
+
+@app.post("/api/reconciliation/adjustments")
+def api_create_reconciliation_adjustment(payload: ComparisonRequest, actor: dict = Depends(admin_user)):
+    payload = payload.model_dump()
+    case_id = _three_way_call(three_way.create_case, payload.get("task_ids", []), payload.get("group_key"),
+                              payload.get("fingerprint"), actor["id"])
+    return {"success": True, "message": "已建单，进入整改台账待审核", "item": three_way.case_detail(case_id)}
+
+
+@app.post("/api/reconciliation/tasks/{task_id}/location")
+def api_fill_location(task_id: int, payload: LocationCodeRequest, actor: dict = Depends(admin_user)):
+    _three_way_call(three_way.set_room_code, task_id, payload.location_code, actor["id"])
+    return {"success": True}
+
+
+@app.post("/api/reconciliation/tasks/{task_id}/resources")
+async def api_update_resources(task_id: int, file: UploadFile = File(...), actor: dict = Depends(admin_user)):
+    task = _get_task_or_404(task_id)
+    rooms = _parse_excel_devices(_load_workbook(await _read_excel_upload(file)).active)
+    if set(rooms) != {task["room_name"]}:
+        raise HTTPException(status_code=400, detail="本次更新仅接受所选机房的完整综资清单，请勿混入其他机房")
+    _three_way_call(three_way.replace_baseline, task_id, rooms[task["room_name"]], actor["id"])
+    return {"success": True, "message": "综资基线已更新，现场结果和历史清单已保留"}
+
+
+@app.get("/api/admin/records/{record_id}/resource")
+def api_resource_record(record_id: int, _: dict = Depends(admin_user)):
+    return _three_way_call(three_way.resource_record, record_id)
+
+
+@app.post("/api/admin/records/{record_id}/resource")
+def api_update_resource_record(record_id: int, payload: AdminResourceCorrectionRequest, actor: dict = Depends(admin_user)):
+    return _three_way_call(three_way.update_resource_record, record_id, payload.model_dump(), payload.fingerprint, actor["id"], payload.note)
+
+
+@app.get("/api/reconciliation/cases/{case_id}")
+def api_comparison_case(case_id: int, _: dict = Depends(admin_user)):
+    return _three_way_call(three_way.case_detail, case_id)
+
+
+@app.post("/api/reconciliation/cases/{case_id}/{action}")
+def api_comparison_case_action(case_id: int, action: str, payload: ComparisonCaseActionRequest, actor: dict = Depends(admin_user)):
+    if action not in {"approve", "admin_complete", "reject_review", "return", "verify"}:
+        raise HTTPException(status_code=400, detail="操作无效")
+    item = _three_way_call(three_way.case_action, case_id, action, actor["id"], payload.model_dump())
+    return {"success": True, "item": item}
 
 
 @app.post("/api/ai/analyze")
@@ -1511,6 +2289,9 @@ def api_ai_analyze(payload: AIAnalysisRequest, actor: dict = Depends(admin_user)
         task["records"] = get_report(task_id)
         tasks.append(task)
 
+    if len({task.get("import_batch_id") for task in tasks}) > 1:
+        raise HTTPException(status_code=400, detail="不同导入批次请分别生成 AI 分析报告，避免混用往期现场数据")
+
     unfinished_tasks = [
         task for task in tasks
         if task.get("status") != "done" or not (task.get("field_completed_at") or task.get("completed_at"))
@@ -1519,25 +2300,22 @@ def api_ai_analyze(payload: AIAnalysisRequest, actor: dict = Depends(admin_user)
         labels = "、".join(f"{task['room_name']}(#{task['id']})" for task in unfinished_tasks[:5])
         raise HTTPException(status_code=400, detail=f"只能分析现场已完成的任务：{labels} 尚未完成")
 
-    task_completion_versions = [
-        (int(task["id"]), str(task.get("field_completed_at") or task.get("completed_at")))
-        for task in tasks
-    ]
-    analyzed_versions = list_analyzed_ai_task_versions(task_completion_versions)
-    if analyzed_versions:
-        duplicate_ids = {int(item["task_id"]) for item in analyzed_versions}
-        labels = "、".join(
-            f"{task['room_name']}(#{task['id']})"
-            for task in tasks if int(task["id"]) in duplicate_ids
-        )
-        raise HTTPException(
-            status_code=409,
-            detail=f"{labels} 当前现场完成批次已经生成过报告；重新盘点并产生新的完成时间后才能再次分析",
-        )
+    comparison = _three_way_call(three_way.read, task_ids)
+    if comparison["warnings"]:
+        raise HTTPException(status_code=400, detail="；".join(comparison["warnings"]))
+    # 同一现场完成批次可在源数据或人工判断变化后重新分析；重复请求受内容版本约束。
+    content_version = three_way.fingerprint([{
+        "key": g["group_key"], "data": g["fingerprint"], "model": g["model_status"],
+        "manual": g["manual_decision"], "versions": g["versions"],
+    } for g in comparison["groups"]])
+    task_completion_versions = [(int(task["id"]), "three-way:" + content_version) for task in tasks]
+    existing = list_analyzed_ai_task_versions(task_completion_versions)
+    if existing:
+        return _saved_ai_report(get_ai_analysis_result(existing[0]["analysis_id"]), reused=True)
 
     analysis_scope = "、".join(f"{task['room_name']}({task['id']})" for task in tasks)
     try:
-        result = analyze_inventory(tasks)
+        result = analyze_inventory(tasks, comparison=comparison)
         analysis_result = json.dumps(result["analysis_items"], ensure_ascii=False)
         status = "success"
         error_message = ""
@@ -1573,23 +2351,18 @@ def api_ai_analyze(payload: AIAnalysisRequest, actor: dict = Depends(admin_user)
             task_completion_versions=task_completion_versions,
         )
     except ValueError as exc:
+        existing = list_analyzed_ai_task_versions(task_completion_versions)
+        if existing:
+            return _saved_ai_report(get_ai_analysis_result(existing[0]["analysis_id"]), reused=True)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    adjustment_drafts = []
-    if status == "success":
-        adjustment_drafts = create_ai_adjustment_drafts(
-            analysis_id=analysis_id,
-            task_ids=task_ids,
-            analysis_items=result["analysis_items"],
-            source_tasks=tasks,
-            created_by=actor.get("id"),
-        )
     _audit(actor, "ai.analyze", "ai_analysis", analysis_id, {
         "task_ids": task_ids,
         "status": status,
         "context_meta": result.get("context_meta") or {},
-        "adjustment_draft_count": len(adjustment_drafts),
+        "adjustment_draft_count": 0,
     })
     return {
+        **_saved_ai_report(get_ai_analysis_result(analysis_id)),
         "id": analysis_id,
         "status": status,
         "error_message": error_message,
@@ -1599,7 +2372,7 @@ def api_ai_analyze(payload: AIAnalysisRequest, actor: dict = Depends(admin_user)
         "model_name": result["model_name"],
         "context_meta": result.get("context_meta") or {},
         "tool_manifest": result.get("tool_manifest") or [],
-        "adjustment_drafts": adjustment_drafts,
+        "adjustment_drafts": [],
     }
 
 
@@ -1648,6 +2421,7 @@ def api_ai_chat(payload: AIChatRequest, actor: dict = Depends(admin_user)):
             tasks=tasks,
             history=[item.dict() for item in payload.history],
             adjustments=safe_adjustments,
+            comparison=_three_way_call(three_way.read, task_ids) if tasks and all(t["status"] == "done" for t in tasks) else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1668,6 +2442,26 @@ def _load_ai_analysis_items(result: dict) -> list[dict]:
     except json.JSONDecodeError:
         return []
     return items if isinstance(items, list) else []
+
+
+def _saved_ai_report(result: dict | None, reused: bool = False) -> dict:
+    if result is None:
+        raise HTTPException(status_code=404, detail="AI 分析报告不存在")
+    fields = ("id", "analysis_scope", "model_provider", "model_name", "prompt_version", "input_summary",
+              "status", "error_message", "created_at")
+    return {**{key: result.get(key) for key in fields}, "task_ids": json.loads(result["task_ids_json"]),
+            "analysis_items": _load_ai_analysis_items(result), "reused": reused}
+
+
+@app.get("/api/ai/results")
+def api_ai_results(task_ids: list[int] = Query(default=[]), page: int = Query(default=1, ge=1),
+                   page_size: int = Query(default=20, ge=1, le=100), _: dict = Depends(admin_user)):
+    return list_ai_analysis_results(task_ids, page, page_size)
+
+
+@app.get("/api/ai/results/{result_id}")
+def api_ai_result(result_id: int, _: dict = Depends(admin_user)):
+    return _saved_ai_report(get_ai_analysis_result(result_id))
 
 
 def _item_value(item: dict, *keys: str) -> str:
@@ -1804,7 +2598,7 @@ def api_my_adjustments(user: dict = Depends(current_user)):
     """现场人员查询管理员下发给自己的资产整改任务。"""
     if user["role"] != "worker":
         raise HTTPException(status_code=403, detail="仅现场人员可查看整改任务")
-    return get_my_adjustment_tasks(user["id"])
+    return [three_way.worker_case(item) for item in get_my_adjustment_tasks(user["id"]) if user_can_access_area(user["area_name"], item["area_name"])]
 
 
 @app.post("/api/adjustments/{adjustment_id}/complete")
@@ -1813,11 +2607,14 @@ def api_complete_adjustment(
     payload: AdjustmentCompleteRequest,
     user: dict = Depends(current_user),
 ):
-    """现场人员确认整改完成，形成异常资产闭环记录。"""
+    """现场人员提交整改结果，等待 PC 管理员验收。"""
     if user["role"] != "worker":
         raise HTTPException(status_code=403, detail="仅现场人员可处理整改任务")
     try:
-        item = complete_ai_adjustment_task(adjustment_id, user["id"], payload.completion_note)
+        if three_way.is_comparison_case(adjustment_id):
+            item = three_way.case_action(adjustment_id, "field_complete", user["id"], {"note": payload.completion_note, "records": [r.model_dump() for r in payload.records], "new_record": payload.new_record.model_dump() if payload.new_record else None})
+        else:
+            item = complete_ai_adjustment_task(adjustment_id, user["id"], payload.completion_note)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if item is None:
@@ -1825,7 +2622,26 @@ def api_complete_adjustment(
     _audit(user, "ai.adjustment.complete", "ai_adjustment_task", adjustment_id, {
         "completion_note": payload.completion_note,
     })
-    return {"success": True, "message": "整改任务已完成", "item": item}
+    return {"success": True, "message": "整改结果已提交，等待管理员处理或验收", "item": three_way.worker_case(item) if item.get("comparison") else item}
+
+
+@app.post("/api/ai/adjustments/{adjustment_id}/verify")
+def api_verify_adjustment(
+    adjustment_id: int,
+    payload: AdjustmentVerifyRequest,
+    actor: dict = Depends(admin_user),
+):
+    """PC 管理员验收现场整改结果并确认最终闭环。"""
+    try:
+        item = verify_ai_adjustment_task(adjustment_id, actor["id"], payload.verification_note)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="整改任务不存在")
+    _audit(actor, "ai.adjustment.verify", "ai_adjustment_task", adjustment_id, {
+        "verification_note": payload.verification_note,
+    })
+    return {"success": True, "message": "管理员验收通过，整改任务已闭环", "item": item}
 
 
 def _ai_status_payload() -> dict:

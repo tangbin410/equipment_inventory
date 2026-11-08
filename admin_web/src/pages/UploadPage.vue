@@ -1,7 +1,5 @@
 <template>
-  <PageHeader :icon="UploadFilled" title="上传任务清单" desc="导入 Excel 并生成待领取任务" />
-
-  <SectionTitle :icon="FolderOpened" title="导入 Excel 清单" muted="片区仅限：汇聚及核心、南区、北区、西区" />
+  <SectionTitle :icon="FolderOpened" title="导入 Excel 清单" muted="按九列表头填写，删除模板示例行；地点编码按文本填写，片区仅限：汇聚及核心、南区、北区、西区" />
   <div class="toolbar upload-actions">
     <div class="span-2">
       <input ref="fileInput" type="file" accept=".xlsx,.xls" hidden @change="onFileChange" />
@@ -20,6 +18,7 @@
     </div>
   </div>
   <div v-if="file" class="page-muted selected-file">已选择：{{ file.name }}</div>
+  <p class="page-muted">同一地点编码再次导入：未领取的旧任务作废；已领取的旧任务须先释放。未变化设备的有效结果、已登记机架和盘盈一并沿用，已完成任务保留历史。</p>
 
   <div v-if="preview" class="preview-block">
     <div class="metric-grid five">
@@ -34,6 +33,7 @@
       <el-table border table-layout="auto" :data="preview.rooms" height="260">
         <el-table-column prop="room_name" label="机房名称" min-width="220" show-overflow-tooltip />
         <el-table-column prop="area_name" label="机房所在片区" min-width="130" />
+        <el-table-column prop="room_code" label="地点编码" min-width="160" />
         <el-table-column prop="device_count" label="设备数" min-width="90" />
       </el-table>
     </div>
@@ -78,9 +78,10 @@
       <el-table-column prop="room_name" label="机房名称" min-width="220" show-overflow-tooltip />
       <el-table-column prop="area_name" label="机房所在片区" min-width="130" />
       <el-table-column prop="total" label="设备数" min-width="90" />
-      <el-table-column label="状态" min-width="100">
+      <el-table-column label="状态" min-width="150">
         <template #default="{ row }">{{ taskStage(row) }}</template>
       </el-table-column>
+      <el-table-column prop="replacement_notice" label="任务更新说明" min-width="260" show-overflow-tooltip />
       <el-table-column label="导入时间" min-width="160">
         <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
       </el-table-column>
@@ -92,7 +93,6 @@
 import { computed, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { Compass, Download, FolderOpened, Search, UploadFilled } from "@element-plus/icons-vue";
-import PageHeader from "../components/PageHeader.vue";
 import SectionTitle from "../components/SectionTitle.vue";
 import { apiGet, apiPost, downloadBlob } from "../api";
 import type { Task, UploadPreview } from "../types";
@@ -154,6 +154,7 @@ async function importFile() {
 }
 
 onMounted(loadTasks);
+defineExpose({ refresh: loadTasks });
 </script>
 
 <style scoped>

@@ -85,6 +85,10 @@
   box-shadow: 0 7px 20px rgba(31, 45, 61, 0.06);
 }
 
+.task-card.highlight { border: 1px solid #1677ff; }
+.task-notice { display: block; margin-top: 8px; color: #ad6800; font-size: 12px; line-height: 1.6; }
+.tag.waiting { width: auto; padding: 0 8px; color: #ad6800; background: #fff7e6; }
+
 .card-head, .meta-row, .progress-row, .bottom-row {
   display: flex;
   align-items: center;

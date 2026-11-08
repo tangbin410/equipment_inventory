@@ -9,19 +9,17 @@ export function formatTime(value?: string): string {
 }
 
 export function taskStage(task: Task): string {
+  if (task.superseded_by_task_id) return "待释放旧任务";
+  if (task.waiting_for_task_id) return "等待旧任务释放";
   if (task.status === "pending") return "待领取";
   if (task.status === "doing") return "盘点中";
   if (task.status === "done") return "现场完成";
   return task.status || "-";
 }
 
-export function boolText(value: unknown): string {
-  return value ? "是" : "否";
-}
-
 export function isOverdue(task: Task, days = 7): boolean {
   const started = task.claimed_at || task.assigned_at;
-  if (!started || task.status === "done") return false;
+  if (!started || task.status === "done" || task.superseded_by_task_id) return false;
   const startedAt = new Date(started);
   return !Number.isNaN(startedAt.getTime()) && Date.now() - startedAt.getTime() > days * 86400000;
 }
@@ -60,6 +58,7 @@ export function inventoryRows(tasks: Task[]) {
     (task.records || []).forEach((record: TaskRecord) => {
       rows.push({
         任务ID: task.id,
+        导入批次: task.import_batch_id || "",
         机房名称: task.room_name || "",
         片区: task.area_name || "汇聚及核心",
         领取人: task.assigned_name || "-",
@@ -72,10 +71,12 @@ export function inventoryRows(tasks: Task[]) {
         现场设备型号: record.actual_model || "",
         现场资产条码: record.asset_barcodes || (record.asset_no_barcode ? "无条码" : ""),
         现场机架号: record.rack_no || "",
-        现场资产缺条码: boolText(record.asset_no_barcode),
         现场机柜条码: record.cabinet_barcodes || (record.cabinet_no_barcode ? "无条码" : ""),
-        现场机柜缺条码: boolText(record.cabinet_no_barcode),      
+        现场机柜缺条码: record.cabinet_no_barcode ? "是" : "否",
+        现场资产缺条码: record.asset_no_barcode ? "是" : "否",
         现场状态: record.field_status || "正常",
+        记录类型: record.record_type || "normal",
+        盘点结论: record.match_status === "未扫" ? "未盘点" : recordTypeText(record.record_type || "normal"),
         盘点时间: formatTime(record.scanned_at),
         盘亏原因: record.missing_reason || "",
         现场备注: record.notes || "",
@@ -86,6 +87,26 @@ export function inventoryRows(tasks: Task[]) {
     });
   });
   return rows;
+}
+
+export const inventoryDisplayColumns = [
+  { prop: "机房名称", label: "机房", minWidth: 180 },
+  { prop: "设备名称", label: "设备", minWidth: 150 },
+  { prop: "综资设备型号", label: "综资型号", minWidth: 155 },
+  { prop: "现场设备型号", label: "现场型号", minWidth: 155 },
+  { prop: "综资资产条码", label: "综资资产条码", minWidth: 150 },
+  { prop: "现场资产条码", label: "现场资产条码", minWidth: 150 },
+  { prop: "综资机架号", label: "综资设备机柜位", minWidth: 120 },
+  { prop: "现场机架号", label: "现场设备机柜位", minWidth: 120 },
+  { prop: "现场机柜条码", label: "现场机柜条码", minWidth: 150 },
+  { prop: "盘点结论", label: "盘点结论", minWidth: 115 },
+  { prop: "盘点时间", label: "盘点时间", minWidth: 160 },
+  { prop: "盘亏原因", label: "未找到原因", minWidth: 150 },
+  { prop: "现场备注", label: "现场备注", minWidth: 180 },
+] as const;
+
+function recordTypeText(value: string): string {
+  return { normal: "正常盘到", missing: "现场未找到", surplus: "现场新增" }[value] || value || "-";
 }
 
 export function downloadPreviewIssues(rows: PreviewIssue[]) {

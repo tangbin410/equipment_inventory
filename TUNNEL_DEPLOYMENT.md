@@ -106,7 +106,7 @@ https://api.equip-inventory.xyz/health
 另开一个 PowerShell：
 
 ```powershell
-start_admin_vue.bat
+scripts/windows/start_admin_vue.bat
 ```
 
 你自己打开：

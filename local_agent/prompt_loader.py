@@ -9,6 +9,7 @@ import json
 
 
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
+BUSINESS_RULES_VERSION = "three-way-v8-20261026"
 
 
 def _read_prompt(name: str) -> str:
@@ -22,6 +23,11 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def load_inventory_business_rules() -> str:
+    """分析、对话及直连模式共用同一份已确认业务规则。"""
+    return _read_prompt("inventory_three_way.rules.md")
+
+
 def render_inventory_analysis_prompt(
     payload: dict[str, Any],
     rule_items: list[dict[str, str]],
@@ -29,6 +35,7 @@ def render_inventory_analysis_prompt(
     context_meta: dict[str, Any],
 ) -> list[dict[str, str]]:
     system_prompt = _read_prompt("inventory_analysis.system.md")
+    system_prompt = system_prompt.replace("{{business_rules}}", load_inventory_business_rules())
     user_prompt = _read_prompt("inventory_analysis.user.md")
     replacements = {
         "{{tool_manifest_json}}": _json(tool_manifest),

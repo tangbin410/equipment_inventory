@@ -20,12 +20,14 @@ class QrAssetTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         root = Path(self.temp_dir.name)
+        self.original_paths = (database.DB_DIR, database.DB_PATH, database.BACKUP_DIR)
         database.DB_DIR = root
         database.DB_PATH = root / "inventory.db"
         database.BACKUP_DIR = root / "backups"
         database.init_db()
 
     def tearDown(self):
+        database.DB_DIR, database.DB_PATH, database.BACKUP_DIR = self.original_paths
         self.temp_dir.cleanup()
 
     def test_rebind_keeps_token_and_preserves_history(self):

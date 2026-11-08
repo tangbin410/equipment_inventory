@@ -4,7 +4,7 @@ const app = getApp();
 const { login } = require("../../utils/api");
 
 // 临时模式开关：由 switch_miniprogram_mode.ps1 自动切换。
-const ENABLE_DEV_LOGIN = true;
+const ENABLE_DEV_LOGIN = false;
 
 Page({
   data: {

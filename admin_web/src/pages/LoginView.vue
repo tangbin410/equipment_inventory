@@ -65,14 +65,34 @@
       </div>
       <el-form :model="form" label-position="top" @submit.prevent>
         <el-form-item label="管理员账号">
-          <el-input v-model="form.username" size="large" placeholder="请输入管理员账号" />
+          <el-input v-model="form.username" size="large" placeholder="请输入登录编码，如 admin_001" />
+          <p class="login-account-hint">请填写分配的登录编码，不是邮箱或姓名。</p>
         </el-form-item>
         <el-form-item label="密码">
           <el-input v-model="form.password" size="large" type="password" show-password placeholder="请输入密码" />
         </el-form-item>
         <el-button type="primary" size="large" class="full-btn" :loading="loading" @click="login">登录</el-button>
+        <div class="login-help-action">
+          <el-button type="primary" link @click="passwordHelpVisible = true">忘记密码？</el-button>
+        </div>
       </el-form>
     </section>
+    <el-dialog v-model="passwordHelpVisible" title="忘记后台密码" width="560px" style="max-width: calc(100vw - 32px)">
+      <div class="password-help-content">
+        <section>
+          <h3>协作管理员</h3>
+          <p>请联系完整管理员，在“账号管理”中找到你的账号，点击“重置密码”。重置后使用新密码重新登录。</p>
+        </section>
+        <section>
+          <h3>完整管理员也无法登录</h3>
+          <p>在运行本系统的 Mac 上打开本机密码恢复工具：</p>
+          <code>scripts/mac/reset_admin_password_mac.command</code>
+          <p>由本人在本机隐藏输入两次新密码，无需把密码发给他人。修改 .env 的初始化密码不能重置已有账号。</p>
+        </section>
+        <el-alert title="邮箱验证码和后台密码是两层验证。获准邮箱不能直接重置任意后台账号；本入口不会发送重置邮件。" type="info" :closable="false" show-icon />
+      </div>
+      <template #footer><el-button type="primary" @click="passwordHelpVisible = false">知道了</el-button></template>
+    </el-dialog>
   </div>
 </template>
 
@@ -85,6 +105,7 @@ import type { AdminUser } from "../types";
 
 const emit = defineEmits<{ "logged-in": [{ token: string; user: AdminUser }] }>();
 const loading = ref(false);
+const passwordHelpVisible = ref(false);
 const form = reactive({ username: "admin_001", password: "" });
 
 async function login() {
@@ -105,3 +126,49 @@ async function login() {
   }
 }
 </script>
+
+<style scoped>
+.login-account-hint {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.login-help-action {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+.password-help-content {
+  display: grid;
+  gap: 20px;
+  line-height: 1.7;
+}
+
+.password-help-content h3 {
+  margin: 0 0 6px;
+  color: #24496c;
+  font-size: 16px;
+}
+
+.password-help-content p {
+  margin: 0 0 8px;
+}
+
+.password-help-content p:last-child {
+  margin-bottom: 0;
+}
+
+.password-help-content code {
+  display: block;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid #d8e8f6;
+  border-radius: 8px;
+  background: #f2f8fd;
+  color: #24496c;
+  overflow-wrap: anywhere;
+}
+</style>

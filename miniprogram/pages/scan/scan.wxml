@@ -5,69 +5,57 @@
   <view class="card">
     <view class="progress-overview">
       <text class="progress-title">{{taskName}}</text>
-      <text class="progress-detail">已盘点 {{scannedCount}} / {{totalCount}} 台</text>
+      <view class="progress-actions">
+        <text class="progress-detail">已处理 {{scannedCount}} / {{totalCount}} 台</text>
+        <button wx:if="{{!taskLocked}}" class="complete-task-btn" bindtap="confirmTaskComplete" loading="{{submitting}}" disabled="{{loading || submitting || !totalCount || scannedCount != totalCount}}">确认完成盘点</button>
+      </view>
     </view>
     <view class="progress-bar">
       <view class="progress-fill" style="width: {{totalCount > 0 ? (scannedCount / totalCount * 100) : 0}}%"></view>
     </view>
-  </view>
-
-  <view class="device-filter-bar">
-    <input class="device-search" placeholder="搜索设备、型号、资产条码或机架号" bindinput="onSearchInput" />
-    <picker mode="selector" range="{{filterOptions}}" bindchange="onDeviceFilterChange">
-      <view class="device-filter">筛选</view>
-    </picker>
-  </view>
-
-  <view class="surplus-entry card">
-    <view>
-      <text class="surplus-title">现场多出设备</text>
-      <text class="surplus-tip">任务清单没有，但机房现场实际存在的设备，请登记为盘盈。</text>
+    <text wx:if="{{taskStatus == 'done' && !loading}}">任务已完成并锁定，录入错误由管理员修正，严重问题进入整改。</text>
+    <view wx:if="{{replacementTaskId && !loading}}" class="replacement-notice">
+      <text>{{replacementNotice}} 最新任务 #{{replacementTaskId}}，当前记录仅可查看。</text>
+      <button wx:if="{{taskStatus == 'doing'}}" class="btn-small replacement-release" bindtap="releaseReplacedTask" disabled="{{submitting}}" loading="{{submitting}}">释放旧任务并前往领取</button>
     </view>
+  </view>
+
+  <view class="scan-tabs">
+    <view class="scan-tab {{activeTab == 'devices' ? 'active' : ''}}" bindtap="switchTab" data-tab="devices">设备盘点</view>
+    <view class="scan-tab {{activeTab == 'cabinets' ? 'active' : ''}}" bindtap="switchTab" data-tab="cabinets">机架盘点</view>
+  </view>
+
+  <view wx:if="{{activeTab == 'devices'}}">
+    <view class="device-filter-bar">
+      <view class="device-search-box">
+        <icon class="device-search-icon" type="search" size="18" color="#1677ff" />
+        <text class="device-search-label">搜索</text>
+        <input class="device-search" placeholder="名称、型号、资产条码、柜位" placeholder-class="device-search-placeholder" confirm-type="search" bindinput="onSearchInput" bindconfirm="onSearchInput" />
+      </view>
+      <picker mode="selector" range="{{filterOptions}}" bindchange="onDeviceFilterChange">
+        <view class="device-filter">筛选</view>
+      </picker>
+    </view>
+
+  <view wx:if="{{!taskLocked}}" class="surplus-entry card">
+    <text class="surplus-title">现场多出设备</text>
     <button class="btn-small surplus-toggle" bindtap="openSurplusForm">
       {{showSurplusForm ? '收起' : '+ 登记盘盈'}}
     </button>
   </view>
 
-  <view wx:if="{{showSurplusForm}}" class="surplus-form card">
+  <view wx:if="{{showSurplusForm && !taskLocked}}" class="surplus-form card">
     <view class="field-group">
-      <text class="field-label">① 盘盈设备名称（必填）</text>
+      <text class="field-label">① 盘盈设备名称<text class="required-mark">*</text></text>
       <input class="other-input" placeholder="请输入现场设备/网元名称" value="{{surplusForm.deviceName}}" data-field="deviceName" bindinput="onSurplusInput" />
     </view>
     <view class="field-group">
-      <text class="field-label">② 资产条码</text>
-      <view class="field-row">
-        <button class="btn-small" bindtap="scanSurplusAsset" disabled="{{surplusForm.assetNoBarcode}}">扫码</button>
-        <checkbox checked="{{surplusForm.assetNoBarcode}}" bindtap="toggleSurplusAssetNoBarcode" />
-        <text class="checkbox-label">无条码</text>
-      </view>
-      <view wx:if="{{surplusForm._hasAssetBarcode}}" class="barcode-list">
-        <view class="barcode-tag" wx:for="{{surplusForm.assetBarcodes}}" wx:for-item="barcode" wx:for-index="idx" wx:key="idx">
-          <text>{{barcode}}</text>
-          <text class="barcode-del" bindtap="removeSurplusAssetBarcode" data-index="{{idx}}">×</text>
-        </view>
-      </view>
-    </view>
-    <view class="field-group">
-      <text class="field-label">③ 机柜条码</text>
-      <view class="field-row">
-        <button class="btn-small" bindtap="scanSurplusCabinet" disabled="{{surplusForm.cabinetNoBarcode}}">扫码</button>
-        <checkbox checked="{{surplusForm.cabinetNoBarcode}}" bindtap="toggleSurplusCabinetNoBarcode" />
-        <text class="checkbox-label">无条码</text>
-      </view>
-      <view wx:if="{{surplusForm._hasCabinetBarcode}}" class="barcode-list">
-        <view class="barcode-tag" wx:for="{{surplusForm.cabinetBarcodes}}" wx:for-item="barcode" wx:for-index="idx" wx:key="idx">
-          <text>{{barcode}}</text>
-          <text class="barcode-del" bindtap="removeSurplusCabinetBarcode" data-index="{{idx}}">×</text>
-        </view>
-      </view>
-    </view>
-    <view class="field-group">
-      <text class="field-label">④ 设备型号</text>
+      <text class="field-label">② 设备型号<text class="required-mark">*</text></text>
       <view class="model-input-row">
-        <input class="other-input model-input" placeholder="输入设备型号或关键字" value="{{surplusForm.actualModel}}" data-field="actualModel" bindinput="onSurplusInput" />
-        <button class="model-confirm-btn" bindtap="confirmSurplusModelInput">确认型号</button>
+        <input class="other-input model-input" placeholder="输入或选择设备型号" value="{{surplusForm.actualModel}}" disabled="{{surplusForm._modelNotApplicable}}" data-field="actualModel" bindinput="onSurplusInput" />
+        <button class="model-na-btn {{surplusForm._modelNotApplicable ? 'selected' : ''}}" bindtap="toggleSurplusModelNotApplicable">{{surplusForm._modelNotApplicable ? '取消不涉及' : '不涉及'}}</button>
       </view>
+      <text class="model-input-tip">候选仅供参考，未匹配时直接以手动输入为准；确无型号可选“不涉及”。</text>
       <view wx:if="{{surplusForm.modelSuggestions.length}}" class="model-suggestion-list">
         <view
           class="model-suggestion"
@@ -80,12 +68,44 @@
       </view>
     </view>
     <view class="field-group">
-      <text class="field-label">⑤ 设备所属机架号（必填）</text>
-      <input class="other-input" placeholder="请输入现场机架号" value="{{surplusForm.rackNo}}" data-field="rackNo" bindinput="onSurplusInput" />
+      <view class="field-header">
+        <text class="field-label">③ 设备资产条码<text class="required-mark">*</text></text>
+        <view class="field-actions">
+          <button class="btn-small" bindtap="scanSurplusAsset" disabled="{{surplusForm.assetNoBarcode}}">扫码</button>
+          <checkbox checked="{{surplusForm.assetNoBarcode}}" bindtap="toggleSurplusAssetNoBarcode" />
+          <text class="checkbox-label">无条码</text>
+        </view>
+      </view>
+      <view wx:if="{{surplusForm._hasAssetBarcode}}" class="barcode-list">
+        <view class="barcode-tag" wx:for="{{surplusForm.assetBarcodes}}" wx:for-item="barcode" wx:for-index="idx" wx:key="idx">
+          <text>{{barcode}}</text>
+          <text class="barcode-del" bindtap="removeSurplusAssetBarcode" data-index="{{idx}}">×</text>
+        </view>
+      </view>
     </view>
     <view class="field-group">
-      <text class="field-label">⑥ 备注</text>
-      <textarea class="notes-textarea" placeholder="选填：现场位置、异常说明等" value="{{surplusForm.notes}}" data-field="notes" bindinput="onSurplusInput" maxlength="200"></textarea>
+      <text class="field-label">④ 所属机柜位<text class="required-mark">*</text></text>
+      <input class="other-input" placeholder="请输入现场机柜位" value="{{surplusForm.rackNo}}" data-field="rackNo" bindinput="onSurplusInput" />
+    </view>
+    <view class="field-group">
+      <view class="field-header">
+        <text class="field-label">⑤ 机柜资产条码<text class="required-mark">*</text></text>
+        <view class="field-actions">
+          <button class="btn-small" bindtap="scanSurplusCabinet" disabled="{{surplusForm.cabinetNoBarcode}}">扫码</button>
+          <checkbox checked="{{surplusForm.cabinetNoBarcode}}" bindtap="toggleSurplusCabinetNoBarcode" />
+          <text class="checkbox-label">无条码</text>
+        </view>
+      </view>
+      <view wx:if="{{surplusForm._hasCabinetBarcode}}" class="barcode-list">
+        <view class="barcode-tag" wx:for="{{surplusForm.cabinetBarcodes}}" wx:for-item="barcode" wx:for-index="idx" wx:key="idx">
+          <text>{{barcode}}</text>
+          <text class="barcode-del" bindtap="removeSurplusCabinetBarcode" data-index="{{idx}}">×</text>
+        </view>
+      </view>
+    </view>
+    <view class="field-group">
+      <text class="field-label">⑥ 备注（选填）</text>
+      <textarea class="notes-textarea" auto-height="true" placeholder="选填：现场位置、异常说明等" value="{{surplusForm.notes}}" data-field="notes" bindinput="onSurplusInput" maxlength="200"></textarea>
     </view>
     <button class="btn-primary submit-btn" bindtap="submitSurplusDevice">确认登记盘盈</button>
   </view>
@@ -97,7 +117,7 @@
 
   <!-- 设备列表 -->
   <view wx:else class="device-list">
-    <view class="device-card card" wx:for="{{devices}}" wx:key="id" data-id="{{item.id}}">
+    <view class="device-card card {{activeDeviceId == item.id ? 'expanded' : ''}}" wx:for="{{devices}}" wx:key="id" data-id="{{item.id}}">
       <!-- 设备头部 - 点击展开/收起 -->
       <view class="device-header" bindtap="toggleDevice" data-id="{{item.id}}">
         <view class="device-info">
@@ -105,16 +125,14 @@
             {{item.submitted ? '✓' : '·'}}
           </view>
           <view class="device-text">
-            <text class="device-name">{{item.device_name}}</text>
-            <text class="device-model">期望型号: {{item.expected_model}}</text>
-            <text class="device-model">清单设备机架: {{item._expectedRackText}}</text>
+            <view class="device-name"><text wx:if="{{item.deviceCategory}}" class="tag tag-cabinet">{{item.deviceCategory}}</text><text>{{item.device_name}}</text></view>
           </view>
         </view>
         <view class="expand-icon">{{activeDeviceId == item.id ? '▲' : '▼'}}</view>
       </view>
 
       <!-- 已扫结果展示，提交后显示 -->
-      <view wx:if="{{activeDeviceId == item.id && item.submitted}}" class="result-row">
+      <view wx:if="{{activeDeviceId == item.id && (item.submitted || taskLocked)}}" class="result-row">
         <view class="result-line">
           <text class="result-label">综资资产条码</text>
           <text class="result-value">{{item._expectedBarcodeText}}</text>
@@ -132,63 +150,41 @@
           <text class="result-value">{{item._actualModelText}}</text>
         </view>
         <view class="result-line">
-          <text class="result-label">综资机架位</text>
+          <text class="result-label">综资机柜位</text>
           <text class="result-value">{{item._expectedRackText}}</text>
         </view>
         <view class="result-line">
-          <text class="result-label">现场机架位</text>
+          <text class="result-label">现场机柜位</text>
           <text class="result-value">{{item._rackNoText}}</text>
+        </view>
+        <view class="result-line">
+          <text class="result-label">现场传输综合柜</text>
+          <text class="result-value">{{item._cabinetDisplay}}</text>
         </view>
         <text class="result-detail" wx:if="{{item.recordType == 'missing'}}">盘亏原因: {{item.missingReason}}</text>
       </view>
 
       <!-- 扫描表单，展开时显示 -->
-      <view wx:if="{{activeDeviceId == item.id && !item.submitted}}" class="scan-form">
-        <!-- ① 资产条码 -->
-        <view class="field-group">
-          <text class="field-label">① 资产条码</text>
-          <view class="field-row">
-            <button class="btn-small" bindtap="scanAsset" data-id="{{item.id}}" disabled="{{item.assetNoBarcode}}">扫码</button>
-            <checkbox checked="{{item.assetNoBarcode}}" bindtap="toggleAssetNoBarcode" data-id="{{item.id}}" />
-            <text class="checkbox-label">无条码</text>
-          </view>
-          <view wx:if="{{item._hasAssetBarcode}}" class="barcode-list">
-            <view class="barcode-tag" wx:for="{{item.assetBarcodes}}" wx:for-item="barcode" wx:for-index="idx" wx:key="idx">
-              <text>{{barcode}}</text>
-              <text class="barcode-del" bindtap="removeAssetBarcode" data-id="{{item.id}}" data-index="{{idx}}">×</text>
-            </view>
-          </view>
+      <view wx:if="{{activeDeviceId == item.id && !item.submitted && !taskLocked}}" class="scan-form">
+        <view wx:if="{{item.recordType == 'surplus'}}" class="field-group">
+          <text class="field-label">设备名称<text class="required-mark">*</text></text>
+          <input class="other-input" placeholder="请输入盘盈设备名称" value="{{item.device_name}}" bindinput="onDeviceNameInput" data-id="{{item.id}}" maxlength="500" />
         </view>
-
-        <!-- ② 机柜条码 -->
+        <!-- ① 设备型号 -->
         <view class="field-group">
-          <text class="field-label">② 机柜条码</text>
-          <view class="field-row">
-            <button class="btn-small" bindtap="scanCabinet" data-id="{{item.id}}" disabled="{{item.cabinetNoBarcode}}">扫码</button>
-            <checkbox checked="{{item.cabinetNoBarcode}}" bindtap="toggleCabinetNoBarcode" data-id="{{item.id}}" />
-            <text class="checkbox-label">无条码</text>
-          </view>
-          <view wx:if="{{item._hasCabinetBarcode}}" class="barcode-list">
-            <view class="barcode-tag" wx:for="{{item.cabinetBarcodes}}" wx:for-item="barcode" wx:for-index="idx" wx:key="idx">
-              <text>{{barcode}}</text>
-              <text class="barcode-del" bindtap="removeCabinetBarcode" data-id="{{item.id}}" data-index="{{idx}}">×</text>
-            </view>
-          </view>
-        </view>
-
-        <!-- ③ 设备型号 -->
-        <view class="field-group">
-          <text class="field-label">③ 设备型号</text>
+          <text class="field-label">① 设备型号<text class="required-mark">*</text></text>
           <view class="model-input-row">
             <input
               class="other-input model-input"
-              placeholder="输入设备型号或关键字"
+              placeholder="输入或选择设备型号"
               value="{{item.actualModel}}"
+              disabled="{{item._modelNotApplicable}}"
               bindinput="onModelInput"
               data-id="{{item.id}}"
             />
-            <button class="model-confirm-btn" bindtap="confirmModelInput" data-id="{{item.id}}">确认型号</button>
+            <button class="model-na-btn {{item._modelNotApplicable ? 'selected' : ''}}" bindtap="toggleModelNotApplicable" data-id="{{item.id}}">{{item._modelNotApplicable ? '取消不涉及' : '不涉及'}}</button>
           </view>
+          <text class="model-input-tip">候选仅供参考，未匹配时直接以手动输入为准；确无型号可选“不涉及”。</text>
           <view wx:if="{{item.modelSuggestions.length}}" class="model-suggestion-list">
             <view
               class="model-suggestion"
@@ -202,21 +198,57 @@
           </view>
         </view>
 
-        <!-- ④ 设备所属机架号 -->
+        <!-- ② 设备资产条码 -->
         <view class="field-group">
-          <text class="field-label">④ 设备所属机架号（必填）</text>
+          <view class="field-header">
+            <text class="field-label">② 设备资产条码<text class="required-mark">*</text></text>
+            <view class="field-actions">
+              <button class="btn-small" bindtap="scanAsset" data-id="{{item.id}}" disabled="{{item.assetNoBarcode}}">扫码</button>
+              <checkbox checked="{{item.assetNoBarcode}}" bindtap="toggleAssetNoBarcode" data-id="{{item.id}}" />
+              <text class="checkbox-label">无条码</text>
+            </view>
+          </view>
+          <view wx:if="{{item._hasAssetBarcode}}" class="barcode-list">
+            <view class="barcode-tag" wx:for="{{item.assetBarcodes}}" wx:for-item="barcode" wx:for-index="idx" wx:key="idx">
+              <text>{{barcode}}</text>
+              <text class="barcode-del" bindtap="removeAssetBarcode" data-id="{{item.id}}" data-index="{{idx}}">×</text>
+            </view>
+          </view>
+        </view>
+
+        <!-- ③ 所属机柜位 -->
+        <view class="field-group">
+          <text class="field-label">③ 所属机柜位<text class="required-mark">*</text></text>
           <input
             class="other-input"
-            placeholder="请输入现场机架号"
+            placeholder="请输入现场机柜位"
             value="{{item.rackNo}}"
             bindinput="onRackNoInput"
             data-id="{{item.id}}"
           />
         </view>
 
+        <!-- ④ 机柜资产条码 -->
+        <view class="field-group">
+          <view class="field-header">
+            <text class="field-label">④ 机柜资产条码<text class="required-mark">*</text></text>
+            <view class="field-actions">
+              <button class="btn-small" bindtap="scanCabinet" data-id="{{item.id}}" disabled="{{item.cabinetNoBarcode}}">扫码</button>
+              <checkbox checked="{{item.cabinetNoBarcode}}" bindtap="toggleCabinetNoBarcode" data-id="{{item.id}}" />
+              <text class="checkbox-label">无条码</text>
+            </view>
+          </view>
+          <view wx:if="{{item._hasCabinetBarcode}}" class="barcode-list">
+            <view class="barcode-tag" wx:for="{{item.cabinetBarcodes}}" wx:for-item="barcode" wx:for-index="idx" wx:key="idx">
+              <text>{{barcode}}</text>
+              <text class="barcode-del" bindtap="removeCabinetBarcode" data-id="{{item.id}}" data-index="{{idx}}">×</text>
+            </view>
+          </view>
+        </view>
+
         <!-- ⑤ 备注 -->
         <view class="field-group">
-          <text class="field-label">⑤ 备注</text>
+          <text class="field-label">⑤ 备注（选填）</text>
           <textarea
             class="notes-textarea"
             placeholder="选填：设备状态、异常情况等"
@@ -224,18 +256,104 @@
             bindinput="onNotesInput"
             data-id="{{item.id}}"
             maxlength="200"
+            auto-height="true"
           ></textarea>
         </view>
 
         <!-- 提交按钮 -->
-        <button class="btn-primary submit-btn" bindtap="submitScan" data-id="{{item.id}}">确认提交</button>
-        <button class="btn-warning missing-btn" bindtap="markMissing" data-id="{{item.id}}">现场未找到该设备（盘亏）</button>
+        <button class="btn-primary submit-btn" bindtap="submitScan" data-id="{{item.id}}" disabled="{{submitting || loading}}">{{item.recordType == 'surplus' ? '保存修正' : '确认提交'}}</button>
+        <button wx:if="{{item.recordType != 'surplus'}}" class="btn-warning missing-btn" bindtap="markMissing" data-id="{{item.id}}">现场未找到该设备（盘亏）</button>
       </view>
 
       <!-- 提交后再次展开可查看记录 -->
-      <view wx:if="{{activeDeviceId == item.id && item.submitted}}" class="submitted-info">
-        <button wx:if="{{item.recordType != 'surplus'}}" class="btn-small" bindtap="reopenDevice" data-id="{{item.id}}">重新盘点</button>
+      <view wx:if="{{activeDeviceId == item.id && item.submitted && !taskLocked && !item.writeLocked}}" class="submitted-info">
+        <button class="btn-small" bindtap="reopenDevice" data-id="{{item.id}}" disabled="{{submitting || loading}}">修正本次录入</button>
+        <button wx:if="{{item.recordType == 'surplus'}}" class="btn-small surplus-delete" bindtap="deleteSurplus" data-id="{{item.id}}" disabled="{{submitting || loading}}">删除盘盈</button>
       </view>
+    </view>
+  </view>
+  </view>
+
+  <view wx:if="{{activeTab == 'cabinets'}}" class="cabinet-panel">
+    <view class="cabinet-entry card">
+      <view class="cabinet-entry-head">
+        <view>
+          <text class="surplus-title">ODF / IODF 机架盘点</text>
+        </view>
+        <button wx:if="{{!taskLocked}}" class="btn-small surplus-toggle" bindtap="toggleCabinetForm">
+          {{showCabinetForm ? '收起' : '+ 登记机架'}}
+        </button>
+      </view>
+      <view class="cabinet-summary" wx:if="{{cabinetRecords.length}}">
+        <text>已登记 {{cabinetRecords.length}} 架：ODF {{cabinetSummary.odf}}，IODF {{cabinetSummary.iodf}}</text>
+      </view>
+    </view>
+
+    <view wx:if="{{rackRows.length}}" class="cabinet-record-list card">
+      <text class="cabinet-list-title">同机房往期机架参考（本次仍需重新盘点）</text>
+      <view class="cabinet-record" wx:for="{{rackRows}}" wx:key="id">
+        <view class="cabinet-record-main"><text class="tag tag-cabinet">{{item.type == 'odf' ? 'ODF' : 'IODF'}}</text><text class="cabinet-record-code">{{item.name}}</text></view>
+        <text class="cabinet-record-meta">上次现场条码 {{item.referenceBarcode || '无条码'}} · 仅作核对参考</text>
+      </view>
+    </view>
+
+    <view wx:if="{{showCabinetForm && !taskLocked}}" class="cabinet-form card">
+      <view wx:if="{{rackRows.length}}" class="field-group">
+        <text class="field-label">沿用往期机架编号（可选）</text>
+        <picker mode="selector" range="{{rackCandidateLabels}}" value="{{cabinetForm.candidateIndex}}" bindchange="onRackCandidateChange">
+          <view class="picker-value">{{rackCandidateLabels[cabinetForm.candidateIndex]}}</view>
+        </picker>
+      </view>
+      <view class="field-group">
+        <text class="field-label">① 机架类型<text class="required-mark">*</text></text>
+        <picker mode="selector" range="{{cabinetTypeLabels}}" value="{{cabinetForm.cabinetTypeIndex}}" bindchange="onCabinetTypeChange" disabled="{{cabinetForm.candidateIndex > 0}}">
+          <view class="picker-value">{{cabinetForm.cabinetType ? cabinetTypeLabels[cabinetForm.cabinetTypeIndex] : '请选择机架类型'}}</view>
+        </picker>
+      </view>
+      <view class="field-group">
+        <view class="field-header">
+          <text class="field-label">② 机架资产条码<text class="required-mark">*</text></text>
+          <view class="field-actions">
+            <button class="btn-small" bindtap="scanCabinetForm" disabled="{{cabinetForm.noBarcode}}">扫码</button>
+            <checkbox checked="{{cabinetForm.noBarcode}}" bindtap="toggleCabinetFormNoBarcode" />
+            <text class="checkbox-label">无条码</text>
+          </view>
+        </view>
+        <input class="other-input" placeholder="可手工输入机架资产条码" value="{{cabinetForm.cabinetBarcode}}" data-field="cabinetBarcode" bindinput="onCabinetFormInput" disabled="{{cabinetForm.noBarcode}}" />
+      </view>
+      <view class="field-group">
+        <text class="field-label">③ 资源名称／机架编号<text class="required-mark">*</text></text>
+        <input class="other-input" placeholder="请输入机架资源名称，例如 A01" value="{{cabinetForm.rackNo}}" data-field="rackNo" bindinput="onCabinetFormInput" disabled="{{cabinetForm.candidateIndex > 0}}" />
+      </view>
+      <view class="field-group">
+        <text class="field-label">④ 备注（选填）</text>
+        <textarea class="notes-textarea" auto-height="true" placeholder="选填：机架用途或现场异常" value="{{cabinetForm.notes}}" data-field="notes" bindinput="onCabinetFormInput" maxlength="200"></textarea>
+      </view>
+      <button class="btn-primary submit-btn" bindtap="submitCabinet">确认登记机架</button>
+    </view>
+
+    <view wx:if="{{cabinetRecords.length}}" class="cabinet-record-list card">
+      <text class="cabinet-list-title">本任务已登记机架</text>
+      <view class="cabinet-record" wx:for="{{cabinetRecords}}" wx:key="id">
+        <view class="cabinet-record-main">
+          <text class="tag tag-cabinet">{{item.cabinet_type_label}}</text>
+          <text class="cabinet-record-code">{{item.cabinet_barcode || item.cabinet_name || '无编号'}}</text>
+          <button wx:if="{{!taskLocked}}" class="btn-small cabinet-delete" bindtap="deleteCabinet" data-id="{{item.id}}" loading="{{deletingCabinetId == item.id}}" disabled="{{loading || submitting}}">删除</button>
+        </view>
+        <text class="cabinet-record-meta">资源名称 {{item.rack_no || item.cabinet_name || '未填写'}} · {{item.source_label}}</text>
+      </view>
+    </view>
+    <view wx:else class="empty-cabinet card">
+      <text>本任务暂未登记机架</text>
+    </view>
+  </view>
+  <view wx:if="{{collectionNotice}}" class="collection-notice {{collectionNotice.tone}}">
+    <view class="collection-notice-icon">
+      <icon type="{{collectionNotice.icon}}" size="26" color="{{collectionNotice.tone == 'warning' ? '#d48806' : '#1677ff'}}" />
+    </view>
+    <view class="collection-notice-content">
+      <text class="collection-notice-title">{{collectionNotice.title}}</text>
+      <text class="collection-notice-detail">{{collectionNotice.detail}}</text>
     </view>
   </view>
 </view>

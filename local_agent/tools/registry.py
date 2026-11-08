@@ -42,7 +42,7 @@ def _inventory_run_rules(payload: dict[str, Any]) -> list[dict[str, str]]:
 def _inventory_precheck(payload: dict[str, Any]) -> dict[str, Any]:
     rows = payload.get("rows") if isinstance(payload.get("rows"), list) else []
     room_count = len({str(row.get("机房名称") or "").strip() for row in rows if isinstance(row, dict) and row.get("机房名称")})
-    scanned_count = sum(1 for row in rows if isinstance(row, dict) and str(row.get("盘点时间") or "").strip())
+    scanned_count = sum(1 for row in rows if isinstance(row, dict) and (int(row.get("现场反馈数", row.get("现场记录数")) or 0) > 0 if row.get("比对模式") else bool(str(row.get("盘点时间") or "").strip())))
     return {
         "row_count": len(rows),
         "room_count": room_count,
@@ -84,7 +84,7 @@ def _report_preview(payload: dict[str, Any]) -> dict[str, Any]:
 def _closure_track(payload: dict[str, Any]) -> dict[str, Any]:
     adjustments = payload.get("adjustments") if isinstance(payload.get("adjustments"), list) else []
     overdue_days = 7
-    counts = {status: 0 for status in ("pending_review", "dispatched", "done", "rejected")}
+    counts = {status: 0 for status in ("pending_review", "dispatched", "pending_verify", "done", "rejected")}
     overdue_items = []
     now = datetime.now()
     for item in adjustments:
@@ -236,7 +236,7 @@ _TOOLS: dict[str, ToolSpec] = {
     "adjustment.dispatch_confirmed_task": ToolSpec(
         name="adjustment.dispatch_confirmed_task",
         category=ToolCategory.APPROVAL_REQUIRED,
-        description="将指定整改草稿下发给指定现场人员；必须提供明确的草稿 ID 和人员 ID，并等待管理员确认。",
+        description="仅将涉及现场处理的整改草稿下发给指定现场人员；资产和综资由管理员在原系统修改，无需派单。必须提供明确的草稿 ID 和人员 ID，并等待管理员确认。",
         handler=_approval_required,
         enabled=True,
         capability="审核无误后下发资产整改任务",
@@ -254,7 +254,7 @@ _TOOLS: dict[str, ToolSpec] = {
     "closure.track_adjustment_loop": ToolSpec(
         name="closure.track_adjustment_loop",
         category=ToolCategory.READ_ONLY,
-        description="按固定 7 天阈值只读汇总整改草稿、已下发、已完成、已驳回和超时状态；不催办、不关闭、不修改数据。",
+        description="按固定 7 天阈值只读汇总待审核、已下发、待验收、已闭环、已驳回和超时状态。已闭环仅引用台账状态，不代表独立验证三方一致；不催办、不关闭、不修改数据。",
         handler=_closure_track,
         enabled=True,
         capability="跟进异常资产闭环",

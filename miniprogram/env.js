@@ -4,6 +4,6 @@
  */
 
 module.exports = {
-  devApiBase: "http://localhost:8000/api",
+  devApiBase: "https://api.equip-inventory.xyz/api",
   prodApiBase: "https://api.equip-inventory.xyz/api",
 };

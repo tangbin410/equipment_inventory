@@ -58,6 +58,15 @@
     <text class="arrow">›</text>
   </view>
 
+  <view class="action-card" bindtap="goCompletedTasks">
+    <view class="action-icon blue">完</view>
+    <view class="action-main">
+      <text class="action-title">已完成盘点</text>
+      <text class="action-desc">查看本人已完成的机房盘点结果</text>
+    </view>
+    <text class="arrow">›</text>
+  </view>
+
   <view class="action-card" bindtap="goAdjustments">
     <view class="action-icon cyan">改</view>
     <view class="action-main">

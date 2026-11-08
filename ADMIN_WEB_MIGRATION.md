@@ -11,8 +11,8 @@ admin_web/
 启动方式：
 
 ```text
-start_backend.bat
-start_admin_vue.bat
+scripts/windows/start_backend.bat
+scripts/windows/start_admin_vue.bat
 ```
 
 访问地址：

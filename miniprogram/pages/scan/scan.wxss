@@ -3,6 +3,50 @@
   padding-bottom: 30px;
 }
 
+.collection-notice {
+  position: fixed;
+  z-index: 1200;
+  top: 43%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  width: 264px;
+  max-width: calc(100vw - 64px);
+  box-sizing: border-box;
+  padding: 18px;
+  border: 1px solid #d6e9ff;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 8px 32px rgba(31, 72, 120, 0.18);
+  pointer-events: none;
+  animation: collection-notice-in 160ms ease-out;
+}
+
+.collection-notice-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  margin-right: 12px;
+  border-radius: 50%;
+  background: #edf5ff;
+}
+
+.collection-notice.warning { border-color: #ffe2af; }
+.collection-notice.warning .collection-notice-icon { background: #fff7e6; }
+.collection-notice-content { flex: 1; min-width: 0; }
+.collection-notice-title { display: block; color: #1f2d3d; font-size: 16px; font-weight: 600; line-height: 1.5; }
+.collection-notice-detail { display: block; margin-top: 3px; color: #6b7d90; font-size: 12px; line-height: 1.5; }
+.collection-notice.warning .collection-notice-detail { color: #ad6800; }
+
+@keyframes collection-notice-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 .card {
   background: #fff;
   border-radius: 8px;
@@ -11,14 +55,37 @@
   box-shadow: 0 2px 8px rgba(0,0,0,0.08);
 }
 
-.device-filter-bar { display: flex; margin: 10px 12px; }
-.device-search { flex: 1; height: 38px; box-sizing: border-box; padding: 0 12px; background: #fff; border: 1px solid #d9e7f7; border-radius: 6px; font-size: 14px; }
-.device-filter { height: 38px; line-height: 38px; padding: 0 14px; background: #fff; border: 1px solid #d9e7f7; border-radius: 6px; color: #49637e; font-size: 13px; }
+.device-filter-bar { display: flex; align-items: center; margin: 10px 12px; }
+.device-search-box { display: flex; align-items: center; flex: 1; min-width: 0; height: 46px; box-sizing: border-box; padding: 0 10px; background: #f0f7ff; border: 2px solid #1677ff; border-radius: 10px; box-shadow: 0 2px 6px rgba(22,119,255,0.1); }
+.device-search-icon { flex-shrink: 0; }
+.device-search-label { flex-shrink: 0; margin: 0 8px; color: #0958d9; font-size: 15px; font-weight: 600; }
+.device-search { flex: 1; min-width: 0; height: 42px; box-sizing: border-box; padding: 0; background: transparent; border: 0; color: #1f2d3d; font-size: 14px; }
+.device-search-placeholder { color: #49637e; }
+.device-filter { height: 46px; box-sizing: border-box; line-height: 44px; padding: 0 14px; background: #fff; border: 1px solid #d9e7f7; border-radius: 8px; color: #49637e; font-size: 13px; }
 .device-filter-bar picker { margin-left: 8px; }
-.surplus-entry {
+.scan-tabs { display: flex; margin: 12px 12px 14px; padding: 4px; background: #e1f0ff; border: 1px solid #91caff; border-radius: 9px; }
+.scan-tab { flex: 1; height: 38px; line-height: 38px; text-align: center; background: #fff; color: #31536f; font-size: 14px; font-weight: 600; border-radius: 6px; }
+.scan-tab.active { background: #1677ff; color: #fff; box-shadow: 0 3px 8px rgba(22,119,255,0.28); }
+.cabinet-entry { border: 1px solid #d6e9ff; background: #fff; }
+.cabinet-entry-head { display: flex; align-items: center; justify-content: space-between; }
+.cabinet-summary { margin-top: 10px; padding-top: 10px; border-top: 1px solid #edf3fb; color: #60758b; font-size: 12px; line-height: 1.5; }
+.cabinet-form { padding: 14px; border: 1px solid #d6e9ff; background: #f8fbff; }
+.cabinet-record-list { padding-top: 12px; padding-bottom: 8px; }
+.cabinet-list-title { display: block; margin-bottom: 8px; color: #31536f; font-size: 14px; font-weight: 700; }
+.cabinet-record { padding: 9px 0; border-top: 1px solid #edf3fb; }
+.cabinet-record-main { display: flex; align-items: center; }
+.cabinet-record-code { flex: 1; min-width: 0; margin-left: 6px; color: #2d435a; font-size: 13px; word-break: break-all; }
+.cabinet-delete { flex-shrink: 0; margin-left: 8px; color: #d94848; background: #fff3f1; }
+.cabinet-record-meta { display: block; margin-top: 3px; color: #8191a1; font-size: 12px; }
+.tag-cabinet { background: #f0f7ff; color: #1677ff; border: 1px solid #b7d7ff; }
+.empty-cabinet { color: #8a9aab; text-align: center; font-size: 13px; }
+.replacement-notice { margin-top: 12px; padding: 12px; border-radius: 10px; background: #fff7e6; color: #ad6800; font-size: 13px; line-height: 1.6; }
+.replacement-release { display: block; margin-top: 10px; background: #1677ff; color: #fff; }
+.surplus-entry.card {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  padding: 10px 14px;
   border: 1px solid #d6e9ff;
   background: linear-gradient(135deg, #f7fbff, #eef7ff);
 }
@@ -28,16 +95,10 @@
   font-weight: 700;
   color: #1f2d3d;
 }
-.surplus-tip {
-  display: block;
-  margin-top: 4px;
-  font-size: 12px;
-  color: #6b7d90;
-  line-height: 1.45;
-}
 .surplus-toggle {
+  flex-shrink: 0;
   min-width: 96px;
-  margin-left: 12px;
+  margin: 0 0 0 12px;
   border-radius: 18px;
   background: #1677ff;
   color: #fff;
@@ -52,21 +113,34 @@
 /* 进度概览 */
 .progress-overview {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  margin-bottom: 10px;
 }
 
 .progress-title {
   font-size: 16px;
   font-weight: 500;
-  height: 32px;
+  height: auto;
+  line-height: 1.45;
   color: #1a1a1a;
+  word-break: break-all;
+}
+
+.progress-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
 }
 
 .progress-detail {
+  flex: 1;
+  min-width: 0;
+  margin-right: 8px;
   font-size: 13px;
-  color: #666;
+  color: #60758b;
+  line-height: 1.5;
 }
 
 .progress-bar {
@@ -83,13 +157,47 @@
   transition: width 0.3s;
 }
 
+.progress-actions .complete-task-btn {
+  flex-shrink: 0;
+  width: auto;
+  min-width: 108px;
+  height: 40px;
+  box-sizing: border-box;
+  line-height: 38px;
+  padding: 0 14px;
+  margin: 0;
+  border: 1px solid #1677ff;
+  border-radius: 20px;
+  background: #1677ff;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.complete-task-btn::after {
+  border: 0;
+}
+
+.progress-actions .complete-task-btn[disabled] {
+  border-color: #d6e5f7;
+  background: #f0f6ff;
+  color: #91a8c2;
+}
+
 /* 设备卡片 */
 .device-card {
   margin-bottom: 12px;
   padding: 0;
   border-radius: 12px;
   overflow: hidden;
-  box-shadow: 0 6px 18px rgba(31,45,61,0.08);
+  border: 1px solid #c5d9ed;
+  background: #fff;
+  box-shadow: 0 8px 22px rgba(31,45,61,0.2);
+}
+
+.device-card.expanded {
+  border-color: #8fb9e4;
+  box-shadow: 0 10px 28px rgba(31,45,61,0.3);
 }
 
 .device-header {
@@ -107,7 +215,7 @@
 
 .device-info {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   flex: 1;
 }
 
@@ -121,7 +229,7 @@
   font-size: 12px;
   font-weight: bold;
   flex-shrink: 0;
-  margin-top: 2px;
+  margin-top: 0;
 }
 
 .status-icon.wait {
@@ -147,6 +255,7 @@
 .device-text {
   display: flex;
   flex-direction: column;
+  justify-content: center;
   flex: 1;
   margin-left: 10px;
 }
@@ -154,15 +263,9 @@
 .device-name {
   font-size: 14px;
   font-weight: 600;
-  min-height: 34px;
   color: #1f2d3d;
   line-height: 1.25;
-}
-
-.device-model {
-  font-size: 12px;
-  color: #8a9aab;
-  margin-top: 4px;
+  text-align: left;
 }
 
 .expand-icon {
@@ -210,6 +313,8 @@
 .submitted-info {
   display: flex;
   justify-content: center;
+  flex-wrap: wrap;
+  gap: 12px;
   padding: 12px 16px;
 }
 
@@ -217,11 +322,18 @@
   margin: 0;
 }
 
+.submitted-info .surplus-delete {
+  color: #d94848;
+  background: #fff3f1;
+  border: 1px solid #ffc9c2;
+}
+
 /* 扫描表单 */
 .scan-form {
   padding: 16px 14px 18px;
-  border-top: 1px solid #edf3fb;
-  background: #f8fbff;
+  border-top: 1px solid #c5d9ed;
+  background: #eef5fd;
+  box-shadow: inset 0 5px 14px rgba(31,45,61,0.12);
 }
 
 .field-group {
@@ -240,6 +352,47 @@
   color: #1f2d3d;
   display: block;
   margin-bottom: 10px;
+}
+
+.required-mark {
+  margin-left: 2px;
+  color: #ff4d4f;
+  font-weight: 700;
+}
+
+.field-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.field-header .field-label {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.field-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.field-actions .btn-small {
+  min-width: 56px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.field-actions checkbox,
+.field-actions .checkbox-label {
+  margin-left: 8px;
+}
+
+.field-actions .checkbox-label {
+  font-size: 12px;
 }
 
 .field-row {
@@ -336,7 +489,7 @@
   min-width: 0;
 }
 
-.model-confirm-btn {
+.model-na-btn {
   flex-shrink: 0;
   min-width: 78px;
   margin: 0;
@@ -344,18 +497,26 @@
   height: 40px;
   line-height: 40px;
   border-radius: 8px;
+  background: #eef6ff;
+  color: #1677ff;
+  font-size: 13px;
+}
+
+.model-na-btn.selected {
   background: #1677ff;
   color: #fff;
-  font-size: 13px;
-  box-shadow: 0 4px 10px rgba(22,119,255,0.14);
 }
 
-.model-confirm-btn:active {
-  background: #0958d9;
-}
-
-.model-confirm-btn::after {
+.model-na-btn::after {
   border: none;
+}
+
+.model-input-tip {
+  display: block;
+  margin-top: 6px;
+  color: #7f91a8;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .model-suggestion-list {
@@ -391,14 +552,17 @@
 }
 
 .submit-btn {
-  margin-top: 12px;
-  width: 100%;
+  width: 82%;
+  height: 44px;
+  margin: 12px auto 0;
+  padding: 0;
+  line-height: 44px;
+  box-sizing: border-box;
   background: linear-gradient(135deg, #1677ff, #3d8bff);
   color: #fff;
   border-radius: 10px;
-  padding: 12px 0;
   text-align: center;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   border: none;
   box-shadow: 0 8px 16px rgba(22,119,255,0.22);
@@ -451,14 +615,17 @@
   border: 1px solid #ffa39e;
 }
 .missing-btn {
-  margin-top: 10px;
-  width: 100%;
+  width: 82%;
+  height: 42px;
+  margin: 10px auto 0;
+  padding: 0;
+  line-height: 42px;
+  box-sizing: border-box;
   background: #fff7e6;
   color: #ad6800;
   border: 1px solid #ffd591;
   border-radius: 10px;
-  padding: 11px 0;
-  font-size: 15px;
+  font-size: 14px;
 }
 .missing-btn:active {
   background: #ffe7ba;
@@ -467,12 +634,12 @@
   background: #f8fbff;
   border: 1px solid #d8e7fb;
   border-radius: 8px;
-  padding: 12px;
+  padding: 9px 12px;
   font-size: 14px;
   width: 100%;
-  min-height: 90px;
+  min-height: 42px;
   box-sizing: border-box;
-  line-height: 1.6;
+  line-height: 24px;
 }
 
 .scan-form .btn-small,

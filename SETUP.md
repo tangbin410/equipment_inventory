@@ -52,7 +52,7 @@ Uvicorn running on http://0.0.0.0:8000
 
 ```bash
 cd equipment_inventory
-start_admin_vue.bat
+scripts/windows/start_admin_vue.bat
 ```
 
 浏览器打开 `http://127.0.0.1:5173`。
@@ -201,7 +201,7 @@ A: 确保 Excel 文件保存为 UTF-8 编码。
 | 文件 | 用途 | 启动方式 |
 |------|------|---------|
 | `backend/main.py` | FastAPI 后端 | `python -m uvicorn backend.main:app` |
-| `admin_web/` | Vue PC后台管理 | `start_admin_vue.bat` |
+| `admin_web/` | Vue PC后台管理 | `scripts/windows/start_admin_vue.bat` |
 | `miniprogram/` | 微信小程序 | 用微信开发者工具打开 |
 | `backend/database.py` | 数据库操作 | 自动调用，无需手动运行 |
 | `test_api.py` | 接口测试 | `python test_api.py` |

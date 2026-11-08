@@ -16,7 +16,7 @@ from .config import agent_token, deepseek_config, load_local_env
 from .context_policy import CONTEXT_POLICY_VERSION, apply_context_policy
 from .agent_runtime import run_agent
 from .llm_client import http_error_detail, post_deepseek_chat, post_deepseek_chat_response
-from .prompt_loader import render_inventory_analysis_prompt
+from .prompt_loader import BUSINESS_RULES_VERSION, load_inventory_business_rules, render_inventory_analysis_prompt
 from .rules import ANALYSIS_KEYS
 from .tools import run_tool, tool_manifest
 
@@ -131,6 +131,7 @@ def chat(payload: dict[str, Any]) -> dict[str, Any]:
                 "当管理员询问今天日期、现在时间、几月几号时，直接依据当前本地系统时间回答。"
                 "不得直接读取本地文件、查询数据库或修改业务数据；不得声称已经下发、整改或闭环。"
                 "如果判断依据不足，要向管理员提出明确确认项。"
+                f"\n\n{load_inventory_business_rules()}"
             ),
         },
         {
@@ -237,6 +238,7 @@ def health() -> dict[str, Any]:
         "model_provider": "deepseek",
         "model_name": model,
         "context_policy_version": CONTEXT_POLICY_VERSION,
+        "business_rules_version": BUSINESS_RULES_VERSION,
         "tool_count": len(tool_manifest()),
     }
 
@@ -247,6 +249,7 @@ def tools(request: Request) -> dict[str, Any]:
     return {
         "agent": "local-inventory-agent",
         "context_policy_version": CONTEXT_POLICY_VERSION,
+        "business_rules_version": BUSINESS_RULES_VERSION,
         "tools": tool_manifest(),
     }
 
