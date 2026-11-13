@@ -1,6 +1,7 @@
 <template>
   <div class="table-wrap">
     <el-table :data="rows" border :span-method="span" :row-class-name="rowClass" :max-height="460" empty-text="所选机房暂无可核对的传输综合柜">
+      <el-table-column column-key="group-index" label="序号" width="64" align="center" fixed="left"><template #default="{$index}">{{Math.floor($index / systems.length) + 1}}</template></el-table-column>
       <el-table-column column-key="key" label="机柜资源 / 柜位" min-width="210"><template #default="{row}">{{row.group.resource_name}}<div class="muted">{{row.group.room_name}}</div></template></el-table-column>
       <el-table-column prop="system" label="系统" width="90" />
       <el-table-column label="机柜资产条码" min-width="190"><template #default="{row}"><div class="value" :class="{different:row.system!=='综资' && row.group.barcode_status==='不一致'}">{{barcode(row.group,row.system)}}</div></template></el-table-column>
@@ -22,7 +23,7 @@ import type {CabinetComparison} from '../threeWay';
 const props=defineProps<{groups:CabinetComparison[]}>();
 const rows=computed(()=>props.groups.flatMap(group=>systems.map(system=>({group,system}))));
 function span({rowIndex,column}:{rowIndex:number;column:{columnKey:string}}) {
-  return ['key','result'].includes(column.columnKey) ? rowIndex%3===0?[3,1]:[0,0] : [1,1];
+  return ['group-index','key','result'].includes(column.columnKey) ? rowIndex%3===0?[3,1]:[0,0] : [1,1];
 }
 function rowClass({rowIndex}:{rowIndex:number}) {return Math.floor(rowIndex/3)%2?'cabinet-alt':'cabinet-base';}
 function barcode(g:CabinetComparison,system:string) {

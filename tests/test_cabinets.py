@@ -127,6 +127,41 @@ class CabinetRecordTests(unittest.TestCase):
         self.assertTrue(any("IODF" in message and "设备1" in message for message in result["warnings"]))
         self.assertTrue(any("传输综合柜" in message for message in result["warnings"]))
 
+    def test_multicabinet_feedback_does_not_guess_barcode_position_pairs(self):
+        with database.get_conn() as conn:
+            second = conn.execute(
+                "INSERT INTO scan_records(task_id,device_name,expected_model) VALUES(?,'单柜设备','M')",
+                (self.task_id,),
+            ).lastrowid
+        database.submit_scan(second, "ASSET-2", False, "CAB1", False, "AA01A", "M", "", self.worker_id)
+        for positions in ("AA01A、AA02A", "AA01A,AA02A", "AA01A；AA02A\nAA03A"):
+            with self.subTest(positions=positions):
+                database.submit_scan(self.record_id, "ASSET-1", False, "CAB1,CAB2", False,
+                                     positions, "M", "", self.worker_id)
+                self.assertEqual(database.get_collection_warnings(self.task_id, record_id=self.record_id), [])
+                self.assertEqual(database.get_collection_warnings(self.task_id, record_id=second), [])
+        database.submit_scan(self.record_id, "ASSET-1", False, "CAB1,CAB2", False,
+                             "AA01A", "M", "", self.worker_id)
+        self.assertTrue(any("同一柜位 AA01A 对应不同机柜条码" in warning
+                            for warning in database.get_collection_warnings(self.task_id, record_id=self.record_id)))
+
+    def test_multicabinet_feedback_keeps_device_and_cross_type_barcode_conflicts(self):
+        rack, _ = database.create_cabinet(self.task_id, "iodf", "RACK1", False, "ODF-A01", "", self.worker_id)
+        database.submit_scan(self.record_id, "DUPLICATE", False, "RACK1,CAB2", False,
+                             "AA01A、AA02A", "M", "", self.worker_id)
+        with database.get_conn() as conn:
+            second = conn.execute(
+                "INSERT INTO scan_records(task_id,device_name,expected_model) VALUES(?,'设备2','M')",
+                (self.task_id,),
+            ).lastrowid
+        database.submit_scan(second, "DUPLICATE", False, "CAB2", False, "AA02A", "M", "", self.worker_id)
+        warnings = database.get_collection_warnings(self.task_id, record_id=self.record_id)
+        self.assertTrue(any("条码 DUPLICATE 重复使用" in warning for warning in warnings))
+        self.assertTrue(any("IODF" in warning and "RACK1" in warning for warning in warnings))
+        self.assertFalse(any("同一柜位" in warning or "同一机柜条码" in warning for warning in warnings))
+        self.assertTrue(any("传输综合柜" in warning
+                            for warning in database.get_collection_warnings(self.task_id, cabinet_id=rack["id"])))
+
     def test_admin_rack_changes_after_completion_are_effective_and_audited(self):
         admin = database.create_user("rack-admin", "管理员", "admin")["id"]
         rack, _ = database.create_cabinet(self.task_id, "odf", "OLD", False, "A01", "", self.worker_id)
@@ -276,6 +311,30 @@ class CabinetRecordTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"完成锁定"):
             database.delete_task_rack(self.task_id,rack["id"],self.worker_id)
         self.assertEqual(len(database.get_task_cabinets(self.task_id)),1)
+
+    def test_field_cannot_delete_admin_corrected_or_supplemented_racks(self):
+        admin = database.create_user("rack-delete-admin", "管理员", "admin")["id"]
+        rack, _ = database.create_cabinet(self.task_id, "odf", "OLD", False, "AA01A", "", self.worker_id)
+        values = dict(cabinet_type="odf", cabinet_barcode="CORRECTED", no_barcode=False,
+                      rack_no="AA02A", correction_reason="核实更正")
+        corrected = database.save_admin_rack(self.task_id, values, admin, rack["id"])
+        supplemented = database.save_admin_rack(self.task_id, {
+            **values, "cabinet_type": "iodf", "cabinet_barcode": "SUPPLEMENTED", "rack_no": "AA03A",
+        }, admin)
+        worker = database.get_user_by_id(self.worker_id)
+        for current in (corrected, supplemented):
+            with self.subTest(rack_id=current["id"]):
+                with self.assertRaises(HTTPException) as caught:
+                    main.api_delete_task_rack(self.task_id, current["id"], worker)
+                self.assertEqual(caught.exception.status_code, 400)
+                self.assertIn("管理员", caught.exception.detail)
+        self.assertEqual({item["id"] for item in database.get_task_cabinets(self.task_id)},
+                         {corrected["id"], supplemented["id"]})
+        self.assertFalse(any(item["action"] == "cabinet.delete" for item in database.get_audit_logs()))
+        for current in (corrected, supplemented):
+            self.assertTrue(database.void_capture_record("cabinet_records", current["id"], admin,
+                                                        "管理员核实作废", self.task_id))
+        self.assertEqual(database.get_task_cabinets(self.task_id), [])
 
     def test_delete_cannot_remove_device_cabinet(self):
         database.submit_scan(self.record_id,"ASSET-1",False,"CAB-1",False,"A01","MODEL-A","",self.worker_id)

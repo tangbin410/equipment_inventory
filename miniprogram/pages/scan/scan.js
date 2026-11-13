@@ -532,7 +532,7 @@ Page({
     if (this.data.taskLocked || this.data.submitting || this.data.loading) return;
     const id = Number(e.currentTarget.dataset.id);
     const cabinet = this.data.cabinetRecords.find((item) => item.id === id);
-    if (!cabinet) return;
+    if (!cabinet || cabinet.has_admin_correction) return;
     wx.showModal({
       title: "删除误录机架",
       content: `确认删除 ${cabinet.cabinet_type_label} ${cabinet.rack_no || cabinet.cabinet_name}（条码：${cabinet.cabinet_barcode || '无条码'}）？后台会同步移除本次登记，删除后可重新录入。`,

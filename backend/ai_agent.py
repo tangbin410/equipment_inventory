@@ -111,6 +111,7 @@ def build_inventory_rows(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "领取时间": task.get("assigned_at") or task.get("claimed_at") or "",
                 "现场完成时间": task.get("field_completed_at") or task.get("completed_at") or "",
                 "设备名称": record.get("device_name") or "",
+                "设备类别": record.get("device_category") or device_extra_value(record, "设备类别") or device_extra_value(record, "网元类型"),
                 "清单设备型号": record.get("expected_model") or "",
                 "清单资产条码": record.get("expected_barcode") or "",
                 "清单设备机架": record["expected_rack_no"] if "expected_rack_no" in record else device_extra_value(record, "设备机架"),
@@ -124,6 +125,10 @@ def build_inventory_rows(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "盘点时间": record.get("scanned_at") or "",
                 "盘亏原因": record.get("missing_reason") or "",
                 "现场备注": record.get("notes") or "",
+                "拼销状态": (record.get("pairing") or {}).get("status", ""),
+                "拼销来源机房": (record.get("pairing") or {}).get("source_room_name", ""),
+                "拼销去向机房": (record.get("pairing") or {}).get("target_room_name", ""),
+                "拼销依据": (record.get("pairing") or {}).get("note", ""),
             })
     return rows
 
@@ -148,6 +153,7 @@ def desensitize_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], 
             "导入批次": map_batch,
             "任务名称": map_task,
             "机房名称": map_room,
+            "拼销来源机房": map_room, "拼销去向机房": map_room,
             "片区": map_area,
             "领取人": map_user,
             "设备名称": map_device,
@@ -169,6 +175,8 @@ def desensitize_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], 
                     if masked_code and original_code:
                         sensitive_maps[field][masked_code] = original_code
         item["现场备注"] = _mask_free_text(item.get("现场备注") or "")
+        # 确认依据只供管理员留档和导出，避免自由文字把实物身份带入外部分析。
+        item.pop("拼销依据", None)
         result.append(item)
     return result, dict(sensitive_maps)
 

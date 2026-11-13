@@ -7,7 +7,7 @@ import re
 from collections import defaultdict
 from datetime import datetime
 from uuid import uuid4
-from . import database as db
+from . import database as db, inventory_pairing
 
 SYSTEMS = ("资产", "综资", "现场")
 STATES = ("待判断", "一致", "不一致", "无法确认")
@@ -360,6 +360,50 @@ def rack_comparison(conn, tasks, assets):
     return result
 
 
+def _paired_sources(conn, tasks, resources, fields, missing):
+    """拼销只派生当前视图，原采集和原综资记录继续保留。"""
+    task_map = {task["id"]: task for task in tasks}
+    notices, outgoing_names, stale = [], set(), {}
+    for pair in inventory_pairing.get_active_pairs(conn):
+        before, found = pair["missing"], pair["surplus"]
+        if not any(row and row["task_id"] in task_map for row in (before, found)):
+            continue
+        meta = inventory_pairing._metadata(pair)
+        notices.append(meta)
+        if not pair["valid"]:
+            for record_id in (pair["missing_record_id"], pair["surplus_record_id"]):
+                stale[record_id] = meta
+            continue
+        source_id, target_id = before["task_id"], found["task_id"]
+        resources = [row for row in resources if not (row["task_id"] == source_id and row.get("record_id") == before["id"])]
+        fields = [row for row in fields if row.get("record_id") not in (before["id"], found["id"])]
+        missing.discard((source_id, before["id"]))
+        if pair["cross_room"]:
+            outgoing_names.add((text(before.get("resource_location_code") or before["room_code"]), before["device_name"]))
+        if target_id not in task_map:
+            continue
+        task = task_map[target_id]
+        # 跨机房仍引用迁出机房的综资，不能把确认拼销当成已完成调拨。
+        resource = source_row("综资", before["expected_barcode"], before["device_name"],
+                              before.get("resource_location_code") or before["room_code"],
+                              before["expected_model"], task, found["id"], before.get("expected_rack_no"))
+        field = source_row("现场", "" if found["asset_no_barcode"] else found["asset_barcodes"],
+                           before["device_name"], task["room_code"], found["actual_model"], task, found["id"], found["rack_no"])
+        for row in (resource, field):
+            row.update(entity_id=f"pair:{pair['id']}", inventory_pairing=meta)
+        resource["source_label"] = "拼销综资参考" + (f"（{before['room_name']}）" if pair["cross_room"] else "")
+        field.update(barcode_state="现场无条码" if found["asset_no_barcode"] else "已采集" if field["barcode"] else "未填写",
+                     cabinet_barcodes=found.get("cabinet_barcodes") or "", cabinet_no_barcode=bool(found.get("cabinet_no_barcode")),
+                     record_type="normal", source_label="拼销后的现场反馈", revision_id=found.get("latest_correction_id") or 0,
+                     updated_at=found.get("corrected_at") or found.get("scanned_at"))
+        resources.append(resource)
+        fields.append(field)
+    for row in resources + fields:
+        if row.get("record_id") in stale:
+            row["inventory_pairing"] = stale[row["record_id"]]
+    return resources, fields, notices, outgoing_names
+
+
 def build(conn, task_ids):
     tasks = selected_tasks(conn, task_ids)
     asset_status = db.get_asset_info_status(conn)
@@ -441,7 +485,8 @@ def build(conn, task_ids):
                        revision_id=r.get("latest_correction_id") or 0, updated_at=r.get("corrected_at") or r.get("scanned_at"),
                        actor_id=r.get("corrected_by") or r.get("created_by"), original_model=r.get("original_actual_model"), original_barcode=r.get("original_asset_barcodes"))
             fields.append(row)
-    device_names = {(r["location_code"], r["name"]) for r in resources if r["name"]}
+    resources, fields, inventory_pairs, outgoing_names = _paired_sources(conn, tasks, resources, fields, missing)
+    device_names = {(r["location_code"], r["name"]) for r in resources if r["name"]} | outgoing_names
     for asset in assets.values():
         asset["rack_type"] = asset["rack_type"] or known_racks.get((asset["location_code"], asset["name"]), "")
         # 部分网元资产名称也叫“传输综合柜”；同地点的网元名称已对应时仍属于设备。
@@ -451,7 +496,7 @@ def build(conn, task_ids):
     scoped_assets = list(assets.values())
     unlinked_assets = [a for a in scoped_assets if a["entity_kind"] == "unlinked"]
     racks = rack_comparison(conn, tasks, assets)
-    cabinets = equipment_cabinet_comparison(tasks, resources, fields, assets)
+    cabinets = equipment_cabinet_comparison(tasks, [r for r in resources if not r.get("inventory_pairing", {}).get("cross_room")], fields, assets)
     stage_one = resource_field_comparison(resources, fields, missing)
     # 网元是业务关联键，记录 ID 保证同名网元不会被静默合并。
     assets_by_name = defaultdict(list)
@@ -473,7 +518,9 @@ def build(conn, task_ids):
         if key in used_group_keys:
             key += f":duplicate:{index}"
         used_group_keys.add(key)
-        matches = assets_by_name.get((resource["location_code"], resource["name"]), []) if resource and resource["name"] else []
+        match_code = (next(t["room_code"] for t in tasks if t["id"] == resource["task_id"])
+                      if resource and resource.get("inventory_pairing", {}).get("cross_room") else resource["location_code"] if resource else "")
+        matches = assets_by_name.get((match_code, resource["name"]), []) if resource and resource["name"] else []
         if matches:
             used_assets.update(a["barcode"] for a in matches)
         related = {"资产": matches, "综资": [resource] if resource else [], "现场": feedback}
@@ -491,7 +538,7 @@ def build(conn, task_ids):
     # 所选机房内资产表独有的资源仍需报管理员；其他机房资产不进入本轮。
     asset_only = defaultdict(list)
     for asset in scoped_assets:
-        if asset["entity_kind"] == "device" and asset["barcode"] not in used_assets:
+        if asset["entity_kind"] == "device" and asset["barcode"] not in used_assets and (asset["location_code"], asset["name"]) not in outgoing_names:
             asset_only[(asset["location_code"], asset["name"])].append(asset)
     for matches in asset_only.values():
         groups.append(dict(group_key=f"{batch}:asset:{matches[0]['barcode']}", barcode="、".join(a["barcode"] for a in matches), manual=False,
@@ -515,6 +562,7 @@ def build(conn, task_ids):
     for g in groups:
         rows = g["sources"]
         all_rows = {s: source_records(g, s) for s in SYSTEMS}
+        g["inventory_pairing"] = next((r["inventory_pairing"] for s in SYSTEMS for r in all_rows[s] if r.get("inventory_pairing")), None)
         entities = [source_entity(s, r) for s in SYSTEMS for r in all_rows[s]]
         full_generations = {entity: changes.get((entity, "full"), 0) for entity in entities}
         model_generations = {entity: changes.get((entity, "model"), 0) for entity in entities}
@@ -652,12 +700,20 @@ def build(conn, task_ids):
             pair["group_key"] = g["group_key"]
         if g["manual"] and g["pending_association"]:
             g["problems"].append("已有设备反馈缺少资产条码，待补录后关联")
+        pairing_meta = g["inventory_pairing"]
+        if pairing_meta and pairing_meta["role"] == "stale":
+            g["problems"].insert(0, "拼销来源已变化，待重新核实：" + pairing_meta["invalid_reason"])
+        elif pairing_meta and pairing_meta["cross_room"]:
+            g["problems"].insert(0, f"待跨机房调拨：{pairing_meta['source_room_name']} → {pairing_meta['target_room_name']}，综资及资产仍需办理调拨")
         g["consistent"] = not warnings and not g["problems"]
         g["can_create_adjustment"] = not warnings and any(("不一致" in p or "未找到" in p or "缺失" in p or "无资产条码" in p) and "待判断" not in p for p in g["problems"])
         if g["manual"] and g["manual_decision"]:
             g["can_create_adjustment"] = not warnings and any(status == "不一致" for values in g["checks"].values() for status in values.values())
+        if pairing_meta:
+            g["can_create_adjustment"] = False
     return dict(tasks=tasks, stage_one=stage_one, groups=groups, issues=groups, warnings=warnings, asset_version=asset_status,
                 rack_comparison=racks, cabinet_comparison=cabinets, unlinked_assets=unlinked_assets, scoped_assets=scoped_assets,
+                inventory_pairings=inventory_pairs,
                 asset_counts=dict(total=len(scoped_assets),
                                   named=sum(bool(a["name"]) for a in scoped_assets),
                                   resource_names=len({(a["location_code"], a["name"]) for a in scoped_assets if a["name"]}),
@@ -707,6 +763,7 @@ def _read_scope(conn, task_ids, completed_only=False):
     result = {key: [row for part in parts for row in part[key]]
               for key in ("tasks", "stage_one", "groups", "rack_comparison", "cabinet_comparison", "unlinked_assets", "scoped_assets")}
     result["issues"] = result["groups"]
+    result["inventory_pairings"] = list({pair["id"]: pair for part in parts for pair in part["inventory_pairings"]}.values())
     result["warnings"] = list(dict.fromkeys(warning for part in parts for warning in part["warnings"]))
     result["asset_version"] = parts[0]["asset_version"]
     assets = result["scoped_assets"]
@@ -951,6 +1008,8 @@ def create_case(task_ids, group_key, expected, actor, confirmation=None):
     try:
         conn.execute("BEGIN IMMEDIATE")
         g = find_group(conn, task_ids, group_key, expected)
+        if g.get("inventory_pairing"):
+            raise ValueError("该设备已有拼销记录，请先撤销拼销并核实，再单独转整改")
         if g.get("case") and g["case"]["status"] != "done":
             raise ValueError(f"本条资产已有整改单 #{g['case']['id']}，请继续处理现有工单")
         if not g["can_create_adjustment"] and not confirmation:

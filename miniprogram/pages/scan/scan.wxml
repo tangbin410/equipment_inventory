@@ -338,7 +338,7 @@
         <view class="cabinet-record-main">
           <text class="tag tag-cabinet">{{item.cabinet_type_label}}</text>
           <text class="cabinet-record-code">{{item.cabinet_barcode || item.cabinet_name || '无编号'}}</text>
-          <button wx:if="{{!taskLocked}}" class="btn-small cabinet-delete" bindtap="deleteCabinet" data-id="{{item.id}}" loading="{{deletingCabinetId == item.id}}" disabled="{{loading || submitting}}">删除</button>
+          <button wx:if="{{!taskLocked && !item.has_admin_correction}}" class="btn-small cabinet-delete" bindtap="deleteCabinet" data-id="{{item.id}}" loading="{{deletingCabinetId == item.id}}" disabled="{{loading || submitting}}">删除</button>
         </view>
         <text class="cabinet-record-meta">资源名称 {{item.rack_no || item.cabinet_name || '未填写'}} · {{item.source_label}}</text>
       </view>

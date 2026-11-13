@@ -1,0 +1,22 @@
+services:
+  inventory:
+    image: equipment-inventory:2026.11.12
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env.runtime
+    ports:
+      - "127.0.0.1:8080:8000"
+    volumes:
+      - inventory-data:/app/data
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  inventory-data:

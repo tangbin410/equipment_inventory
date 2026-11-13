@@ -1,5 +1,5 @@
 <template>
-  <PageHeader :icon="DataAnalysis" title="资产盘点数据" desc="查询现场原始反馈、管理员修正值并导出当前有效数据" />
+  <PageHeader :icon="DataAnalysis" title="盘点数据" desc="查询现场原始反馈、管理员修正值并导出当前有效数据" />
 
   <div class="toolbar">
     <el-form-item class="span-2" label="查询字段">
@@ -39,9 +39,10 @@
       <div class="metric-card"><div class="metric-label">进度</div><div class="metric-value">{{ scannedCount }}/{{ totalCount }}</div></div>
     </div>
 
-    <SectionTitle :icon="DocumentChecked" title="资产盘点数据" />
+    <SectionTitle :icon="DocumentChecked" title="盘点数据" />
     <div class="table-wrap">
       <el-table class="report-table report-device-table" border table-layout="fixed" :header-cell-style="{ textAlign: 'center' }" :data="rows.slice(0, 500)" height="420">
+        <el-table-column type="index" label="序号" width="64" align="center" fixed="left" />
         <el-table-column prop="机房名称" label="机房" width="200">
           <template #default="{ row }">
             <el-tooltip :content="String(row['机房名称'] || '')" placement="top" :show-after="300">
@@ -49,11 +50,16 @@
             </el-tooltip>
           </template>
         </el-table-column>
+        <el-table-column prop="设备类别" label="设备类别" width="112" show-overflow-tooltip>
+          <template #default="{ row }">{{ row['设备类别'] || '-' }}</template>
+        </el-table-column>
         <el-table-column prop="设备名称" label="设备" width="240">
           <template #default="{ row }">
             <el-tooltip :content="String(row['设备名称'] || '')" placement="top" :show-after="300">
               <span class="report-name">{{ row['设备名称'] }}</span>
             </el-tooltip>
+            <span v-if="row.__record.pairing?.role === 'outbound'" class="report-pairing-note">已迁出至 {{ row.__record.pairing.target_room_name }}</span>
+            <span v-else-if="row.__record.pairing?.role === 'stale'" class="report-pairing-note">拼销来源已变化，请重新核实</span>
           </template>
         </el-table-column>
         <el-table-column label="现场实物" align="center">
@@ -94,18 +100,25 @@
         <el-table-column label="操作" fixed="right" width="132">
           <template #default="{ row }">
             <div class="report-row-actions">
-              <el-button
-                size="small"
-                type="primary"
-                :disabled="row.__record.match_status === '未扫'"
-                @click="openCorrection(row.__record)"
-              >修正现场反馈</el-button>
-              <el-tooltip v-if="permissions.updateBaseline" :content="resourceEditHint(row.__record)" placement="left" :show-after="300">
+              <el-tooltip :disabled="!row.__record.pairing" content="已拼销记录请先撤销拼销，再修正原始反馈" placement="left" :show-after="300">
+                <span class="report-action-trigger"><el-button
+                  size="small"
+                  type="primary"
+                  :disabled="row.__record.match_status === '未扫' || Boolean(row.__record.pairing)"
+                  @click="openCorrection(row.__record)"
+                >修正现场反馈</el-button></span>
+              </el-tooltip>
+              <el-tooltip v-if="permissions.updateBaseline && isPairingRecord(row.__record)" :content="pairingHint(row.__record)" placement="left" :show-after="300">
+                <span class="report-action-trigger">
+                  <el-button size="small" :disabled="!canOpenPairing(row.__record)" @click="openPairing(row.__record)">{{ row.__record.pairing ? '拼销记录' : '拼销' }}</el-button>
+                </span>
+              </el-tooltip>
+              <el-tooltip v-else-if="permissions.updateBaseline" :content="resourceEditHint(row.__record)" placement="left" :show-after="300">
                 <span class="report-action-trigger">
                   <el-button size="small" :disabled="!canEditResource(row.__record)" @click="openResourceCorrection(row.__record)">修改综资</el-button>
                 </span>
               </el-tooltip>
-              <el-tooltip :content="canCreateAdjustment(row.__record) ? '人工确认问题后加入整改台账，后续审核、下发' : '请待现场确认整个任务完成后再转整改'" placement="left" :show-after="300">
+              <el-tooltip :content="row.__record.pairing ? '已拼销记录请先撤销拼销，再单独转整改' : canCreateAdjustment(row.__record) ? '人工确认问题后加入整改台账，后续审核、下发' : '请待现场确认整个任务完成后再转整改'" placement="left" :show-after="300">
                 <span class="report-action-trigger">
             <el-button v-if="permissions.writeGovernance" size="small" type="warning" :disabled="!canCreateAdjustment(row.__record)" @click="openAdjustment(row.__record)">转整改</el-button>
                 </span>
@@ -119,6 +132,7 @@
     <SectionTitle :icon="DocumentChecked" title="传输综合柜（随设备盘点）" />
     <div v-if="equipmentCabinetRows.length" class="table-wrap">
       <el-table class="report-table" border table-layout="fixed" :data="equipmentCabinetRows.slice(0, 500)" height="300">
+        <el-table-column type="index" label="序号" width="64" align="center" fixed="left" />
         <el-table-column prop="机房名称" label="机房" min-width="220" show-overflow-tooltip />
         <el-table-column prop="机柜条码" label="机柜资产条码" width="182" class-name="report-barcode-cell" show-overflow-tooltip />
         <el-table-column prop="机架编号" label="设备机柜位" width="110" show-overflow-tooltip />
@@ -135,6 +149,7 @@
     </div>
     <div v-if="rackRows.length" class="table-wrap">
       <el-table class="report-table" border table-layout="fixed" :data="rackRows.slice(0, 500)" height="300">
+        <el-table-column type="index" label="序号" width="64" align="center" fixed="left" />
         <el-table-column prop="机房名称" label="机房" min-width="220" show-overflow-tooltip />
         <el-table-column prop="机柜类型" label="机架类型" width="90" />
         <el-table-column prop="机架编号" label="资源名称 / 机架编号" min-width="190" show-overflow-tooltip />
@@ -161,6 +176,7 @@
       <div class="table-wrap compact">
         <el-table border table-layout="auto" :data="candidates" height="360" @selection-change="onSelectionChange">
           <el-table-column type="selection" width="48" />
+          <el-table-column type="index" label="序号" width="64" align="center" />
           <el-table-column prop="room_name" label="机房" min-width="280" show-overflow-tooltip />
           <el-table-column prop="import_batch_id" label="导入批次" min-width="215" show-overflow-tooltip />
           <el-table-column prop="area_name" label="片区" min-width="100" />
@@ -203,17 +219,19 @@
     @saved="handleCorrectionSaved"
   />
   <ResourceCorrectionDialog v-if="permissions.updateBaseline" v-model="resourceDialogVisible" :record="resourceRecord" @saved="refreshSelectedTasks" />
+  <InventoryPairingDialog v-if="permissions.updateBaseline" v-model="pairingDialogVisible" :record="pairingRecord" @saved="refreshSelectedTasks" />
   <RecordAdjustmentDialog v-if="permissions.writeGovernance" v-model="adjustmentDialogVisible" :record="adjustmentRecord" />
   <RackCorrectionDialog v-model="rackDialogVisible" :rack="rackToCorrect" :tasks="selectedTasks" @saved="refreshSelectedTasks" />
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { DataAnalysis, DocumentChecked, Download } from "@element-plus/icons-vue";
 import PageHeader from "../components/PageHeader.vue";
 import RecordCorrectionDialog from "../components/RecordCorrectionDialog.vue";
 import ResourceCorrectionDialog from "../components/ResourceCorrectionDialog.vue";
+import InventoryPairingDialog from "../components/InventoryPairingDialog.vue";
 import RecordAdjustmentDialog from "../components/RecordAdjustmentDialog.vue";
 import RackCorrectionDialog from "../components/RackCorrectionDialog.vue";
 import SectionTitle from "../components/SectionTitle.vue";
@@ -221,6 +239,8 @@ import { apiDelete, apiGet, downloadBlob } from "../api";
 import type { AssetInfoLookupItem, AssetInfoQueryResult, CabinetRecord, Task, TaskRecord } from "../types";
 import { formatTime, inventoryDisplayColumns, inventoryRows, taskStage } from "../utils";
 import { permissions } from "../permissions";
+import {isPairingRecord} from '../inventoryPairing';
+import {latestCompletedRooms} from '../comparisonSelection';
 
 const summary = ref<Task[]>([]);
 const resultDialogVisible = ref(false);
@@ -232,12 +252,16 @@ const correctionDialogVisible = ref(false);
 const correctionRecord = ref<TaskRecord | null>(null);
 const resourceDialogVisible = ref(false);
 const resourceRecord = ref<TaskRecord | null>(null);
+const pairingDialogVisible = ref(false);
+const pairingRecord = ref<TaskRecord | null>(null);
 const adjustmentDialogVisible = ref(false);
 const adjustmentRecord = ref<TaskRecord | null>(null);
 const rackDialogVisible = ref(false);
 const rackToCorrect = ref<CabinetRecord | null>(null);
 const voidingRackId = ref<CabinetRecord["id"] | null>(null);
 const assetInfoDialog = ref({ open: false, loading: false, results: [] as AssetInfoLookupItem[] });
+let assetInfoSequence = 0;
+watch(() => assetInfoDialog.value.open, open => { if (!open) assetInfoSequence += 1; }, { flush: 'sync' });
 
 const queryOptions = [
   { label: "全部查询", value: "__all__" },
@@ -277,7 +301,8 @@ const displayColumns = inventoryDisplayColumns.map(({ minWidth, ...column }) => 
   label: reportColumnLabels[column.prop] || column.label,
   width: reportColumnWidths[column.prop] || minWidth,
 }));
-const inventoryRecords = computed(() => selectedTasks.value.flatMap((task) => task.records || []).filter((record) => (record.record_type || "normal") !== "surplus"));
+const inventoryRecords = computed(() => selectedTasks.value.flatMap((task) => task.records || []).filter((record) => (record.record_type || "normal") !== "surplus" && record.pairing?.role !== 'outbound'));
+const latestCompletedIds = computed(() => new Set(latestCompletedRooms(summary.value.map(task => ({...task, room_code:task.room_code || '', import_batch_id:task.import_batch_id || '', area_name:task.area_name || ''}))).map(task => task.id)));
 const totalCount = computed(() => inventoryRecords.value.length);
 const scannedCount = computed(() => inventoryRecords.value.filter((record: TaskRecord) => record.match_status !== "未扫").length);
 const pendingCount = computed(() => inventoryRecords.value.filter((record: TaskRecord) => record.match_status === "未扫").length);
@@ -325,6 +350,8 @@ function statusTag(status: string) {
 }
 
 function recordResultTag(result: string) {
+  if (result.includes('待调拨') || result.includes('待复核')) return 'warning';
+  if (result.includes('拼销')) return 'info';
   if (result === "正常盘到") return "success";
   if (result === "现场未找到") return "danger";
   if (result === "现场新增") return "warning";
@@ -349,17 +376,22 @@ function hasQueryableBarcode(value: unknown) {
 async function queryAssetBarcode(value: unknown) {
   const barcodes = barcodeParts(value);
   if (!barcodes.length) return;
+  const sequence = ++assetInfoSequence;
   assetInfoDialog.value = { open: true, loading: true, results: [] };
   const results: AssetInfoLookupItem[] = [];
   for (const barcode of barcodes) {
     try {
       const result = await apiGet<AssetInfoQueryResult & { found: boolean }>("/asset-info/query", { params: { barcode } });
+      if (sequence !== assetInfoSequence) return;
       results.push({ barcode, found: result.found, fields: result.fields || {} });
     } catch {
+      if (sequence !== assetInfoSequence) return;
       results.push({ barcode, found: false, fields: {} });
     }
   }
-  assetInfoDialog.value = { open: true, loading: false, results };
+  if (sequence !== assetInfoSequence) return;
+  assetInfoDialog.value.loading = false;
+  assetInfoDialog.value.results = results;
 }
 
 async function loadSummary() {
@@ -367,16 +399,33 @@ async function loadSummary() {
 }
 
 function openCorrection(record: TaskRecord) {
+  if (record.pairing) return;
   correctionRecord.value = record;
   correctionDialogVisible.value = true;
 }
 
 function canCreateAdjustment(record: TaskRecord) {
-  return selectedTasks.value.some((task) => task.status === "done" && (task.records || []).some((item) => item.id === record.id));
+  return !record.pairing && selectedTasks.value.some((task) => task.status === "done" && (task.records || []).some((item) => item.id === record.id));
 }
 
 function canEditResource(record: TaskRecord) {
-  return permissions.value.updateBaseline && record.record_type !== "surplus" && record.resource_editable !== false && canCreateAdjustment(record);
+  return permissions.value.updateBaseline && (record.record_type || 'normal') === 'normal' && record.resource_editable !== false && canCreateAdjustment(record);
+}
+
+function canOpenPairing(record: TaskRecord) {
+  if (record.pairing) return true;
+  return selectedTasks.value.some(task => task.status === 'done' && latestCompletedIds.value.has(task.id) && !task.superseded_by_task_id && !task.waiting_for_task_id && task.records?.some(item => item.id === record.id));
+}
+
+function pairingHint(record: TaskRecord) {
+  if (record.pairing) return '查看拼销双方、确认依据，或撤销本次拼销';
+  return canOpenPairing(record) ? '筛选另一侧的盘亏或盘盈记录，人工确认是否为同一设备' : '仅机房最近一次已完成盘点可拼销';
+}
+
+function openPairing(record: TaskRecord) {
+  if (!canOpenPairing(record)) return;
+  pairingRecord.value = record;
+  pairingDialogVisible.value = true;
 }
 
 function resourceEditHint(record: TaskRecord) {
@@ -400,7 +449,7 @@ function openAdjustment(record: TaskRecord) {
 async function handleCorrectionSaved(payload: { record: TaskRecord; relatedAdjustmentIds: number[] }) {
   await refreshSelectedTasks();
   if (payload.relatedAdjustmentIds.length) {
-    ElMessage.warning(`该记录关联整改任务 #${payload.relatedAdjustmentIds.join("、#")}，请到整改闭环台账重新复核。`);
+    ElMessage.warning(`该记录关联整改任务 #${payload.relatedAdjustmentIds.join("、#")}，请到整改台账重新复核。`);
   }
 }
 
@@ -466,9 +515,12 @@ async function downloadData() {
 }
 
 onMounted(loadSummary);
+onBeforeUnmount(() => { assetInfoSequence += 1; });
 </script>
 
 <style scoped>
+.report-pairing-note {display:block;margin-top:5px;color:var(--muted);font-size:12px;line-height:1.6;overflow-wrap:anywhere;}
+
 .metric-grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 18px 0; }
 
 .asset-selection-strip {

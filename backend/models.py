@@ -146,6 +146,22 @@ class MissingSubmitRequest(BaseModel):
     notes: str = Field("", description="现场备注")
 
 
+class TaskListExportRequest(BaseModel):
+    task_ids: list[int] = Field(..., min_length=1, max_length=10000)
+
+
+class InventoryPairCreateRequest(BaseModel):
+    missing_record_id: int = Field(..., gt=0)
+    surplus_record_id: int = Field(..., gt=0)
+    missing_fingerprint: str = Field(..., min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
+    surplus_fingerprint: str = Field(..., min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
+    note: str = Field(..., min_length=1, max_length=1000)
+
+
+class InventoryPairCancelRequest(BaseModel):
+    note: str = Field(..., min_length=1, max_length=1000)
+
+
 class AdminRecordCorrectionRequest(BaseModel):
     """PC 管理员修正小程序现场反馈，不覆盖原始记录。"""
     actual_model: str = Field("", max_length=200, description="修正后的现场设备型号")

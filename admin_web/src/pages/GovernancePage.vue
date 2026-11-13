@@ -1,5 +1,5 @@
 <template>
-  <PageHeader :icon="CircleCheck" title="整改闭环台账" desc="确认三方比对问题，审核责任、处理、复核数据并验收闭环" />
+  <PageHeader :icon="CircleCheck" title="整改台账" desc="确认三方比对问题，审核责任、处理、复核数据并验收闭环" />
   <div class="metric-grid"><div v-for="m in metrics" :key="m.label" class="metric-card"><div class="metric-label">{{m.label}}</div><div class="metric-value">{{m.value}}</div></div></div>
   <el-tabs v-model="tab">
     <el-tab-pane label="三方问题待确认" name="candidates">
@@ -54,7 +54,7 @@
   <ComparisonDecisionDialog v-model="decisionOpen" :group="activeGroup" @saved="afterDecision" />
 </template>
 <script setup lang="ts">
-import {computed,onMounted,ref,watch} from 'vue';
+import {computed,onBeforeUnmount,onMounted,ref,watch} from 'vue';
 import {CircleCheck,Tickets} from '@element-plus/icons-vue';
 import {ElMessage,ElMessageBox} from 'element-plus';
 import {apiGet,apiPost} from '../api';
@@ -69,6 +69,7 @@ const tab=ref('candidates'),batch=ref(''),tasks=ref<ComparisonTask[]>([]),candid
 const candidateKeyword=ref(''),keyword=ref(''),status=ref(''),loading=ref(false),saving=ref(false),candidatePage=ref(1),casePage=ref(1),legacyPage=ref(1);
 const candidateOpen=ref(false),caseOpen=ref(false),decisionOpen=ref(false),activeGroup=ref<ComparisonGroup|null>(null),detail=ref<ComparisonCase|null>(null);
 const needsField=ref(false),needsAdmin=ref(true),assignedTo=ref<number>(),actionNote=ref(''),returnField=ref(false),returnAdmin=ref(false);
+let candidateSequence=0,refreshSequence=0;
 const statusLabels:Record<string,string>={pending_review:'待审核',dispatched:'处理中',pending_verify:'待验收',done:'已闭环',rejected:'已驳回'};
 const actionLabels:Record<string,string>={'case.create':'确认问题并建单','case.approve':'审核通过','case.admin_complete':'管理员提交结果','case.field_complete':'现场提交结果','case.reject_review':'审核驳回','case.return':'验收不通过，继续整改','case.verify':'三方一致，验收闭环'};
 const batches=computed(()=>[...new Set(tasks.value.filter(t=>t.status==='done').map(t=>t.import_batch_id))]);
@@ -82,8 +83,25 @@ const metrics=computed(()=>[{label:'本批次待确认',value:candidateRows.valu
 watch([keyword,status],()=>casePage.value=1);
 function caseTag(s:string):'info'|'warning'|'primary'|'success'|'danger' {return s==='done'?'success':s==='rejected'?'info':s==='pending_verify'?'warning':'primary';}
 function responsibility(c:ComparisonCase) {return c.comparison ? c.comparison.needs_field===null?'待审核确认':[c.comparison.needs_field?'现场':'',c.comparison.needs_admin?'管理员':''].filter(Boolean).join('、'):'历史工单';}
-async function loadCandidates() {const ids=tasks.value.filter(t=>t.import_batch_id===batch.value && t.status==='done').map(t=>t.id);candidates.value=ids.length?await apiGet<ComparisonResult>(`/reconciliation?${ids.map(id=>`task_ids=${id}`).join('&')}`):null;candidatePage.value=1;}
-async function refresh() {loading.value=true;try {const data=await Promise.all([apiGet<ComparisonTask[]>('/summary'),apiGet<ComparisonCase[]>('/ai/adjustments'),permissions.value.writeGovernance?apiGet<AdminUser[]>('/workers'):Promise.resolve([])]);tasks.value=data[0];cases.value=data[1];workers.value=data[2];if(!batches.value.includes(batch.value))batch.value=batches.value[0] || '';await loadCandidates();}finally{loading.value=false;}}
+async function loadCandidates() {
+  const sequence=++candidateSequence,selectedBatch=batch.value;
+  const ids=tasks.value.filter(t=>t.import_batch_id===selectedBatch && t.status==='done').map(t=>t.id);
+  candidates.value=null;candidatePage.value=1;
+  if(!ids.length) return;
+  const result=await apiGet<ComparisonResult>(`/reconciliation?${ids.map(id=>`task_ids=${id}`).join('&')}`);
+  if(sequence===candidateSequence && batch.value===selectedBatch) candidates.value=result;
+}
+async function refresh() {
+  const sequence=++refreshSequence;
+  candidateSequence+=1;candidates.value=null;loading.value=true;
+  try {
+    const data=await Promise.all([apiGet<ComparisonTask[]>('/summary'),apiGet<ComparisonCase[]>('/ai/adjustments'),permissions.value.writeGovernance?apiGet<AdminUser[]>('/workers'):Promise.resolve([])]);
+    if(sequence!==refreshSequence) return;
+    tasks.value=data[0];cases.value=data[1];workers.value=data[2];
+    if(!batches.value.includes(batch.value))batch.value=batches.value[0] || '';
+    await loadCandidates();
+  } finally {if(sequence===refreshSequence)loading.value=false;}
+}
 function viewCandidate(g:ComparisonGroup) {activeGroup.value=g;candidateOpen.value=true;}
 async function createCase(g:ComparisonGroup) {try {await ElMessageBox.confirm(g.problems.join('；'),'确认实际问题并建单',{confirmButtonText:'确认建单'});}catch{return;}const r=await apiPost<{item:ComparisonCase}>('/reconciliation/adjustments',{task_ids:g.scope_task_ids,group_key:g.group_key,fingerprint:g.fingerprint});candidateOpen.value=false;await refresh();tab.value='cases';await openCase(r.item.id);}
 async function openCase(id:number) {detail.value=await apiGet<ComparisonCase>(`/reconciliation/cases/${id}`);actionNote.value='';needsField.value=false;needsAdmin.value=true;assignedTo.value=undefined;returnField.value=!!detail.value.comparison?.needs_field;returnAdmin.value=!!detail.value.comparison?.needs_admin;caseOpen.value=true;}
@@ -96,6 +114,7 @@ async function act(action:string) {
   try {const r=await apiPost<{item:ComparisonCase}>(`/reconciliation/cases/${detail.value.id}/${action}`,{note:actionNote.value,needs_field:needsField.value,needs_admin:needsAdmin.value,assigned_to:assignedTo.value,return_field:returnField.value,return_admin:returnAdmin.value});detail.value=r.item;actionNote.value='';ElMessage.success('操作已保存');await refresh();}finally{saving.value=false;}
 }
 onMounted(refresh);
+onBeforeUnmount(()=>{candidateSequence+=1;refreshSequence+=1;});
 </script>
 <style scoped>
 .notice {margin-bottom:14px;}

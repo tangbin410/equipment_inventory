@@ -1,4 +1,5 @@
 import type { AiAnalysisResult, PreviewIssue, Task, TaskRecord } from "./types";
+import {pairingNote, pairingResult, recordDeviceCategory} from './inventoryPairing.ts';
 
 export function formatTime(value?: string): string {
   if (!value) return "-";
@@ -65,6 +66,7 @@ export function inventoryRows(tasks: Task[]) {
         任务状态: taskStage(task),
         现场完成时间: formatTime(task.field_completed_at || task.completed_at),
         设备名称: record.device_name || "",
+        设备类别: recordDeviceCategory(record),
         综资设备型号: record.expected_model || "",
         综资资产条码: record.expected_barcode || "",
         综资机架号: record.expected_rack_no || "",
@@ -76,10 +78,10 @@ export function inventoryRows(tasks: Task[]) {
         现场资产缺条码: record.asset_no_barcode ? "是" : "否",
         现场状态: record.field_status || "正常",
         记录类型: record.record_type || "normal",
-        盘点结论: record.match_status === "未扫" ? "未盘点" : recordTypeText(record.record_type || "normal"),
+        盘点结论: pairingResult(record) || (record.match_status === "未扫" ? "未盘点" : recordTypeText(record.record_type || "normal")),
         盘点时间: formatTime(record.scanned_at),
         盘亏原因: record.missing_reason || "",
-        现场备注: record.notes || "",
+        现场备注: pairingNote(record),
         任务名称: task.task_name || "",
         任务创建时间: formatTime(task.created_at),
         领取时间: formatTime(task.assigned_at || task.claimed_at),

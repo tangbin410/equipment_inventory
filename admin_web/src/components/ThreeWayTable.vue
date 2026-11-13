@@ -1,6 +1,7 @@
 <template>
   <div class="table-wrap">
     <el-table :data="rows" border :span-method="span" :row-class-name="rowClass" empty-text="暂无比对数据，请选择已完成的机房" :max-height="maxHeight">
+      <el-table-column v-if="showIndex" column-key="group-index" label="序号" width="64" align="center" fixed="left"><template #default="{$index}">{{indexOffset + Math.floor($index / systems.length) + 1}}</template></el-table-column>
       <el-table-column column-key="group-key" label="关联键：网元 / 资源名称" min-width="230"><template #default="{row}"><div class="raw-value">{{ keyName(row.group) }}</div></template></el-table-column>
       <el-table-column label="系统" width="110"><template #default="{row}">{{row.system}}</template></el-table-column>
       <el-table-column label="资产条码" min-width="170"><template #default="{row}"><div class="raw-value" :class="{'different': isDifferent(row, 'barcode')}">{{ value(row, 'barcode') }}</div></template></el-table-column>
@@ -27,7 +28,7 @@
 import {computed} from "vue";
 import {systems, statusTag, sourceRecords} from "../threeWay";
 import type {ComparisonGroup, SourceRow} from "../threeWay";
-const props = withDefaults(defineProps<{groups: ComparisonGroup[]; maxHeight?: number; raw?: boolean}>(), {maxHeight: 660, raw: false});
+const props = withDefaults(defineProps<{groups: ComparisonGroup[]; maxHeight?: number; raw?: boolean; showIndex?: boolean; indexOffset?: number}>(), {maxHeight: 660, raw: false, showIndex: false, indexOffset: 0});
 type TableRow = {system: string; group: ComparisonGroup};
 const pairs = [
   {key: '综资现场', name: '综资 ↔ 现场', systems: ['综资', '现场']},
@@ -36,7 +37,7 @@ const pairs = [
 ];
 const rows = computed(() => props.groups.flatMap(group => systems.map(system => ({system, group}))));
 function span({rowIndex, column}: {rowIndex: number; column: {columnKey: string}}) {
-  if (['group-key', 'result', 'actions'].includes(column.columnKey)) return rowIndex % systems.length === 0 ? [systems.length, 1] : [0, 0];
+  if (['group-index', 'group-key', 'result', 'actions'].includes(column.columnKey)) return rowIndex % systems.length === 0 ? [systems.length, 1] : [0, 0];
   return [1, 1];
 }
 function rowClass({rowIndex}: {rowIndex: number}) {return Math.floor(rowIndex / systems.length) % 2 ? 'comparison-group-alt' : 'comparison-group';}

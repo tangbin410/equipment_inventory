@@ -73,11 +73,29 @@
   </section>
 
   <SectionTitle :icon="Tickets" title="任务列表" />
+  <div class="toolbar task-list-toolbar">
+    <el-form-item class="span-2" label="查询字段">
+      <el-select v-model="listQueryField" @change="listQueryText = ''"><el-option label="全部任务" value="__all__" /><el-option v-for="item in queryOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select>
+    </el-form-item>
+    <el-form-item class="span-6" label="查询内容">
+      <el-select v-if="listQueryField === 'area_name'" v-model="listQueryText" placeholder="请选择片区"><el-option v-for="area in areaOptions" :key="area" :label="area" :value="area" /></el-select>
+      <el-select v-else-if="listQueryField === 'field_stage'" v-model="listQueryText" placeholder="请选择现场状态"><el-option v-for="stage in stageOptions" :key="stage" :label="stage" :value="stage" /></el-select>
+      <el-input v-else v-model="listQueryText" :disabled="listQueryField === '__all__'" :placeholder="listQueryField === '__all__' ? '全部任务无需输入' : '输入查询内容，支持模糊查询'" clearable @keyup.enter="queryTaskList" />
+    </el-form-item>
+    <div class="span-4 task-list-actions">
+      <el-button type="primary" :loading="listLoading" @click="queryTaskList">查询</el-button>
+      <el-button @click="resetTaskList">重置</el-button>
+      <el-button :loading="exporting" :disabled="!listHasQueried || listLoading || !filteredTasks.length" @click="exportTaskList"><el-icon><Download /></el-icon>导出查询结果</el-button>
+    </div>
+  </div>
+  <template v-if="listHasQueried">
+  <div class="task-list-count">查询结果 {{ filteredTasks.length }} 个任务</div>
   <div class="table-wrap">
-    <el-table border table-layout="auto" :data="taskRows" height="330">
+    <el-table v-loading="listLoading" border table-layout="auto" :data="pageTaskRows" height="330" empty-text="没有符合查询条件的任务">
+      <el-table-column prop="序号" label="序号" width="64" align="center" fixed="left" />
       <el-table-column prop="机房" label="机房" min-width="190" show-overflow-tooltip />
       <el-table-column prop="片区" label="片区" min-width="90" />
-      <el-table-column prop="批次" label="导入批次" min-width="215" show-overflow-tooltip />
+      <el-table-column prop="导入批次" label="导入批次" min-width="215" show-overflow-tooltip />
       <el-table-column prop="任务名称" label="任务名称" min-width="210" show-overflow-tooltip />
       <el-table-column prop="领取人" label="领取人" min-width="100" />
       <el-table-column label="现场状态" min-width="112">
@@ -92,6 +110,8 @@
       </el-table-column>
     </el-table>
   </div>
+  <el-pagination v-if="filteredTasks.length" v-model:current-page="listPage" :page-size="listPageSize" :total="filteredTasks.length" layout="prev, pager, next" class="task-list-pagination" />
+  </template>
 
   <template v-if="permissions.manageTasks">
   <SectionTitle :icon="Delete" title="作废任务" muted="查询并勾选任务后填写作废原因" />
@@ -150,16 +170,22 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { DataLine, Delete, Tickets, TrendCharts } from "@element-plus/icons-vue";
+import { DataLine, Delete, Download, Tickets, TrendCharts } from "@element-plus/icons-vue";
 import SectionTitle from "../components/SectionTitle.vue";
-import { apiDelete, apiGet } from "../api";
+import { apiDelete, apiGet, apiPost } from "../api";
 import type { Task } from "../types";
-import { formatTime, isOverdue, taskStage } from "../utils";
+import { isOverdue, taskStage } from "../utils";
+import {filterTaskList, taskListRows} from '../taskBoard';
 import { permissions } from "../permissions";
 
 const tasks = ref<Task[]>([]);
+const listQueryField = ref('__all__'), listQueryText = ref('');
+const appliedListField = ref('__all__'), appliedListText = ref('');
+const listPage = ref(1), listPageSize = 20, listLoading = ref(false), exporting = ref(false);
+const listHasQueried = ref(false);
+let listQuerySequence = 0;
 const queried = ref(false);
 const queryField = ref("room_name");
 const queryText = ref("");
@@ -214,19 +240,9 @@ const statusChartItems = computed(() => {
     { label: "超时任务", value: overdueCount.value, className: "overdue" },
   ].map((item) => ({ ...item, percent: Math.round((item.value / total) * 100) }));
 });
-const taskRows = computed(() => tasks.value.map((task) => ({
-  机房: task.room_name,
-  批次: task.import_batch_id || "",
-  片区: task.area_name || "汇聚及核心",
-  任务名称: task.task_name,
-  领取人: task.claimed_name || "-",
-  现场状态: taskStage(task),
-  任务更新: task.replacement_notice || "",
-  进度: `${task.scanned || 0}/${task.total || 0}`,
-  完成率: `${Math.round(((task.scanned || 0) / (task.total || 1)) * 100)}%`,
-  领取时间: formatTime(task.claimed_at),
-  是否超时: isOverdue(task) ? "是" : "否",
-})));
+const filteredTasks = computed(() => listHasQueried.value ? filterTaskList(tasks.value, appliedListField.value, appliedListText.value) : []);
+const taskRows = computed(() => taskListRows(filteredTasks.value));
+const pageTaskRows = computed(() => taskRows.value.slice((listPage.value - 1) * listPageSize, listPage.value * listPageSize));
 
 function countByStatus(status: string) {
   return tasks.value.filter((task) => task.status === status).length;
@@ -251,7 +267,44 @@ function onQueryFieldChange() {
 }
 
 async function loadTasks() {
-  tasks.value = await apiGet<Task[]>("/tasks");
+  listLoading.value = true;
+  try {
+    tasks.value = await apiGet<Task[]>("/tasks");
+    listPage.value = Math.min(listPage.value, Math.max(1, Math.ceil(filteredTasks.value.length / listPageSize)));
+  } finally { listLoading.value = false; }
+}
+
+async function queryTaskList() {
+  if (listLoading.value) return;
+  invalidateTaskList();
+  const field = listQueryField.value, text = listQueryText.value.trim();
+  if (field !== '__all__' && !text) { ElMessage.warning('请输入查询内容后再查询'); return; }
+  const sequence = listQuerySequence;
+  await loadTasks();
+  if (sequence !== listQuerySequence) return;
+  appliedListField.value = field; appliedListText.value = text; listPage.value = 1; listHasQueried.value = true;
+}
+
+function invalidateTaskList() {
+  listQuerySequence += 1; listHasQueried.value = false; listPage.value = 1;
+}
+
+watch([listQueryField, listQueryText], invalidateTaskList, {flush:'sync'});
+
+function resetTaskList() {
+  invalidateTaskList();
+  listQueryField.value = appliedListField.value = '__all__';
+  listQueryText.value = appliedListText.value = ''; listPage.value = 1;
+}
+
+async function exportTaskList() {
+  if (exporting.value || !listHasQueried.value || listLoading.value || !filteredTasks.value.length) return;
+  exporting.value = true;
+  try {
+    const blob = await apiPost<Blob>('/tasks/export', {task_ids: filteredTasks.value.map(task => task.id)}, {responseType:'blob', timeout:60000});
+    const url = URL.createObjectURL(blob), link = document.createElement('a');
+    link.href = url; link.download = '任务列表.xlsx'; link.click(); URL.revokeObjectURL(url);
+  } finally { exporting.value = false; }
 }
 
 function runQuery() {
@@ -287,6 +340,10 @@ defineExpose({ refresh: loadTasks });
 </script>
 
 <style scoped>
+.task-list-actions {display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px;}
+.task-list-actions :deep(.el-button + .el-button) {margin-left:0;}
+.task-list-count {margin:12px 0;color:var(--muted);font-size:13px;}
+.task-list-pagination {justify-content:flex-end;margin:16px 0;}
 .delete-actions { margin-top: 16px; }
 
 .delete-reason {

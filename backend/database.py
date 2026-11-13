@@ -905,6 +905,8 @@ def init_db() -> None:
     normalize_existing_scan_match_status(conn)
     from .three_way import init_schema
     init_schema(conn)
+    from .inventory_pairing import init_schema as init_pairing_schema
+    init_pairing_schema(conn)
     conn.commit()
     conn.close()
     if removed_legacy_scan_columns:
@@ -1916,7 +1918,7 @@ def _assert_no_open_task_cases(conn: sqlite3.Connection, task_id: int) -> None:
         comparison = json.loads(row["comparison_json"] or "{}")
         task_ids = comparison.get("task_ids", []) or json.loads(row["source_task_ids_json"] or "[]")
         if task_id in task_ids:
-            raise ValueError(f"原任务 #{task_id} 关联未闭环整改单 #{row['id']}，请先处理或审核驳回后再更新任务清单")
+            raise ValueError(f"任务 #{task_id} 关联未闭环整改单 #{row['id']}，请先处理或审核驳回后再操作")
 
 
 def _record_manifest_key(record: dict[str, Any]) -> tuple:
@@ -2240,9 +2242,11 @@ def delete_task(task_id: int, reason: str) -> bool:
             "SELECT id FROM tasks WHERE superseded_by_task_id=? AND is_deleted=0 AND status='doing'", (task_id,)
         ).fetchone():
             raise ValueError("该机房正在更新任务清单，请原领取人先释放旧任务并完成结果沿用后再作废")
-        for row in conn.execute("SELECT id,comparison_json FROM ai_adjustment_tasks WHERE comparison_json!='' AND status NOT IN ('done','rejected')"):
-            if task_id in json.loads(row["comparison_json"])["task_ids"]:
-                raise ValueError(f"任务关联未闭环整改单 #{row['id']}，请先处理或审核驳回后再作废")
+        _assert_no_open_task_cases(conn, task_id)
+        if conn.execute("""SELECT p.id FROM inventory_pairs p JOIN scan_records r
+                           ON r.id IN (p.missing_record_id,p.surplus_record_id)
+                           WHERE p.status='active' AND r.task_id=? LIMIT 1""", (task_id,)).fetchone():
+            raise ValueError("任务关联拼销记录，请先撤销拼销后再作废任务")
         conn.execute(
             "UPDATE tasks SET is_deleted = 1, deleted_at = ?, deleted_reason = ? WHERE id = ?",
             (datetime.now().isoformat(), reason.strip(), task_id),
@@ -2780,7 +2784,10 @@ def get_collection_warnings(task_id: int, record_id: int | None = None, cabinet_
             if not record.get("asset_no_barcode"):
                 objects.extend((code, "device", label, "", identity) for code in split_codes(record.get("asset_barcodes") or ""))
             if not record.get("cabinet_no_barcode"):
-                objects.extend((code, "equipment", f"{label}的传输综合柜", _text(record.get("rack_no")), identity) for code in split_codes(record.get("cabinet_barcodes") or ""))
+                positions = {part.strip() for part in re.split(r"[,，、;；\r\n]+", _text(record.get("rack_no"))) if part.strip()}
+                # 多柜位反馈没有条码与位置的一一映射，不能据此判断单柜身份冲突。
+                position = next(iter(positions)) if len(positions) == 1 else ""
+                objects.extend((code, "equipment", f"{label}的传输综合柜", position, identity) for code in split_codes(record.get("cabinet_barcodes") or ""))
         for rack in conn.execute("SELECT * FROM cabinet_records WHERE task_id=? AND is_void=0 AND cabinet_type IN ('odf','iodf')", (task_id,)):
             if not rack["no_barcode"] and rack["cabinet_barcode"]:
                 objects.append((rack["cabinet_barcode"], "rack", f"{rack['cabinet_type'].upper()} 机架“{rack['cabinet_name']}”", "", ("rack", rack["id"])))
@@ -2804,7 +2811,7 @@ def get_collection_warnings(task_id: int, record_id: int | None = None, cabinet_
         for left_index, right_index in sorted(pairs):
             left, right = objects[left_index], objects[right_index]
             if left[0] == right[0]:
-                if left[1] == right[1] == "equipment" and left[3] == right[3]:
+                if left[1] == right[1] == "equipment" and (not left[3] or not right[3] or left[3] == right[3]):
                     continue
                 if left[1] == right[1] == "device" and left[4] == right[4]:
                     continue
@@ -2960,6 +2967,8 @@ def delete_task_rack(task_id: int, cabinet_id: int, user_id: int) -> bool:
             return False
         if row["cabinet_type"] not in ("odf", "iodf") or row["source"] != "manual":
             raise ValueError("只能删除本任务手工登记的 ODF / IODF 机架")
+        if row["updated_at"]:
+            raise ValueError("该机架已由管理员补录或修正，现场不能删除，请联系管理员")
         actor = conn.execute("SELECT name,role FROM users WHERE id=?", (user_id,)).fetchone()
         conn.execute("UPDATE cabinet_records SET is_void=1,void_reason='现场删除误录机架',voided_by=?,voided_at=? WHERE id=? AND task_id=?", (user_id, datetime.now().isoformat(), cabinet_id, task_id))
         conn.execute(
@@ -3684,6 +3693,7 @@ def get_report(task_id: int) -> list[dict[str, Any]]:
     """获取盘点报告"""
     conn = get_conn()
     try:
+        conn.execute("BEGIN")
         task = dict_from_row(conn.execute(
             "SELECT t.*, u.name AS assigned_name FROM tasks t LEFT JOIN users u ON u.id = t.assigned_to WHERE t.id = ?",
             (task_id,),
@@ -3696,6 +3706,8 @@ def get_report(task_id: int) -> list[dict[str, Any]]:
             (task_id,),
         ).fetchall()
         baseline_cache: dict[int, dict[str, Any]] = {}
-        return [add_compare_status(apply_resource_baseline(conn, apply_latest_record_correction(conn, dict_from_row(r)), baseline_cache)) for r in records]
+        effective = [add_compare_status(apply_resource_baseline(conn, apply_latest_record_correction(conn, dict_from_row(r)), baseline_cache)) for r in records]
+        from .inventory_pairing import project_records
+        return project_records(conn, task_id, effective)
     finally:
         conn.close()

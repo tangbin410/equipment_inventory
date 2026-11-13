@@ -1,3 +1,5 @@
+import type {InventoryPairing} from './types';
+
 export type DecisionState = "待判断" | "一致" | "不一致" | "无法确认";
 export const systems = ["综资", "现场", "资产"] as const;
 export const decisionStates: DecisionState[] = ["待判断", "一致", "不一致", "无法确认"];
@@ -23,7 +25,9 @@ export interface ComparisonGroup {
   versions: {asset_batch_id: number | null; resources: Record<string, number>; field: Record<string, unknown>};
   history: Array<{id: number; kind: string; actor_id: number; actor_name?: string; created_at: string; source_fingerprint: string; decision: {note: string; status?: string}}>;
   case?: {id: number; status: string} | null;
+  inventory_pairing?: ComparisonInventoryPairing | null;
 }
+export interface ComparisonInventoryPairing extends InventoryPairing {invalid_reason?: string;}
 export interface ResourceFieldRow {
   room_name: string; name: string; resource: SourceRow | null; field: SourceRow | null;
   feedback: SourceRow[]; status: string; barcode_status: string; rack_status: string; model_status: string; group_key?: string;
@@ -41,6 +45,7 @@ export interface CabinetComparison {
 }
 export interface ComparisonResult {
   tasks: ComparisonTask[]; stage_one: ResourceFieldRow[]; groups: ComparisonGroup[]; warnings: string[];
+  inventory_pairings?: ComparisonInventoryPairing[];
   cabinet_comparison: CabinetComparison[];
   rack_comparison: Array<{task_id: number; cabinet_id: number | null; room_name: string; room_code: string;
     rack_type: string; resource_name: string; field_barcode: string; field_location_code: string; field_status: string; asset_barcodes: string;
@@ -66,4 +71,19 @@ export function statusTag(value: string): "success" | "danger" | "warning" | "in
 
 export function sourceRecords(group: ComparisonGroup, system: string): SourceRow[] {
   return [...group.sources[system], ...(group.pending_sources?.[system] || [])];
+}
+
+export function inventoryPairingNotices(pairings: ComparisonInventoryPairing[] = []) {
+  const unique = new Map<number, ComparisonInventoryPairing>();
+  for (const pairing of pairings) {
+    if (unique.get(pairing.id)?.role !== 'stale') unique.set(pairing.id, pairing);
+  }
+  return [...unique.values()].map(pairing => {
+    const name = pairing.missing?.device_name || '设备';
+    const stale = pairing.role === 'stale';
+    const title = stale ? `拼销待重新核实：${name}。请到“盘点数据”查看并处理。`
+      : pairing.cross_room ? `拼销：${name}由${pairing.source_room_name}迁出，归${pairing.target_room_name}；待跨机房调拨。`
+      : `拼销：${name}已在${pairing.target_room_name}合并；三方资料继续核对。`;
+    return {id: pairing.id, title, stale};
+  });
 }

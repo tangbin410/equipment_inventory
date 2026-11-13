@@ -14,7 +14,11 @@ export interface AdminUser {
 
 export interface TaskRecord {
   id: number;
+  task_id?: number;
   device_name: string;
+  device_category?: string;
+  device_extra?: string | Record<string, unknown>;
+  pairing?: InventoryPairing | null;
   expected_rack_no?: string;
   expected_model?: string;
   expected_barcode?: string;
@@ -51,6 +55,36 @@ export interface TaskRecord {
   original_notes?: string;
   original_record_type?: string;
   original_missing_reason?: string;
+}
+
+export interface InventoryPairing {
+  id: number;
+  role: "merged" | "outbound" | "stale";
+  cross_room: boolean;
+  missing_record_id: number;
+  surplus_record_id: number;
+  source_room_name: string;
+  target_room_name: string;
+  source_room_code?: string;
+  target_room_code?: string;
+  status: string;
+  note: string;
+  created_at?: string;
+  actor_name?: string;
+  missing?: InventoryPairingRecord;
+  surplus?: InventoryPairingRecord;
+}
+
+export interface InventoryPairingRecord extends TaskRecord {
+  task_id: number;
+  room_name: string;
+  room_code?: string;
+  assigned_name?: string;
+  status?: string;
+  fingerprint: string;
+  match_reason?: string;
+  can_pair?: boolean;
+  pairing_unavailable_reason?: string;
 }
 
 export interface CabinetRecord {

@@ -1,5 +1,5 @@
 <template>
-  <PageHeader :icon="Files" title="资产信息表" desc="管理员定期上传静态资产台账，按资产条码查询原始信息" />
+  <PageHeader :icon="Files" title="资产信息" desc="管理员定期上传静态资产台账，按资产条码查询原始信息" />
 
   <div class="asset-import-layout" :style="!permissions.manageAssets ? { gridTemplateColumns: '1fr' } : undefined">
     <section v-if="permissions.manageAssets" class="asset-import-main">
@@ -12,14 +12,14 @@
         <el-tag v-else type="info" effect="plain">尚未导入</el-tag>
       </div>
 
-      <input ref="fileInput" type="file" accept=".xlsx" hidden @change="onFileChange" />
-      <button class="file-drop" :class="{ 'has-file': file }" @click="fileInput?.click()">
+      <input ref="fileInput" type="file" accept=".xlsx" hidden :disabled="importing" @change="onFileChange" />
+      <button class="file-drop" :class="{ 'has-file': file }" :disabled="importing" @click="fileInput?.click()">
         <span class="file-icon"><el-icon><Document /></el-icon></span>
         <span class="file-copy">
           <strong>{{ file?.name || "选择资产信息 Excel 文件" }}</strong>
           <small>{{ file ? "文件已就绪，可读取表头" : "支持 .xlsx；三方比对需资源名称、地点编码、规格型号" }}</small>
         </span>
-        <el-button plain @click.stop="fileInput?.click()">{{ file ? "更换文件" : "浏览文件" }}</el-button>
+        <el-button plain :disabled="importing" @click.stop="fileInput?.click()">{{ file ? "更换文件" : "浏览文件" }}</el-button>
       </button>
 
       <div class="workflow-row">
@@ -36,7 +36,7 @@
           <div><span class="eyebrow">工作表</span><strong>{{ preview.sheet_name }}</strong></div>
           <div class="preview-picker">
             <span class="eyebrow">资产条码列</span>
-            <el-select v-model="barcodeColumn" placeholder="选择表头列">
+            <el-select v-model="barcodeColumn" :disabled="importing" placeholder="选择表头列">
               <el-option v-for="header in preview.headers" :key="header" :label="header" :value="header" />
             </el-select>
           </div>
@@ -49,7 +49,7 @@
 
       <div class="import-actions">
         <span class="validation-note"><el-icon><CircleCheck v-if="preview && barcodeColumn" /><InfoFilled v-else /></el-icon>{{ preview && barcodeColumn ? "导入前将校验空条码与重复条码" : "选择文件并读取表头后继续" }}</span>
-        <el-button :disabled="!file" :loading="previewing" @click="previewFile"><el-icon><Search /></el-icon>读取表头</el-button>
+        <el-button :disabled="!file || importing" :loading="previewing" @click="previewFile"><el-icon><Search /></el-icon>读取表头</el-button>
         <el-button type="primary" :disabled="!canImport" :loading="importing" @click="importFile"><el-icon><UploadFilled /></el-icon>确认导入</el-button>
       </div>
     </section>
@@ -75,11 +75,14 @@
     <div class="section-heading history-heading">
       <div>
         <h2>弹窗展示字段</h2>
-        <p>在资产盘点数据中点击条码时，只显示勾选的字段；资产条码显示在弹窗标题中。</p>
+        <p>在盘点数据中点击条码时，只显示勾选的字段；资产条码显示在弹窗标题中。</p>
       </div>
-      <el-button type="primary" :disabled="!displayFields.length || !displayFieldsChanged" :loading="savingFields" @click="saveDisplayFields">保存字段设置</el-button>
+      <div class="field-settings-actions">
+        <el-button :aria-expanded="fieldsExpanded" @click="fieldsExpanded = !fieldsExpanded"><el-icon><ArrowUp v-if="fieldsExpanded" /><ArrowDown v-else /></el-icon>{{ fieldsExpanded ? '收起字段' : '展开字段' }}</el-button>
+        <el-button type="primary" :disabled="!displayFields.length || !displayFieldsChanged" :loading="savingFields" @click="saveDisplayFields">保存字段设置</el-button>
+      </div>
     </div>
-    <el-checkbox-group v-model="displayFields" class="display-field-list">
+    <el-checkbox-group v-if="fieldsExpanded" v-model="displayFields" class="display-field-list">
       <el-checkbox v-for="field in displayableFields" :key="field" :value="field">{{ field }}</el-checkbox>
     </el-checkbox-group>
     <div class="display-field-footer">
@@ -107,9 +110,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
-import { CircleCheck, Document, Files, InfoFilled, Search, UploadFilled } from "@element-plus/icons-vue";
+import { ArrowDown, ArrowUp, CircleCheck, Document, Files, InfoFilled, Search, UploadFilled } from "@element-plus/icons-vue";
 import PageHeader from "../components/PageHeader.vue";
 import { apiGet, apiPost } from "../api";
 import type { AssetInfoImportItem, AssetInfoPreview, AssetInfoStatus } from "../types";
@@ -119,14 +122,17 @@ import { permissions } from "../permissions";
 const file = ref<File | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
 const preview = ref<AssetInfoPreview | null>(null);
+const previewedFile = ref<File | null>(null);
+let previewSequence = 0;
 const barcodeColumn = ref("");
 const previewing = ref(false);
 const importing = ref(false);
 const savingFields = ref(false);
+const fieldsExpanded = ref(false);
 const displayFields = ref<string[]>([]);
 const status = ref<{ current: AssetInfoStatus | null; history: AssetInfoImportItem[] }>({ current: null, history: [] });
 
-const canImport = computed(() => !!file.value && !!preview.value && !!barcodeColumn.value);
+const canImport = computed(() => !!file.value && previewedFile.value === file.value && !!preview.value && !!barcodeColumn.value && !previewing.value && !importing.value);
 const displayableFields = computed(() => (status.value.current?.headers || []).filter((field) => field !== status.value.current?.barcode_column));
 const displayFieldsChanged = computed(() => {
   const saved = status.value.current?.display_fields || [];
@@ -134,14 +140,18 @@ const displayFieldsChanged = computed(() => {
 });
 
 function onFileChange(event: Event) {
+  if (importing.value) return;
+  previewSequence += 1;
   file.value = (event.target as HTMLInputElement).files?.[0] || null;
   preview.value = null;
+  previewedFile.value = null;
+  previewing.value = false;
   barcodeColumn.value = "";
 }
 
-function formData() {
+function formData(selectedFile: File) {
   const data = new FormData();
-  if (file.value) data.append("file", file.value);
+  data.append("file", selectedFile);
   return data;
 }
 
@@ -163,25 +173,35 @@ async function saveDisplayFields() {
 }
 
 async function previewFile() {
-  if (!file.value) return;
+  const selectedFile = file.value;
+  if (!selectedFile || previewing.value || importing.value) return;
+  const sequence = ++previewSequence;
+  preview.value = null;
+  previewedFile.value = null;
+  barcodeColumn.value = "";
   previewing.value = true;
   try {
-    preview.value = await apiPost<AssetInfoPreview>("/asset-info/preview", formData(), { timeout: 60000 });
-    barcodeColumn.value = preview.value.barcode_candidates[0] || "";
+    const result = await apiPost<AssetInfoPreview>("/asset-info/preview", formData(selectedFile), { timeout: 60000 });
+    if (sequence !== previewSequence || file.value !== selectedFile) return;
+    previewedFile.value = selectedFile;
+    preview.value = result;
+    barcodeColumn.value = result.barcode_candidates[0] || "";
   } finally {
-    previewing.value = false;
+    if (sequence === previewSequence) previewing.value = false;
   }
 }
 
 async function importFile() {
-  if (!file.value || !barcodeColumn.value) return;
+  const selectedFile = file.value;
+  if (!selectedFile || !canImport.value) return;
   importing.value = true;
   try {
-    const data = formData();
+    const data = formData(selectedFile);
     data.append("barcode_column", barcodeColumn.value);
     const result = await apiPost<{ message: string }>("/asset-info/import", data, { timeout: 60000 });
     ElMessage.success(result.message);
     preview.value = null;
+    previewedFile.value = null;
     barcodeColumn.value = "";
     file.value = null;
     if (fileInput.value) fileInput.value.value = "";
@@ -192,6 +212,7 @@ async function importFile() {
 }
 
 onMounted(loadStatus);
+onBeforeUnmount(() => { previewSequence += 1; });
 </script>
 
 <style scoped>
@@ -243,6 +264,8 @@ onMounted(loadStatus);
 .display-field-settings { margin-top: 16px; padding: 20px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 255, 255, 0.96); box-shadow: var(--shadow); }
 .display-field-list { display: flex; flex-wrap: wrap; gap: 4px 22px; }
 .display-field-list :deep(.el-checkbox) { margin-right: 0; }
+.field-settings-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.field-settings-actions :deep(.el-button + .el-button) { margin-left: 0; }
 .display-field-footer { display: flex; gap: 14px; margin-top: 14px; color: #71869a; font-size: 12px; }
 .field-warning { color: #c45656; }
 .history-heading { align-items: center; margin-bottom: 14px; }

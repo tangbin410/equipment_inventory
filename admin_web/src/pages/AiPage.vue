@@ -15,6 +15,7 @@
   </div>
   <template v-if="result">
   <el-alert v-for="warning in result?.warnings || []" :key="warning" :title="warning" type="warning" :closable="false" show-icon class="notice" />
+  <el-alert v-for="notice in pairingNotices" :key="`pairing-${notice.id}`" :title="notice.title" :type="notice.stale ? 'warning' : 'info'" :closable="false" show-icon class="notice" />
   <div v-if="result" class="asset-scope-note">
     <div class="asset-scope-heading">
       <strong>所选机房资产：<b>{{result.asset_counts.total}}</b> 个条码</strong>
@@ -50,13 +51,13 @@
   </el-radio-group>
   <template v-if="entityKind==='devices'">
     <SectionTitle :icon="Tickets" title="设备三系统比对" muted="先限定同一地点编码的机房，再以网元 / 资源名称关联，汇总综资、现场、资产三行；两处型号由管理员分别判断。" />
-    <ThreeWayTable :groups="pageGroups">
+    <ThreeWayTable :groups="pageGroups" show-index :index-offset="(page - 1) * 30">
       <template #actions="{group}"><div class="action-stack">
-        <el-button link type="primary" :disabled="!!result?.warnings.length || group.pending_association" @click="judge(group)">{{group.manual?'人工比对':'判断型号'}}</el-button>
+        <el-button link type="primary" :disabled="!!result?.warnings.length || group.pending_association || group.inventory_pairing?.role==='stale'" @click="judge(group)">{{group.manual?'人工比对':'判断型号'}}</el-button>
         <el-button link @click="detail(group)">查看问题</el-button>
         <el-button v-if="canCorrect(group)" link type="primary" @click="correct(group)">{{group.pending_association ? '补录条码 / 修正反馈' : '修正现场反馈'}}</el-button>
         <el-tag v-if="group.case && group.case.status !== 'done'" size="small" type="info">工单 #{{group.case.id}}</el-tag>
-        <el-button v-else-if="permissions.writeGovernance && group.can_create_adjustment" link type="warning" @click="createCase(group)">确认问题并建单</el-button>
+        <el-button v-else-if="permissions.writeGovernance && group.can_create_adjustment && !group.inventory_pairing" link type="warning" @click="createCase(group)">确认问题并建单</el-button>
       </div></template>
     </ThreeWayTable>
     <el-pagination v-if="filtered.length" v-model:current-page="page" :page-size="30" :total="filtered.length" layout="total, prev, pager, next" class="pagination" />
@@ -66,6 +67,7 @@
   <template v-else-if="entityKind==='racks'">
     <SectionTitle :icon="Tickets" title="ODF / IODF 机架核对" muted="汇总资产表和本次现场登记的 ODF / IODF；资产表有、现场未登记的机架也会展示。同名多条交管理员核实，机架不判断型号，综资基线待补。" />
     <div class="table-wrap"><el-table :data="rackPageRows" border stripe :max-height="660" empty-text="本次所选机房暂无资产或现场机架记录">
+      <el-table-column type="index" label="序号" width="64" align="center" fixed="left" :index="(index: number) => (rackPage - 1) * 30 + index + 1" />
       <el-table-column prop="room_name" label="机房" min-width="170" show-overflow-tooltip />
       <el-table-column prop="rack_type" label="类型" width="85" />
       <el-table-column prop="resource_name" label="关联键：资源名称 / 机架编号" min-width="190" show-overflow-tooltip />
@@ -83,6 +85,7 @@
   <template v-else>
     <SectionTitle :icon="Tickets" title="未关联资源条码" muted="资产信息表中资源名称为空，表示该条码尚未在综资关联资源；不据此判断现场是否使用。仅展示所选机房地点编码内的记录。" />
     <div class="table-wrap"><el-table :data="unlinkedPageRows" border stripe :max-height="660" empty-text="所选机房暂无未关联资源条码">
+      <el-table-column type="index" label="序号" width="64" align="center" fixed="left" :index="(index: number) => (unlinkedPage - 1) * 30 + index + 1" />
       <el-table-column prop="barcode" label="资产条码" min-width="180" /><el-table-column prop="location_code" label="地点编码" min-width="150" /><el-table-column prop="model" label="资产规格型号" min-width="200" />
       <el-table-column label="状态" min-width="180">综资未关联资源，待管理员核实</el-table-column>
     </el-table></div>
@@ -94,6 +97,7 @@
     <p class="source-note">查询到 {{roomCandidates.length}} 个机房，每个机房仅保留最近一次已完成记录。</p>
     <el-table ref="roomPickerTable" :data="roomCandidates" row-key="id" border stripe height="360" :header-cell-style="{textAlign:'center'}" empty-text="没有查到符合条件的已完成机房" @selection-change="roomDialogSelection=$event">
       <el-table-column type="selection" width="48" />
+      <el-table-column type="index" label="序号" width="64" align="center" />
       <el-table-column prop="room_name" label="机房" min-width="300" show-overflow-tooltip />
       <el-table-column prop="assigned_name" label="领取人" width="110"><template #default="{row}">{{row.assigned_name || '-'}}</template></el-table-column>
       <el-table-column label="盘点完成时间" width="170"><template #default="{row}">{{formatTime(comparisonTaskTime(row))}}</template></el-table-column>
@@ -105,7 +109,7 @@
   <el-dialog v-model="assetScopeOpen" title="所选机房资产条码明细" width="min(1200px, 96vw)">
     <p class="source-note">仅列出地点编码与所选机房一致的资产条码。其中 {{result?.asset_counts.named || 0}} 个条码已填写资源名称，涉及 {{result?.asset_counts.resource_names || 0}} 项资源；同一资源的多个条码均完整保留。设备、传输综合柜、ODF / IODF 机架和未关联资源四类条码数合计等于资产条码总数。</p>
     <el-table :data="result?.scoped_assets || []" border stripe :max-height="560">
-      <el-table-column type="index" label="序号" width="65" />
+      <el-table-column type="index" label="序号" width="64" align="center" fixed="left" />
       <el-table-column prop="barcode" label="资产条码" min-width="165" />
       <el-table-column label="查看入口" min-width="150"><template #default="{row}"><el-button link type="primary" @click="showAssetCategory(row.entity_kind,row.barcode)">{{row.entity_kind==='rack'?'机架核对':row.entity_kind==='unlinked'?'未关联资源条码':'设备比对'}}</el-button></template></el-table-column>
       <el-table-column label="资源名称" min-width="260"><template #default="{row}">{{row.name || '未关联资源'}}</template></el-table-column>
@@ -126,13 +130,14 @@
   </el-dialog>
   <el-dialog v-model="sourceOpen" title="比对来源维护" width="min(800px, 94vw)">
     <el-alert title="资产和综资的数据错误请先在原系统修改，再上传。综资更新接受所选机房的完整清单，保留现场结果；地点编码仅供历史空值补录。" type="info" :closable="false" />
-    <el-table :data="selectedTasks" border class="source-table"><el-table-column prop="room_name" label="机房" min-width="180" /><el-table-column prop="room_code" label="现场地点编码" min-width="130" /><el-table-column label="操作" width="220"><template #default="{row}"><el-button v-if="!row.room_code" link type="primary" @click="fillLocation(row)">补地点编码</el-button><el-button link type="primary" @click="uploadFor(row)">更新综资基线</el-button></template></el-table-column></el-table>
-    <p class="source-note">字段沿用任务模板，包含必填地点编码。上传资产信息表请进入“资产信息表”模块。</p>
+    <el-table :data="selectedTasks" border class="source-table"><el-table-column type="index" label="序号" width="64" align="center" /><el-table-column prop="room_name" label="机房" min-width="180" /><el-table-column prop="room_code" label="现场地点编码" min-width="130" /><el-table-column label="操作" width="220"><template #default="{row}"><el-button v-if="!row.room_code" link type="primary" @click="fillLocation(row)">补地点编码</el-button><el-button link type="primary" @click="uploadFor(row)">更新综资基线</el-button></template></el-table-column></el-table>
+    <p class="source-note">字段沿用任务模板，包含必填地点编码。上传资产信息表请进入“资产信息”模块。</p>
     <input ref="resourceInput" type="file" accept=".xlsx" hidden @change="updateResources" />
   </el-dialog>
   <el-dialog v-model="aiHistoryOpen" title="历史 AI 辅助分析报告" width="min(1200px,96vw)">
     <div class="toolbar-actions"><el-checkbox v-model="aiHistoryCurrentOnly" :disabled="!selectedIds.length" @change="aiHistoryPage=1;loadAiHistory()">仅所选机房（含联合分析报告）</el-checkbox><el-button :loading="aiHistoryLoading" @click="loadAiHistory">刷新</el-button></div>
     <el-table v-loading="aiHistoryLoading" :data="aiHistory.items" border stripe :max-height="480" class="source-table" empty-text="当前范围暂无历史 AI 报告">
+      <el-table-column type="index" label="序号" width="64" align="center" :index="(index: number) => (aiHistoryPage - 1) * 20 + index + 1" />
       <el-table-column prop="id" label="报告编号" width="95" />
       <el-table-column label="生成时间" width="160"><template #default="{row}">{{formatTime(row.created_at)}}</template></el-table-column>
       <el-table-column prop="analysis_scope" label="分析机房范围" min-width="260" show-overflow-tooltip />
@@ -148,7 +153,7 @@
       <p class="source-note">生成时间：{{formatTime(aiReport.created_at)}} · 模型：{{aiReport.model_name}}<br />分析范围：{{aiReport.analysis_scope}}</p>
       <el-alert v-if="aiReport.status!=='success'" :title="aiReport.error_message || '本次分析失败，未生成分析结论'" type="error" :closable="false" class="notice" />
       <el-alert title="报告保留生成时的分析结果；最新问题和验收结论请以当前三方比对及管理员核实为准。" type="info" :closable="false" />
-      <el-table :data="aiReport.analysis_items" border :max-height="520" class="source-table" empty-text="本次分析没有返回问题条目"><el-table-column v-for="column in aiColumns" :key="column" :prop="column" :label="column" min-width="160" /></el-table>
+      <el-table :data="aiReport.analysis_items" border :max-height="520" class="source-table" empty-text="本次分析没有返回问题条目"><el-table-column type="index" label="序号" width="64" align="center" /><el-table-column v-for="column in aiColumns" :key="column" :prop="column" :label="column" min-width="160" /></el-table>
     </template>
     <template #footer><el-button @click="aiOpen=false">关闭</el-button><el-button v-if="aiReport" type="primary" @click="downloadAiReport(aiReport.id)">下载报告</el-button></template>
   </el-dialog>
@@ -165,7 +170,7 @@ import {saveAiCheckSession, setAiChatTaskIds} from '../aiSession';
 import type {AiStatus, TaskRecord, AiReportSummary, AiSavedReport} from '../types';
 import {formatTime} from '../utils';
 import {permissions} from '../permissions';
-import {sourceRecords} from "../threeWay";
+import {inventoryPairingNotices, sourceRecords} from "../threeWay";
 import {comparisonIssues} from '../comparisonIssues';
 import {comparisonTaskTime, queryCompletedRooms} from '../comparisonSelection';
 import type {ComparisonGroup, ComparisonResult, ComparisonTask} from '../threeWay';
@@ -189,6 +194,7 @@ const aiHistoryOpen=ref(false), aiHistoryLoading=ref(false), aiHistoryCurrentOnl
 const aiHistory=ref<{items:AiReportSummary[];total:number}>({items:[],total:0});
 const aiColumns=['问题类型','风险等级','涉及机房','涉及设备','判断依据','整改建议','优先级'];
 const selectedTasks=computed(()=>tasks.value.filter(t=>selectedIds.value.includes(t.id)));
+const pairingNotices=computed(()=>inventoryPairingNotices(result.value?.inventory_pairings));
 const mixedBatches=computed(()=>new Set(selectedTasks.value.map(t=>t.import_batch_id)).size>1);
 const filtered=computed(()=>(result.value?.groups || []).filter(g=>{
   const q=keyword.value.trim().toLowerCase();
@@ -241,10 +247,11 @@ async function loadComparison() {
     result.value=fresh;setAiChatTaskIds(ids);page.value=Math.min(page.value,Math.max(1,Math.ceil(filtered.value.length/30)));rackPage.value=Math.min(rackPage.value,Math.max(1,Math.ceil(rackFiltered.value.length/30)));unlinkedPage.value=Math.min(unlinkedPage.value,Math.max(1,Math.ceil(unlinkedFiltered.value.length/30)));
   } finally {if(sequence===comparisonSequence) loading.value=false;}
 }
-function canCorrect(g:ComparisonGroup) {return [...sourceRecords(g,"现场"),...sourceRecords(g,"综资")].some(r=>r.record_id);}
-function judge(g:ComparisonGroup) {activeGroup.value=g;decisionOpen.value=true;}
+function canCorrect(g:ComparisonGroup) {return !g.inventory_pairing && [...sourceRecords(g,"现场"),...sourceRecords(g,"综资")].some(r=>r.record_id);}
+function judge(g:ComparisonGroup) {if(g.inventory_pairing?.role==='stale') return;activeGroup.value=g;decisionOpen.value=true;}
 function detail(g:ComparisonGroup) {activeGroup.value=g;detailOpen.value=true;}
 async function correct(g:ComparisonGroup) {
+  if (!canCorrect(g)) return;
   const rows=[...sourceRecords(g,"现场"),...sourceRecords(g,"综资")].filter(r=>r.record_id);
   const unique=[...new Map(rows.map(r=>[r.record_id,r])).values()];
   if (!unique.length) return;
@@ -258,9 +265,10 @@ async function correct(g:ComparisonGroup) {
   if (correctionRecord.value?.scanned_at) correctionOpen.value=true; else ElMessage.warning('该设备没有现场反馈，请通过整改单让现场核实对应设备');
 }
 async function createCase(g:ComparisonGroup) {
+  if (g.inventory_pairing) return;
   try {await ElMessageBox.confirm(g.problems.join('；'),'确认问题并建立整改单',{confirmButtonText:'建单',type:'warning'});} catch {return;}
   await apiPost('/reconciliation/adjustments',{task_ids:g.scope_task_ids,group_key:g.group_key,fingerprint:g.fingerprint});
-  ElMessage.success('已建单，请进入整改闭环台账审核'); await loadComparison();
+  ElMessage.success('已建单，请进入整改台账审核'); await loadComparison();
 }
 async function fillLocation(t:ComparisonTask) {
   let code=''; try {const p=await ElMessageBox.prompt('填写原任务清单中该机房的地点编码，编码按文本保存，保留前导零。','补录历史地点编码',{inputValidator:v=>!!v?.trim() || '地点编码不能为空'});code=p.value;} catch {return;}

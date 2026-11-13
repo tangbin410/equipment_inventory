@@ -24,7 +24,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from starlette.requests import Request as HttpRequest
 
-from . import three_way
+from . import three_way, inventory_pairing
 from .ai_agent import analyze_inventory, build_inventory_rows, chat_inventory, check_model_available, device_extra_value
 from .asset_qr import (
     batch_import_qr_assets,
@@ -147,7 +147,7 @@ from .models import (
     QrAssetHistoryUpdateRequest,
     QrAssetUpdateRequest,
 )
-from .models import ComparisonRequest, ComparisonDecisionRequest, ComparisonCaseActionRequest, LocationCodeRequest, AdminResourceCorrectionRequest
+from .models import ComparisonRequest, ComparisonDecisionRequest, ComparisonCaseActionRequest, LocationCodeRequest, AdminResourceCorrectionRequest, InventoryPairCreateRequest, InventoryPairCancelRequest, TaskListExportRequest
 from .auth import create_access_token, decode_access_token, hash_password, require_secret_configured, verify_password
 from .permissions import admin_request_allowed
 from .admin_access import remote_admin_host, verify_remote_admin_request
@@ -1470,6 +1470,51 @@ def api_tasks(_: dict = Depends(admin_user)):
     return get_all_tasks()
 
 
+@app.post("/api/tasks/export")
+def api_export_task_list(payload: TaskListExportRequest, actor: dict = Depends(admin_user)):
+    """按看板当前查询结果导出任务概览，不受页面条数限制。"""
+    task_ids = list(dict.fromkeys(payload.task_ids))
+    if any(task_id <= 0 for task_id in task_ids):
+        raise HTTPException(status_code=400, detail="任务编号无效，请重新查询")
+    tasks = {task["id"]: task for task in get_all_tasks()}
+    if any(task_id not in tasks for task_id in task_ids):
+        raise HTTPException(status_code=409, detail="任务列表已更新，请重新查询后导出")
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "任务列表"
+    sheet.append(["序号", "机房", "片区", "导入批次", "任务名称", "领取人", "现场状态", "任务更新说明", "进度", "完成率", "领取时间", "是否超时"])
+    for index, task_id in enumerate(task_ids, 1):
+        task = tasks[task_id]
+        stage = ("待释放旧任务" if task.get("superseded_by_task_id") else "等待旧任务释放" if task.get("waiting_for_task_id")
+                 else {"pending": "待领取", "doing": "盘点中", "done": "现场完成"}.get(task["status"], task["status"]))
+        claimed = task.get("claimed_at") or ""
+        try:
+            claimed_at = datetime.fromisoformat(claimed.replace("Z", "+00:00"))
+            claimed_text = (claimed_at.astimezone() if claimed_at.tzinfo else claimed_at).strftime("%Y-%m-%d %H:%M")
+        except (TypeError, ValueError):
+            claimed_text = claimed or "-"
+        overdue = False
+        started = task.get("claimed_at") or task.get("assigned_at")
+        if started and task["status"] != "done" and not task.get("superseded_by_task_id"):
+            try:
+                started_at = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                overdue = (datetime.now(started_at.tzinfo) - started_at).total_seconds() > 7 * 86400
+            except (TypeError, ValueError):
+                pass
+        scanned, total = task.get("scanned") or 0, task.get("total") or 0
+        percent = int(scanned * 100 / (total or 1) + 0.5)
+        sheet.append([index, task["room_name"], task.get("area_name") or USER_AREA_CORE, task.get("import_batch_id") or "",
+                      task["task_name"], task.get("claimed_name") or "-", stage, task.get("replacement_notice") or "",
+                      f"{scanned}/{total}", f"{percent}%", claimed_text, "是" if overdue else "否"])
+    sheet.freeze_panes = "B2"
+    sheet.auto_filter.ref = sheet.dimensions
+    for row in sheet:
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+    _audit(actor, "tasks.export", "task_list", None, {"task_ids": task_ids, "count": len(task_ids)})
+    return _excel_response(workbook, f"任务列表_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+
+
 @app.get("/api/tasks/area")
 def api_area_tasks(user: dict = Depends(current_user)):
     """小程序领任务页：查询当前用户所在片区的任务池。"""
@@ -1828,9 +1873,9 @@ def api_audit_logs(limit: int = 200, _: dict = Depends(admin_user)):
 def api_report(task_id: int, user: dict = Depends(current_user)):
     """获取单个任务盘点报告。"""
     task = _require_task_access(user, task_id)
-    records = get_report(task_id)
+    records = get_report(task_id) if user.get("role") == "admin" else get_task_items(task_id)
     cabinet_data = get_task_cabinet_data(task_id, records)
-    inventory_records = [r for r in records if (r.get("record_type") or "normal") != "surplus"]
+    inventory_records = [r for r in records if (r.get("record_type") or "normal") != "surplus" and not r.get("is_pairing_outbound")]
     return {
         "task": task,
         "records": records,
@@ -1844,6 +1889,17 @@ def api_report(task_id: int, user: dict = Depends(current_user)):
     }
 
 
+@app.get("/api/admin/room-models/{task_id}")
+def api_room_model(task_id: int, actor: dict = Depends(admin_user)):
+    """按需读取一个已完成机房的当前有效建模资料，不改变盘点记录。"""
+    task = _require_task_access(actor, task_id)
+    if task["status"] != "done":
+        raise HTTPException(status_code=409, detail="仅已完成盘点的机房可以建模，请重新查询机房")
+    records = get_report(task_id)
+    cabinet_data = get_task_cabinet_data(task_id, records)
+    return {"task": task, "records": records, "cabinet_records": cabinet_data["cabinets"]}
+
+
 @app.get("/api/admin/records/{record_id}/corrections")
 def api_record_corrections(record_id: int, _: dict = Depends(admin_user)):
     """管理员查看一条现场反馈的历次修正记录。"""
@@ -1851,6 +1907,25 @@ def api_record_corrections(record_id: int, _: dict = Depends(admin_user)):
     if record is None:
         raise HTTPException(status_code=404, detail="盘点记录不存在")
     return {"record": record, "corrections": list_record_corrections(record_id)}
+
+
+@app.get("/api/admin/inventory-pairs/candidates")
+def api_inventory_pair_candidates(record_id: int, keyword: str = "", room_name: str = "", device_category: str = "", same_room: bool = False,
+                                  recommended_only: bool = True, page: int = Query(1, ge=1), page_size: int = Query(15, ge=1, le=100), _: dict = Depends(admin_user)):
+    return _three_way_call(inventory_pairing.candidates, record_id, keyword, room_name, device_category, same_room, recommended_only, page, page_size)
+
+
+@app.post("/api/admin/inventory-pairs")
+def api_inventory_pair_create(payload: InventoryPairCreateRequest, actor: dict = Depends(admin_user)):
+    pairing = _three_way_call(inventory_pairing.create_pair, payload.missing_record_id, payload.surplus_record_id,
+                             payload.missing_fingerprint, payload.surplus_fingerprint, payload.note, actor["id"])
+    return {"success": True, "pairing": pairing}
+
+
+@app.post("/api/admin/inventory-pairs/{pair_id}/cancel")
+def api_inventory_pair_cancel(pair_id: int, payload: InventoryPairCancelRequest, actor: dict = Depends(admin_user)):
+    pairing = _three_way_call(inventory_pairing.cancel_pair, pair_id, payload.note, actor["id"])
+    return {"success": True, "pairing": pairing}
 
 
 @app.post("/api/admin/records/{record_id}/adjustments")
@@ -1949,9 +2024,10 @@ def _excel_response(wb: openpyxl.Workbook, filename: str) -> Response:
 
 INVENTORY_DATA_HEADERS = [
     "任务ID", "导入批次", "任务名称", "机房名称", "片区", "领取人", "任务状态", "任务创建时间",
-    "领取时间", "现场完成时间", "设备名称", "清单设备型号", "清单资产条码", "清单设备机架",
+    "领取时间", "现场完成时间", "设备名称", "设备类别", "清单设备型号", "清单资产条码", "清单设备机架",
     "现场设备型号", "现场资产条码", "资产无条码", "现场机柜条码", "机柜无条码",
     "现场机架号", "现场状态", "盘点时间", "盘亏原因", "现场备注",
+    "拼销状态", "拼销来源机房", "拼销去向机房", "拼销依据",
 ]
 CABINET_COMMON_HEADERS = ["任务ID", "导入批次", "任务名称", "机房名称", "片区"]
 EQUIPMENT_CABINET_HEADERS = CABINET_COMMON_HEADERS + ["机柜资产条码", "无条码", "设备机柜位", "登记来源", "登记人", "登记时间", "备注"]
@@ -2041,6 +2117,7 @@ def api_summary(_: dict = Depends(admin_user)):
     """一次性返回所有任务和盘点记录，供 PC 报告页使用。"""
     conn = get_conn()
     try:
+        conn.execute("BEGIN")
         rows = conn.execute("""
             SELECT t.id, t.task_name, t.room_name, t.area_name, t.status, t.created_at, t.assigned_to,
                    t.import_batch_id, t.room_code,
@@ -2087,6 +2164,8 @@ def api_summary(_: dict = Depends(admin_user)):
                     "id": data["record_id"],
                     "task_id": task_id,
                     "device_name": data["device_name"],
+                    "device_extra": data["device_extra"],
+                    "device_category": device_extra_value(data, "设备类别") or device_extra_value(data, "网元类型"),
                     "expected_rack_no": device_extra_value(data, "设备机架"),
                     "expected_model": data["expected_model"],
                     "expected_barcode": data["expected_barcode"],
@@ -2110,8 +2189,10 @@ def api_summary(_: dict = Depends(admin_user)):
                     tasks_map[task_id]["last_scanned_at"] = max(current_last, record["scanned_at"])
 
         result = list(tasks_map.values())
+        pairing_cache = {}
         for task in result:
-            inventory_records = [r for r in task["records"] if (r.get("record_type") or "normal") != "surplus"]
+            task["records"] = inventory_pairing.project_records(conn, task["id"], task["records"], pairing_cache)
+            inventory_records = [r for r in task["records"] if (r.get("record_type") or "normal") != "surplus" and not r.get("is_pairing_outbound")]
             task["total"] = len(inventory_records)
             task["scanned"] = sum(1 for r in inventory_records if r["match_status"] != "未扫")
             cabinet_data = get_task_cabinet_data(task["id"], task["records"])
@@ -2175,7 +2256,7 @@ def api_export_comparison(task_ids: list[int] = Query(default=[]), _: dict = Dep
                     value = "\n".join(row.get(field) or (
                         row.get("barcode_state") or "未填写（待补录）" if field == "barcode" else "未填写") for row in rows)
                 values.append(value)
-            provenance = {"综资": "综资基线", "资产": "最新资产信息表"}.get(system, "")
+            provenance = {"综资": "；".join(dict.fromkeys(row.get("source_label") or "综资基线" for row in rows)), "资产": "最新资产信息表"}.get(system, "")
             if system == "现场":
                 provenance = "；".join(dict.fromkeys(row.get("source_label") or "现场原始反馈" for row in rows))
             if group.get("pending_sources", {}).get(system):
@@ -2187,6 +2268,13 @@ def api_export_comparison(task_ids: list[int] = Query(default=[]), _: dict = Dep
         for column in (1, 7, 8, 9, 10, 11):
             ws.merge_cells(start_row=start_row, start_column=column, end_row=ws.max_row, end_column=column)
     ws.freeze_panes = "C2"
+    if result.get("inventory_pairings"):
+        pairing_ws = workbook.create_sheet("拼销记录")
+        pairing_ws.append(["设备名称", "状态", "原机房", "实际找到机房", "确认依据", "确认人", "确认时间", "复核提示"])
+        for pairing in result["inventory_pairings"]:
+            pairing_ws.append([(pairing.get("missing") or {}).get("device_name"), pairing["status"], pairing["source_room_name"],
+                               pairing["target_room_name"], pairing["note"], pairing["actor_name"], pairing["created_at"], pairing["invalid_reason"]])
+        pairing_ws.freeze_panes = "A2"
     if result.get("cabinet_comparison"):
         cabinet_ws = workbook.create_sheet("传输综合柜核对")
         cabinet_ws.append(["机柜资源 / 柜位", "系统", "机柜资产条码", "机柜位", "地点编码", "核对结论", "问题明细", "机房"])

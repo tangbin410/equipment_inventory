@@ -16,6 +16,8 @@ _COLLABORATOR_READ_PATHS = (
     r"/api/audit_logs",
     r"/api/admin/records/\d+/corrections",
     r"/api/admin/records/\d+/resource",
+    r"/api/admin/inventory-pairs/candidates",
+    r"/api/admin/room-models/\d+",
     r"/api/reconciliation(?:/export|/cases/\d+)?",
     r"/api/ai/export/inventory",
     r"/api/ai/results(?:/\d+(?:/download)?|/latest/download)?",
@@ -23,8 +25,11 @@ _COLLABORATOR_READ_PATHS = (
 )
 
 _COLLABORATOR_WRITE_PATHS = (
+    ("POST", r"/api/tasks/export"),
     ("POST", r"/api/admin/records/\d+/corrections"),
     ("POST", r"/api/admin/records/\d+/resource"),
+    ("POST", r"/api/admin/inventory-pairs"),
+    ("POST", r"/api/admin/inventory-pairs/\d+/cancel"),
     ("DELETE", r"/api/admin/records/\d+"),
     ("POST", r"/api/admin/tasks/\d+/racks"),
     ("PUT", r"/api/admin/tasks/\d+/racks/\d+"),

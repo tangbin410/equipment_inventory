@@ -686,6 +686,12 @@ async function main() {
   assert.equal(page.data.totalCount, 1);
 
   const rackEvent = { currentTarget: { dataset: { id: 9 } } };
+  page.data.cabinetRecords[0].has_admin_correction = true;
+  const modalCount = modals.length;
+  page.deleteCabinet(rackEvent);
+  assert.equal(modals.length, modalCount, "管理员修正过的机架不开放现场删除");
+  assert.equal(rackDeleteCalls, 0);
+  page.data.cabinetRecords[0].has_admin_correction = false;
   modalConfirm = false;
   page.deleteCabinet(rackEvent);
   await modalPromise;

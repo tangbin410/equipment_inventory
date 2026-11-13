@@ -48,24 +48,25 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onMounted, ref, watch } from "vue";
 import type { Component } from "vue";
-import { CircleCheck, Cpu, DataAnalysis, Files, List, PriceTag, User } from "@element-plus/icons-vue";
+import { CircleCheck, Cpu, DataAnalysis, Files, List, OfficeBuilding, PriceTag, User } from "@element-plus/icons-vue";
 import { clearSession, getToken, refreshSessionUser } from "./api";
 import { adminRoleText, permissions, sessionUser } from "./permissions";
 import { API_BASE } from "./config";
 import type { AdminUser } from "./types";
 import LoginView from "./pages/LoginView.vue";
-import TaskManagementPage from "./pages/TaskManagementPage.vue";
-import ReportPage from "./pages/ReportPage.vue";
-import AiPage from "./pages/AiPage.vue";
-import GovernancePage from "./pages/GovernancePage.vue";
-import UsersPage from "./pages/UsersPage.vue";
-import QrAssetsPage from "./pages/QrAssetsPage.vue";
-import AssetInfoPage from "./pages/AssetInfoPage.vue";
-import AgentChat from "./components/AgentChat.vue";
+const TaskManagementPage = defineAsyncComponent(() => import("./pages/TaskManagementPage.vue"));
+const ReportPage = defineAsyncComponent(() => import("./pages/ReportPage.vue"));
+const RoomModelPage = defineAsyncComponent(() => import("./pages/RoomModelPage.vue"));
+const AiPage = defineAsyncComponent(() => import("./pages/AiPage.vue"));
+const GovernancePage = defineAsyncComponent(() => import("./pages/GovernancePage.vue"));
+const UsersPage = defineAsyncComponent(() => import("./pages/UsersPage.vue"));
+const QrAssetsPage = defineAsyncComponent(() => import("./pages/QrAssetsPage.vue"));
+const AssetInfoPage = defineAsyncComponent(() => import("./pages/AssetInfoPage.vue"));
+const AgentChat = defineAsyncComponent(() => import("./components/AgentChat.vue"));
 
-type PageKey = "task-management" | "report" | "ai" | "governance" | "users" | "qr-assets" | "asset-info";
+type PageKey = "task-management" | "report" | "room-model" | "ai" | "governance" | "users" | "qr-assets" | "asset-info";
 
 const token = ref(getToken());
 const remoteEntry = API_BASE.startsWith("/");
@@ -76,10 +77,11 @@ const currentPage = ref<PageKey>("task-management");
 
 const menus: Array<{ key: PageKey; icon: Component; label: string }> = [
   { key: "task-management", icon: List, label: "任务管理" },
-  { key: "report", icon: DataAnalysis, label: "资产盘点数据" },
-  { key: "asset-info", icon: Files, label: "资产信息表" },
+  { key: "report", icon: DataAnalysis, label: "盘点数据" },
+  { key: "room-model", icon: OfficeBuilding, label: "机房建模" },
+  { key: "asset-info", icon: Files, label: "资产信息" },
   { key: "ai", icon: Cpu, label: "三方比对" },
-  { key: "governance", icon: CircleCheck, label: "整改闭环台账" },
+  { key: "governance", icon: CircleCheck, label: "整改台账" },
   { key: "users", icon: User, label: "账号管理" },
   { key: "qr-assets", icon: PriceTag, label: "二维码资产" },
 ];
@@ -95,6 +97,7 @@ const activeComponent = computed(() => {
   const map = {
     "task-management": TaskManagementPage,
     report: ReportPage,
+    "room-model": RoomModelPage,
     ai: AiPage,
     governance: GovernancePage,
     users: UsersPage,

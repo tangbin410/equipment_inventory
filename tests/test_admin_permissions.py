@@ -131,6 +131,33 @@ class AdminPermissionTests(unittest.IsolatedAsyncioTestCase):
         }, token=token)
         self.assertEqual(status, 200)
 
+    async def test_task_list_export_is_scoped_ordered_and_available_only_to_admins(self):
+        task_ids = [db.create_task(f"测试任务{index}", f"测试机房{index}", self.worker["id"], "南区") for index in range(24)]
+        selected = [task_ids[-1], self.task, *task_ids[:-1]]
+        status, data = await self.request("POST", "/api/tasks/export", {"task_ids": selected + [selected[0]]}, token=self.token())
+        self.assertEqual(status, 200)
+        sheet = openpyxl.load_workbook(io.BytesIO(data)).active
+        rows = list(sheet.values)
+        exported = [dict(zip(rows[0], row)) for row in rows[1:]]
+        self.assertEqual(len(exported), 25, "导出全部查询结果，不局限于当前页的20个任务；重复ID只输出一次")
+        self.assertEqual([row["序号"] for row in exported], list(range(1,26)))
+        self.assertEqual((exported[0]["机房"], exported[1]["机房"]), ("测试机房23", "权限测试机房"))
+        self.assertEqual((exported[1]["现场状态"], exported[1]["完成率"]), ("现场完成", "100%"))
+        self.assertEqual(sheet.freeze_panes, "B2")
+        self.assertEqual((await self.request("POST", "/api/tasks/export", {"task_ids": [self.task]}, token=self.token(self.full)))[0], 200)
+        for token in (None, self.token(self.worker)):
+            status, _ = await self.request("POST", "/api/tasks/export", {"task_ids": [self.task]}, token=token)
+            self.assertIn(status, (401,403))
+        for selected_ids, expected_status in (([],422), ([-1],400), ([99999999],409)):
+            status, _ = await self.request("POST", "/api/tasks/export", {"task_ids": selected_ids}, token=self.token())
+            self.assertEqual(status, expected_status)
+        with db.get_conn() as conn:
+            conn.execute("UPDATE tasks SET room_name='=SUM(1,2)' WHERE id=?", (task_ids[0],))
+        status, data = await self.request("POST", "/api/tasks/export", {"task_ids": [task_ids[0]]}, token=self.token())
+        self.assertEqual(status, 200)
+        cell = openpyxl.load_workbook(io.BytesIO(data)).active['B2']
+        self.assertEqual((cell.value, cell.data_type), ('=SUM(1,2)', 's'), "用户填写值不能成为Excel公式")
+
     async def test_collaborator_can_correct_equipment_racks_and_void_only_surplus(self):
         token = self.token()
         status, _ = await self.request("POST", f"/api/admin/records/{self.record}/corrections", {
