@@ -222,7 +222,7 @@ async function queryRooms() {
   const sequence=++roomQuerySequence, field=roomQueryField.value, query=roomQueryText.value;
   roomQueryLoading.value=true;
   try {
-    const fresh=await apiGet<ComparisonTask[]>('/summary');
+    const fresh=await apiGet<ComparisonTask[]>('/tasks');
     if(sequence!==roomQuerySequence) return;
     tasks.value=fresh;roomCandidates.value=queryCompletedRooms(fresh,field,query);roomDialogSelection.value=[];roomPickerOpen.value=true;
     await nextTick();
@@ -272,7 +272,7 @@ async function createCase(g:ComparisonGroup) {
 }
 async function fillLocation(t:ComparisonTask) {
   let code=''; try {const p=await ElMessageBox.prompt('填写原任务清单中该机房的地点编码，编码按文本保存，保留前导零。','补录历史地点编码',{inputValidator:v=>!!v?.trim() || '地点编码不能为空'});code=p.value;} catch {return;}
-  await apiPost(`/reconciliation/tasks/${t.id}/location`,{location_code:code}); tasks.value=await apiGet<ComparisonTask[]>('/summary'); await loadComparison();
+  await apiPost(`/reconciliation/tasks/${t.id}/location`,{location_code:code}); tasks.value=await apiGet<ComparisonTask[]>('/tasks'); await loadComparison();
 }
 function uploadFor(t:ComparisonTask) {uploadTask.value=t;resourceInput.value?.click();}
 async function updateResources(event:Event) {

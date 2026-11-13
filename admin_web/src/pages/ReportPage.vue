@@ -41,8 +41,8 @@
 
     <SectionTitle :icon="DocumentChecked" title="盘点数据" />
     <div class="table-wrap">
-      <el-table class="report-table report-device-table" border table-layout="fixed" :header-cell-style="{ textAlign: 'center' }" :data="rows.slice(0, 500)" height="420">
-        <el-table-column type="index" label="序号" width="64" align="center" fixed="left" />
+      <el-table class="report-table report-device-table" border table-layout="fixed" :header-cell-style="{ textAlign: 'center' }" :data="pageDeviceRows" height="420">
+        <el-table-column type="index" :index="(index: number) => (devicePage - 1) * pageSize + index + 1" label="序号" width="64" align="center" fixed="left" />
         <el-table-column prop="机房名称" label="机房" width="200">
           <template #default="{ row }">
             <el-tooltip :content="String(row['机房名称'] || '')" placement="top" :show-after="300">
@@ -128,11 +128,12 @@
         </el-table-column>
       </el-table>
     </div>
+    <el-pagination v-if="rows.length" v-model:current-page="devicePage" :page-size="pageSize" :total="rows.length" layout="total, prev, pager, next" class="report-pagination" aria-label="设备盘点分页" />
 
     <SectionTitle :icon="DocumentChecked" title="传输综合柜（随设备盘点）" />
     <div v-if="equipmentCabinetRows.length" class="table-wrap">
-      <el-table class="report-table" border table-layout="fixed" :data="equipmentCabinetRows.slice(0, 500)" height="300">
-        <el-table-column type="index" label="序号" width="64" align="center" fixed="left" />
+      <el-table class="report-table" border table-layout="fixed" :data="pageCabinetRows" height="300">
+        <el-table-column type="index" :index="(index: number) => (cabinetPage - 1) * pageSize + index + 1" label="序号" width="64" align="center" fixed="left" />
         <el-table-column prop="机房名称" label="机房" min-width="220" show-overflow-tooltip />
         <el-table-column prop="机柜条码" label="机柜资产条码" width="182" class-name="report-barcode-cell" show-overflow-tooltip />
         <el-table-column prop="机架编号" label="设备机柜位" width="110" show-overflow-tooltip />
@@ -140,6 +141,7 @@
         <el-table-column prop="登记时间" label="登记时间" width="154" />
         <el-table-column prop="备注" label="备注" min-width="180" show-overflow-tooltip />
       </el-table>
+      <el-pagination v-model:current-page="cabinetPage" :page-size="pageSize" :total="equipmentCabinetRows.length" layout="total, prev, pager, next" class="report-pagination" aria-label="传输综合柜分页" />
     </div>
     <el-empty v-else :image-size="56" description="当前任务暂无可汇总的传输综合柜；汇总以设备盘点最新有效反馈为准。" />
 
@@ -148,8 +150,8 @@
       <el-button type="primary" plain @click="openRackCorrection(null)">补录机架</el-button>
     </div>
     <div v-if="rackRows.length" class="table-wrap">
-      <el-table class="report-table" border table-layout="fixed" :data="rackRows.slice(0, 500)" height="300">
-        <el-table-column type="index" label="序号" width="64" align="center" fixed="left" />
+      <el-table class="report-table" border table-layout="fixed" :data="pageRackRows" height="300">
+        <el-table-column type="index" :index="(index: number) => (rackPage - 1) * pageSize + index + 1" label="序号" width="64" align="center" fixed="left" />
         <el-table-column prop="机房名称" label="机房" min-width="220" show-overflow-tooltip />
         <el-table-column prop="机柜类型" label="机架类型" width="90" />
         <el-table-column prop="机架编号" label="资源名称 / 机架编号" min-width="190" show-overflow-tooltip />
@@ -164,6 +166,7 @@
           </template>
         </el-table-column>
       </el-table>
+      <el-pagination v-model:current-page="rackPage" :page-size="pageSize" :total="rackRows.length" layout="total, prev, pager, next" class="report-pagination" aria-label="ODF和IODF分页" />
     </div>
     <el-empty v-else :image-size="56" description="当前任务尚未登记 ODF / IODF 机架。" />
   </template>
@@ -243,11 +246,14 @@ import {isPairingRecord} from '../inventoryPairing';
 import {latestCompletedRooms} from '../comparisonSelection';
 
 const summary = ref<Task[]>([]);
+let summarySequence = 0;
 const resultDialogVisible = ref(false);
 const queryField = ref("__all__");
 const queryText = ref("");
 const candidates = ref<Task[]>([]);
 const selectedTasks = ref<Task[]>([]);
+const pageSize = 20;
+const devicePage = ref(1), cabinetPage = ref(1), rackPage = ref(1);
 const correctionDialogVisible = ref(false);
 const correctionRecord = ref<TaskRecord | null>(null);
 const resourceDialogVisible = ref(false);
@@ -329,6 +335,17 @@ const cabinetRows = computed(() => {
 });
 const equipmentCabinetRows = computed(() => cabinetRows.value.filter((row) => row.__kind === "equipment"));
 const rackRows = computed(() => cabinetRows.value.filter((row) => row.__kind === "odf" || row.__kind === "iodf"));
+const pageDeviceRows = computed(() => rows.value.slice((devicePage.value - 1) * pageSize, devicePage.value * pageSize));
+const pageCabinetRows = computed(() => equipmentCabinetRows.value.slice((cabinetPage.value - 1) * pageSize, cabinetPage.value * pageSize));
+const pageRackRows = computed(() => rackRows.value.slice((rackPage.value - 1) * pageSize, rackPage.value * pageSize));
+watch(() => selectedTasks.value.map(task => task.id).join(','), () => {
+  devicePage.value = cabinetPage.value = rackPage.value = 1;
+}, { flush: 'sync' });
+watch([() => rows.value.length, () => equipmentCabinetRows.value.length, () => rackRows.value.length], ([devices, cabinets, racks]) => {
+  devicePage.value = Math.min(devicePage.value, Math.max(1, Math.ceil(devices / pageSize)));
+  cabinetPage.value = Math.min(cabinetPage.value, Math.max(1, Math.ceil(cabinets / pageSize)));
+  rackPage.value = Math.min(rackPage.value, Math.max(1, Math.ceil(racks / pageSize)));
+}, { flush: 'sync' });
 
 function taskValue(task: Task, field: string) {
   if (field === "__all__") return "";
@@ -395,7 +412,9 @@ async function queryAssetBarcode(value: unknown) {
 }
 
 async function loadSummary() {
-  summary.value = await apiGet<Task[]>("/summary");
+  const sequence = ++summarySequence;
+  const result = await apiGet<Task[]>("/summary");
+  if (sequence === summarySequence) summary.value = result;
 }
 
 function openCorrection(record: TaskRecord) {
@@ -454,8 +473,8 @@ async function handleCorrectionSaved(payload: { record: TaskRecord; relatedAdjus
 }
 
 async function refreshSelectedTasks() {
-  const selectedIds = new Set(selectedTasks.value.map((task) => task.id));
   await loadSummary();
+  const selectedIds = new Set(selectedTasks.value.map((task) => task.id));
   selectedTasks.value = summary.value.filter((task) => selectedIds.has(task.id));
 }
 
@@ -509,16 +528,18 @@ function onSelectionChange(rows: Task[]) {
 }
 
 async function downloadData() {
+  if (!selectedTasks.value.length) return;
   const params = new URLSearchParams();
   selectedTasks.value.forEach((task) => params.append("task_ids", String(task.id)));
   await downloadBlob(`/ai/export/inventory?${params}`, `资产盘点数据_${formatTime(new Date().toISOString()).slice(0, 10)}.xlsx`);
 }
 
 onMounted(loadSummary);
-onBeforeUnmount(() => { assetInfoSequence += 1; });
+onBeforeUnmount(() => { assetInfoSequence += 1; summarySequence += 1; });
 </script>
 
 <style scoped>
+.report-pagination { justify-content: flex-end; margin: 12px 0 18px; }
 .report-pairing-note {display:block;margin-top:5px;color:var(--muted);font-size:12px;line-height:1.6;overflow-wrap:anywhere;}
 
 .metric-grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 18px 0; }

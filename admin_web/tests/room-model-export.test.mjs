@@ -125,3 +125,20 @@ test('缺省导出时间写入快照，分页仅渲染当前20个对象',async()
   await elements.next.emit('click');assert.equal(elements['search-results'].children.length,20);
   await elements.next.emit('click');assert.equal(elements['search-results'].children.length,5);assert.equal(elements.next.disabled,true);
 });
+
+test('离线模型进入BFC缓存后返回仍可交互，真正离开时才释放监听',async()=>{
+  const {elements,context}=openHtml(buildRoomModelHtml(fixture(),metadata));
+  const wheelListeners=()=>elements.scene.listeners.get('wheel').length;
+  assert.equal(wheelListeners(),1);
+  await context.window.emit('pagehide',{persisted:true});
+  await context.window.emit('pageshow',{persisted:true});
+  assert.equal(wheelListeners(),1,'缓存返回后保留画布缩放监听');
+  await elements.scene.emit('wheel',{deltaY:-100,preventDefault(){}});
+  await elements['search-results'].children[0].emit('click');
+  assert.ok(elements['object-detail'].textContent.includes('AA01A'));
+  await context.window.emit('pagehide',{persisted:true});
+  await context.window.emit('pageshow',{persisted:true});
+  assert.equal(wheelListeners(),1,'多次缓存往返不能提前销毁渲染器');
+  await context.window.emit('pagehide',{persisted:false});
+  assert.equal(wheelListeners(),0,'非缓存离开时清理画布事件');
+});

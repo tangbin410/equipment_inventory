@@ -235,6 +235,10 @@ def cabinet_position(value):
     return value[len("设备机架-"):] if value.startswith("设备机架-") else value
 
 
+def cabinet_positions(value):
+    return list(dict.fromkeys(cabinet_position(part) for part in re.split(r"[,，、;；\r\n]+", text(value)) if text(part)))
+
+
 def equipment_cabinet_comparison(tasks, resources, fields, assets):
     """综资仅提供设备所属柜位；柜条码只核对现场与资产，不能冒充综资柜条码。"""
     grouped = {}
@@ -246,19 +250,35 @@ def equipment_cabinet_comparison(tasks, resources, fields, assets):
         key = (task["id"], position or identity)
         if key not in grouped:
             grouped[key] = dict(task_id=task["id"], room_name=task["room_name"], room_code=task["room_code"],
-                                position=position, resources=[], fields=[], assets=[])
+                                position=position, resources=[], fields=[], assets=[], field_codes=set(),
+                                pending_codes=set(), mapping_pending=False)
         return grouped[key]
 
+    single_position_codes = defaultdict(set)
+    for row in fields:
+        positions = cabinet_positions(row.get("rack_no"))
+        if len(positions) == 1:
+            codes = db.split_codes(row.get("cabinet_barcodes", ""))
+            single_position_codes[(row["task_id"], positions[0])].update(codes)
+            for barcode in codes:
+                barcode_positions[(row["task_id"], barcode)].add(positions[0])
     for row in resources:
-        position = cabinet_position(row.get("rack_no"))
-        if position:
+        for position in cabinet_positions(row.get("rack_no")):
             get_group(task_by_id[row["task_id"]], position)["resources"].append(row)
     for row in fields:
-        position = cabinet_position(row.get("rack_no"))
-        group = get_group(task_by_id[row["task_id"]], position, f"field:{row['record_id']}")
-        group["fields"].append(row)
-        for barcode in db.split_codes(row.get("cabinet_barcodes", "")):
-            barcode_positions[(row["task_id"], barcode)].add(position)
+        positions = cabinet_positions(row.get("rack_no"))
+        codes = db.split_codes(row.get("cabinet_barcodes", ""))
+        for position in positions or [""]:
+            group = get_group(task_by_id[row["task_id"]], position, f"field:{row['record_id']}")
+            group["fields"].append(row)
+            if len(positions) <= 1:
+                group["field_codes"].update(codes)
+            elif not row.get("cabinet_no_barcode"):
+                confirmed = single_position_codes[(row["task_id"], position)]
+                # 仅采用其他单柜反馈已确认的对应关系，不按条码顺序或排除法猜配对。
+                if len(confirmed) != 1 or not confirmed.issubset(codes):
+                    group["mapping_pending"] = True
+                    group["pending_codes"].update(codes)
     for asset in assets.values():
         if asset["entity_kind"] == "cabinet":
             task = task_by_code.get(asset["location_code"])
@@ -270,7 +290,8 @@ def equipment_cabinet_comparison(tasks, resources, fields, assets):
         resource_rows, field_rows, asset_rows = group.pop("resources"), group.pop("fields"), group.pop("assets")
         resource_names = list(dict.fromkeys(text(r.get("rack_no")) for r in resource_rows))
         asset_names = list(dict.fromkeys(a["name"] for a in asset_rows))
-        field_codes = set().union(*(db.split_codes(r.get("cabinet_barcodes", "")) for r in field_rows))
+        field_codes = group.pop("field_codes")
+        pending_codes, mapping_pending = group.pop("pending_codes"), group.pop("mapping_pending")
         asset_codes = {a["barcode"] for a in asset_rows}
         no_barcode = any(r.get("cabinet_no_barcode") for r in field_rows)
         problems = []
@@ -284,21 +305,28 @@ def equipment_cabinet_comparison(tasks, resources, fields, assets):
             problems.append("机柜资源同名多条，待管理员核实")
         if len(field_codes) > 1:
             problems.append("同一柜位登记多个机柜条码，待管理员核实")
+        if mapping_pending:
+            problems.append("跨柜设备的机柜条码尚未逐柜对应，请管理员核实")
         if no_barcode:
             problems.append("现场机柜登记无条码" + ("，与其他设备的机柜条码反馈冲突" if field_codes else ""))
         if any(len(barcode_positions[(group["task_id"], code)]) > 1 for code in field_codes):
             problems.append("同一机柜条码对应多个柜位，待管理员核实")
         position_status = "一致" if resource_rows and field_rows and group["position"] else "待核实"
         barcode_status = "待核实"
-        if field_codes and asset_codes and not no_barcode:
+        if field_codes and asset_codes and not no_barcode and not mapping_pending:
             barcode_status = "一致" if field_codes == asset_codes else "不一致"
         if barcode_status == "不一致":
             problems.append("现场与资产机柜条码不一致")
         location_status = "一致" if field_rows and asset_rows and all(a["location_code"] == group["room_code"] for a in asset_rows) else "待核实"
+        field_barcodes = "、".join(sorted(field_codes)) or ("现场无条码" if no_barcode else "未反馈")
+        if mapping_pending:
+            pending = "待人工对应（" + ("、".join(sorted(pending_codes)) or "未反馈条码") + "）"
+            field_barcodes = f"{field_barcodes}；{pending}" if field_codes else pending
+        resource_name = (resource_names or asset_names or [group["position"] or "未填写柜位"])[0]
         result.append(dict(**group,
-            resource_name=(resource_names or asset_names or [group["position"] or "未填写柜位"])[0],
+            resource_name=group["position"] if len(cabinet_positions(resource_name)) > 1 else resource_name,
             resource_position=group["position"] if resource_rows else "", field_position=group["position"] if field_rows else "",
-            field_barcodes="、".join(sorted(field_codes)) or ("现场无条码" if no_barcode else "未反馈"),
+            field_barcodes=field_barcodes,
             asset_barcodes="、".join(sorted(asset_codes)), asset_records=asset_rows,
             field_devices=list(dict.fromkeys(r["name"] for r in field_rows)),
             resource_devices=list(dict.fromkeys(r["name"] for r in resource_rows)),

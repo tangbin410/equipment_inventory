@@ -1292,15 +1292,6 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _derive_adjustment_area(room_name: str, tasks: list[dict[str, Any]]) -> str:
-    room_text = _text(room_name)
-    for task in tasks:
-        task_room = _text(task.get("room_name"))
-        if task_room and (task_room in room_text or room_text in task_room):
-            return normalize_user_area_name(task.get("area_name"), strict=False)
-    return normalize_user_area_name(tasks[0].get("area_name"), strict=False) if tasks else USER_AREA_CORE
-
-
 def _adjustment_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     item = dict_from_row(row)
     if item is None:
@@ -1311,65 +1302,6 @@ def _adjustment_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
         item["source_task_ids"] = []
     item["comparison"] = json.loads(item.pop("comparison_json", "") or "null")
     return item
-
-
-def create_ai_adjustment_drafts(
-    analysis_id: int,
-    task_ids: list[int],
-    analysis_items: list[dict[str, Any]],
-    source_tasks: list[dict[str, Any]],
-    created_by: int | None,
-) -> list[dict[str, Any]]:
-    """把 AI 分析清单转成待管理员审核的整改草稿。"""
-    conn = get_conn()
-    try:
-        rows = []
-        now = datetime.now().isoformat()
-        source_task_ids_json = json.dumps(task_ids, ensure_ascii=False)
-        for index, item in enumerate(analysis_items):
-            problem_type = _text(item.get("问题类型"))
-            suggestion = _text(item.get("整改建议"))
-            if not problem_type and not suggestion:
-                continue
-            room_name = _text(item.get("涉及机房"))
-            rows.append((
-                analysis_id,
-                index,
-                source_task_ids_json,
-                problem_type,
-                room_name,
-                _text(item.get("涉及设备")),
-                _derive_adjustment_area(room_name, source_tasks),
-                _text(item.get("风险等级")),
-                _text(item.get("判断依据")),
-                suggestion,
-                _text(item.get("优先级")),
-                created_by,
-                now,
-            ))
-        if not rows:
-            return []
-        conn.executemany(
-            """INSERT INTO ai_adjustment_tasks
-               (analysis_id, source_item_index, source_task_ids_json, problem_type, room_name,
-                device_name, area_name, risk_level, basis, suggestion, priority, created_by, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            rows,
-        )
-        conn.commit()
-        task_rows = conn.execute(
-            """SELECT a.*, assignee.name AS assigned_name, reviewer.name AS reviewed_name, closer.name AS completed_name
-               FROM ai_adjustment_tasks a
-               LEFT JOIN users assignee ON assignee.id = a.assigned_to
-               LEFT JOIN users reviewer ON reviewer.id = a.reviewed_by
-               LEFT JOIN users closer ON closer.id = a.completed_by
-               WHERE a.analysis_id = ?
-               ORDER BY a.id""",
-            (analysis_id,),
-        ).fetchall()
-        return [_adjustment_from_row(row) for row in task_rows if row is not None]
-    finally:
-        conn.close()
 
 
 def list_ai_adjustment_tasks(status: str = "") -> list[dict[str, Any]]:

@@ -356,7 +356,6 @@ function resetView() {
   activeDeviceId.value = null;
   renderer?.setRow(null);
   renderer?.select(null);
-  renderer?.setView('overview');
   renderer?.reset();
 }
 function selectObject(id: string, deviceId: string | null = null) {

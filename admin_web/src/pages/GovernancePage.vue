@@ -95,7 +95,7 @@ async function refresh() {
   const sequence=++refreshSequence;
   candidateSequence+=1;candidates.value=null;loading.value=true;
   try {
-    const data=await Promise.all([apiGet<ComparisonTask[]>('/summary'),apiGet<ComparisonCase[]>('/ai/adjustments'),permissions.value.writeGovernance?apiGet<AdminUser[]>('/workers'):Promise.resolve([])]);
+    const data=await Promise.all([apiGet<ComparisonTask[]>('/tasks'),apiGet<ComparisonCase[]>('/ai/adjustments'),permissions.value.writeGovernance?apiGet<AdminUser[]>('/workers'):Promise.resolve([])]);
     if(sequence!==refreshSequence) return;
     tasks.value=data[0];cases.value=data[1];workers.value=data[2];
     if(!batches.value.includes(batch.value))batch.value=batches.value[0] || '';

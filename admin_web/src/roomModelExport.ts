@@ -229,6 +229,6 @@ const EXPORT_CLIENT = String.raw`
     } catch {byId('status').textContent = '当前浏览器未能切换全屏，可使用浏览器全屏功能。';}
   });
   document.addEventListener('fullscreenchange', () => {fullscreen.textContent = document.fullscreenElement ? '退出全屏' : '全屏查看';});
-  window.addEventListener('pagehide', () => renderer.destroy(), {once:true});
+  window.addEventListener('pagehide', event => {if (!event.persisted) renderer.destroy();});
 })();
 `;

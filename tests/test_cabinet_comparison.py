@@ -22,6 +22,65 @@ class CabinetComparisonTests(unittest.TestCase):
     def read(self):
         return tw.read([self.f.task])
 
+    def cross_cabinet_comparison(self, anchors=()):
+        self.f.sql("UPDATE tasks SET status='doing' WHERE id=?", (self.f.task,))
+        self.f.sql("UPDATE scan_records SET device_extra=? WHERE id=?",
+                   ('{"设备机架":"AA01A、设备机架-AA02A"}', self.f.record))
+        # 条码顺序特意与柜位相反，不能按书写顺序配对。
+        db.submit_scan(self.f.record, 'A1', False, 'C2,C1', False,
+                       'AA01A、AA02A', 'M1', '', created_by=self.f.worker)
+        for index, (position, barcode) in enumerate(anchors, 2):
+            db.batch_create_records(self.f.task, [dict(device_name=f'单柜设备{index}', expected_model='M1',
+                                                     expected_barcode=f'A{index}', device_extra={'设备机架': position})])
+            record_id = db.get_task_items(self.f.task)[-1]['id']
+            db.submit_scan(record_id, f'A{index}', False, barcode, False,
+                           position, 'M1', '', created_by=self.f.worker)
+        db.complete_inventory_task(self.f.task, self.f.worker)
+        self.f.assets([('A1', '网元甲', '001', 'M1'),
+                       ('C1', '设备机架-AA01A', '001', '传输综合柜规格'),
+                       ('C2', '设备机架-AA02A', '001', '传输综合柜规格')])
+        return {cabinet['position']: cabinet for cabinet in self.read()['cabinet_comparison']}
+
+    def test_cross_cabinet_devices_are_grouped_by_position_without_guessing_barcodes(self):
+        cabinets = self.cross_cabinet_comparison()
+        self.assertEqual(set(cabinets), {'AA01A', 'AA02A'})
+        for position, cabinet in cabinets.items():
+            self.assertEqual(cabinet['resource_name'], position)
+            self.assertEqual(cabinet['position_status'], '一致')
+            self.assertEqual(cabinet['field_devices'], ['网元甲'])
+            self.assertEqual(cabinet['barcode_status'], '待核实')
+            self.assertIn('待人工对应', cabinet['field_barcodes'])
+            self.assertIn('C1、C2', cabinet['field_barcodes'])
+            self.assertEqual(cabinet['problems'], ['跨柜设备的机柜条码尚未逐柜对应，请管理员核实'])
+            self.assertFalse(cabinet['consistent'])
+
+    def test_single_cabinet_feedback_resolves_cross_cabinet_barcodes(self):
+        cabinets = self.cross_cabinet_comparison([('AA01A', 'C1'), ('AA02A', 'C2')])
+        for position, barcode in [('AA01A', 'C1'), ('AA02A', 'C2')]:
+            cabinet = cabinets[position]
+            self.assertEqual(cabinet['field_barcodes'], barcode)
+            self.assertEqual(cabinet['asset_barcodes'], barcode)
+            self.assertIn('网元甲', cabinet['field_devices'])
+            self.assertTrue(cabinet['consistent'])
+
+    def test_one_known_cabinet_does_not_infer_other_barcode_by_elimination(self):
+        cabinets = self.cross_cabinet_comparison([('AA01A', 'C1')])
+        self.assertTrue(cabinets['AA01A']['consistent'])
+        self.assertEqual(cabinets['AA01A']['field_barcodes'], 'C1')
+        self.assertFalse(cabinets['AA02A']['consistent'])
+        self.assertEqual(cabinets['AA02A']['barcode_status'], '待核实')
+        self.assertIn('待人工对应', cabinets['AA02A']['field_barcodes'])
+
+    def test_single_position_multiple_barcodes_remain_a_real_conflict(self):
+        self.add_assets()
+        self.f.sql("UPDATE tasks SET status='doing' WHERE id=?", (self.f.task,))
+        db.submit_scan(self.f.record, 'A1', False, 'C1,C2', False, 'R1', 'M1', '', created_by=self.f.worker)
+        db.complete_inventory_task(self.f.task, self.f.worker)
+        cabinet = self.read()['cabinet_comparison'][0]
+        self.assertIn('同一柜位登记多个机柜条码，待管理员核实', cabinet['problems'])
+        self.assertEqual(cabinet['barcode_status'], '不一致')
+        self.assertFalse(cabinet['consistent'])
+
     def test_cabinet_barcode_is_separate_from_device_and_resource_has_no_barcode(self):
         self.add_assets()
         result = self.read()
